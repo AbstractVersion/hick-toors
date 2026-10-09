@@ -8,7 +8,7 @@ const BADGES = {
   garden_unconfirmed: "⚠️ Garden – pets not confirmed",
 };
 const $ = (id) => document.getElementById(id);
-const state = { config: null, hikes: new Map(), stays: new Map(), markers: new Map(), items: new Map() };
+const state = { config: null, hikes: new Map(), stays: new Map(), markers: new Map(), items: new Map(), comboView: false };
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) =>
@@ -53,26 +53,27 @@ map.addLayer(stayLayer);
 overlay.addTo(map);
 let reachCircle = null;
 
+function safeUrl(u) { return /^https?:\/\//i.test(String(u ?? "")) ? u : "#"; }
 function pin(emoji, cls, label) {
   return L.divIcon({ className: `pin ${cls}`, iconSize: null,
     html: `<span>${emoji}</span>${label ? `<b>${esc(label)}</b>` : ""}` });
 }
 function hikePopup(h) {
-  return `<div class="popup">${h.thumbnail ? `<img src="${esc(h.thumbnail)}" alt="">` : ""}
+  return `<div class="popup">${h.thumbnail ? `<img src="${esc(safeUrl(h.thumbnail))}" alt="">` : ""}
     <strong>${esc(h.name)}</strong><br>
     ${esc(h.near || "")}<br>
     ${h.distance_km ?? "?"} km · +${h.elevation_gain_m ?? "?"} m · ${esc(h.difficulty || "?")} · TrailRank ${h.trailrank ?? "?"}<br>
     🚗 ${h.ferry_needed ? "⛴️ ferry needed" : fmtMinutes(h.drive_minutes, h.drive_estimated)}<br>
-    <a href="${esc(h.url)}" target="_blank" rel="noopener">Open on Wikiloc ↗</a></div>`;
+    <a href="${esc(safeUrl(h.url))}" target="_blank" rel="noopener">Open on Wikiloc ↗</a></div>`;
 }
 function stayPopup(s) {
-  return `<div class="popup">${s.photo ? `<img src="${esc(s.photo)}" alt="">` : ""}
+  return `<div class="popup">${s.photo ? `<img src="${esc(safeUrl(s.photo))}" alt="">` : ""}
     <strong>${esc(s.name)}</strong><br>
     ${s.source === "airbnb" ? "Airbnb" : "Booking.com"} · ${esc(money(s.total_price, s.currency))} total
     ${s.rating != null ? ` · ★ ${s.rating}` : ""}<br>
     ${s.badge ? `<span class="badge ${esc(s.badge)}">${esc(BADGES[s.badge])}</span><br>` : ""}
     ${s.distance_km != null ? `${s.distance_km} km from trailhead<br>` : ""}
-    <a href="${esc(s.url)}" target="_blank" rel="noopener">Open listing ↗</a></div>`;
+    <a href="${esc(safeUrl(s.url))}" target="_blank" rel="noopener">Open listing ↗</a></div>`;
 }
 
 // ---- notices / api ----
@@ -147,6 +148,7 @@ function clearStays() {
   $("stay-count").textContent = "";
 }
 function clearAll() {
+  state.comboView = false;
   hikeLayer.clearLayers();
   overlay.clearLayers();
   clearStays();
@@ -159,12 +161,12 @@ function clearAll() {
 function addHike(h) {
   state.hikes.set(h.id, h);
   const marker = L.marker([h.lat, h.lon], { icon: pin("🥾", "hike") }).bindPopup(hikePopup(h));
-  marker.on("click", () => selectHike(h.id));
+  marker.on("click", () => { if (!state.comboView) selectHike(h.id); });
   linkMarker(h.id, marker, hikeLayer);
   const drive = h.ferry_needed ? "⛴️ ferry" : `🚗 ${fmtMinutes(h.drive_minutes, h.drive_estimated)}`;
   listItem($("hike-list"), h.id, h.name,
     `${h.distance_km ?? "?"} km · +${h.elevation_gain_m ?? "?"} m · ${h.difficulty || "?"} · ${drive}`,
-    null, () => { selectHike(h.id); focusMarker(h.id); });
+    null, () => { if (!state.comboView) selectHike(h.id); focusMarker(h.id); });
 }
 function addStay(s) {
   state.stays.set(s.id, s);
@@ -207,19 +209,24 @@ async function searchHikes() {
   fitAll();
 }
 async function selectHike(id) {
-  for (const li of document.querySelectorAll("#hike-list li.selected")) li.classList.remove("selected");
-  state.items.get(id)?.classList.add("selected");
-  const data = await api("/api/stays", { ...dates(), hike_id: id, dog: $("dog").checked,
-    guests: state.config?.default_guests ?? 2 });
-  clearStays();
-  notices(data.warnings);
-  data.stays.forEach(addStay);
-  $("stay-count").textContent = `(${data.stays.length})`;
-  const hike = state.hikes.get(id);
-  const layers = [state.markers.get(id), ...stayLayer.getLayers()].filter(Boolean);
-  if (layers.length > 1) map.fitBounds(L.featureGroup(layers).getBounds().pad(0.2));
-  else if (hike) map.setView([hike.lat, hike.lon], 12);
+  try {
+    for (const li of document.querySelectorAll("#hike-list li.selected")) li.classList.remove("selected");
+    state.items.get(id)?.classList.add("selected");
+    const data = await api("/api/stays", { ...dates(), hike_id: id, dog: $("dog").checked,
+      guests: state.config?.default_guests ?? 2 });
+    clearStays();
+    notices(data.warnings);
+    data.stays.forEach(addStay);
+    $("stay-count").textContent = `(${data.stays.length})`;
+    const hike = state.hikes.get(id);
+    const layers = [state.markers.get(id), ...stayLayer.getLayers()].filter(Boolean);
+    if (layers.length > 1) map.fitBounds(L.featureGroup(layers).getBounds().pad(0.2));
+    else if (hike) map.setView([hike.lat, hike.lon], 12);
+  } catch (err) {
+    notices([err.message]);
+  }
 }
+
 function renderCombos(combos) {
   combos.forEach((c, i) => {
     if (!state.hikes.has(c.hike.id)) addHike(c.hike);
@@ -237,6 +244,7 @@ function renderCombos(combos) {
   $("combo-count").textContent = `(${combos.length})`;
   $("stay-count").textContent = `(${state.stays.size})`;
   $("hike-count").textContent = `(${state.hikes.size})`;
+  if (combos.length > 0) state.comboView = true;
 }
 async function planTrip() {
   const data = await api("/api/trips", { ...dates(), drive_limit: driveLimit(), dog: $("dog").checked,
