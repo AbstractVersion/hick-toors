@@ -79,3 +79,28 @@ def test_static_assets_served(tmp_path):
     c = client(tmp_path)
     assert c.get("/static/app.js").status_code == 200
     assert c.get("/static/style.css").status_code == 200
+
+
+from app.ask import AskResult
+
+
+class FakeAskRunner:
+    def __init__(self):
+        self.requests = []
+
+    def available(self):
+        return True
+
+    async def ask(self, req):
+        self.requests.append(req)
+        return AskResult(summary="Go to Pelion")
+
+
+def test_ask_endpoint(tmp_path):
+    settings = Settings(_env_file=None, cache_dir=tmp_path)
+    runner = FakeAskRunner()
+    c = TestClient(create_app(engine=FakeEngine(), ask_runner=runner, settings=settings))
+    r = c.post("/api/ask", json={"question": "weekend hike", "context": {"dog": True}})
+    assert r.status_code == 200 and r.json()["summary"] == "Go to Pelion"
+    assert runner.requests[0].context == {"dog": True}
+    assert c.post("/api/ask", json={"question": "x"}).status_code == 422

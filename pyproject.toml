@@ -10,7 +10,7 @@ dependencies = [
     "curl_cffi>=0.7",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
-    "mcp[cli]>=1.6.0",
+    "mcp[cli]>=1.6.0,<2",
 ]
 
 [dependency-groups]

@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.ask import AskRequest, AskResult, AskRunner
 from app.config import BASE_DIR, Settings
 from app.models import HikeQuery, HikeSearch, StaySearch, StaySearchQuery, TripQuery, TripSearch
 from app.wiring import build_engine
@@ -14,6 +15,7 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None) -
     engine = engine or build_engine(settings)
     app = FastAPI(title="hick-toors")
     app.state.engine = engine
+    ask_runner = ask_runner or AskRunner(settings, engine.lookup)
     app.state.ask = ask_runner
 
     @app.get("/api/config")
@@ -37,6 +39,10 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None) -
     @app.post("/api/trips", response_model=TripSearch)
     async def trips(q: TripQuery):
         return await engine.plan_trip(q)
+
+    @app.post("/api/ask", response_model=AskResult)
+    async def ask(req: AskRequest):
+        return await ask_runner.ask(req)
 
     @app.get("/")
     async def index():
