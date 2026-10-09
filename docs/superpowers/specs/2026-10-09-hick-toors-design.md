@@ -46,6 +46,7 @@ A slider overrides the value. Bands live in config.
   - Garden but pets not confirmed → badge ⚠️ "Garden – pets not confirmed", ranked
     below pet-friendly stays.
   - Neither → hidden.
+  - Listing explicitly says no pets (even with a garden) → hidden.
 - **OFF**: normal search; badges still shown where known.
 - Hikes are never filtered by the dog toggle.
 
@@ -53,8 +54,8 @@ A slider overrides the value. Bands live in config.
 - Tile layers (switcher): OpenTopoMap (default), OpenStreetMap, Esri World Imagery. No API keys.
 - 🥾 Hike pins at trailheads; popup: name, distance, elevation gain, difficulty,
   TrailRank, nearest village, drive time, Wikiloc link.
-- Selected hike: route line drawn if a track is obtainable without login (verified in
-  Task 1); otherwise pin + link only.
+- Selected hike: pin + Wikiloc link. (Probe 2026-10-09: the track is embedded in the route
+  page only as a proprietary encoded `geom` string, so route lines are out of scope for v1.)
 - 🏡 Stay pins coloured by source (Airbnb / Booking), price on pin, dog badge.
 - 🏠 Home marker + shaded approximate reach area.
 - Marker clustering when zoomed out (Leaflet.markercluster).
@@ -80,7 +81,6 @@ left untouched; the Wikiloc logic is copied/adapted into `hick-toors`.
 hick-toors/
   pyproject.toml
   .env.example
-  mcp.json                 MCP config used by the Ask box
   app/
     main.py                FastAPI: static page + JSON API
     config.py              settings from .env (home, bands, weights, radius, ORS key)
@@ -112,19 +112,25 @@ hick-toors/
 - **trip_window.py** — pure function `max_drive_minutes(start, end, override=None) -> int | None`
   (`None` = unlimited).
 - **sources/wikiloc.py** — `search(bbox, query="", limit) -> list[Hike]` using
-  `find.do?event=map`; retries with backoff on 403. Parsing separated from HTTP so it is
+  `find.do?event=map` (returns `lat`/`lon`, `distance` as "11,81", `slope`, `skill`,
+  `trailrank`, `near`, `picto`); retries with backoff on 403. Keeps only hiking routes
+  (`picto == 1`) located in Greece (`near` contains "Greece"/"Ελλάδα"/"Grecia"). Parsing separated from HTTP so it is
   testable with fixtures.
 - **StayProvider** — `async search(center, radius_km, check_in, check_out, guests, dog) -> list[Stay]`.
   Raises a `ProviderUnavailable` error on block/parse failure.
   - **airbnb.py** — dog ON: search with `pets=1` → `pets_allowed=True`. For top N results,
     fetch details and match amenities (Garden, Backyard, Private yard, Fenced) → `has_garden`.
-  - **booking.py** — dog ON: "Pets allowed" filter → `pets_allowed=True`; Garden facility →
-    `has_garden`. Expected to be fragile; failures are soft.
+  - **booking.py** — dog ON: "Pets allowed" filter (`nflt=hotelfacility=4`) → `pets_allowed=True`;
+    `has_garden` unknown (no reliable garden filter found). Uses `curl_cffi` (browser
+    impersonation) because Booking answers plain httpx with a 202 challenge; even then it is
+    intermittently blocked, so failures are soft.
 - **dog_rule.py** — pure: `apply(stays, dog) -> list[Stay]` with badge assignment and
   ordering (pets-allowed first, garden-only ⚠️ after, others removed when dog ON).
-  Note: garden-only stays come from Booking (pets unknown) or Airbnb listings with garden
-  whose pet status is unknown; Airbnb `pets=1` results are always pets-allowed.
-- **routing.py** — OpenRouteService matrix API (home → trailheads), cached 7 days.
+  Note: garden-only ⚠️ stays come from Airbnb: with dog ON, Airbnb also runs a search without
+  the pets filter and checks the top N listings' details for garden amenities and house rules.
+- **routing.py** — OpenRouteService matrix API (home → trailheads), cached 7 days. A `null`
+  duration (no road connection, e.g. Crete/islands) → `ferry_needed=True`; such hikes are kept
+  only when the drive limit is unlimited.
   Without key or on failure: haversine distance ÷ 60 km/h, marked `estimated=True`.
 - **ranking.py** — combo score /100: hike TrailRank 40, stay rating 25, trailhead–stay
   proximity 20, price 15 (cheaper higher). Normalised within the result set. Weights in config.
@@ -134,11 +140,11 @@ hick-toors/
   id→object registry (used by the Ask box).
 - **mcp_tools.py** — FastMCP server `hicktoors` with tools `search_hikes`, `search_stays`,
   `plan_trip`, calling the engine; returns JSON including ids.
-- **ask.py** — builds and runs:
+- **ask.py** — writes `.cache/mcp.json` (absolute paths) at runtime, then runs:
   ```
   claude -p "<question + form context>" \
-    --mcp-config hick-toors/mcp.json --strict-mcp-config \
-    --allowedTools "mcp__hicktoors__*" \
+    --mcp-config .cache/mcp.json --strict-mcp-config \
+    --allowedTools "mcp__hicktoors" --tools "" \
     --append-system-prompt "<trip planner instructions>" \
     --output-format json
   ```
@@ -196,9 +202,9 @@ uv run uvicorn app.main:app --reload
 ```
 
 ## 8. Build order (for subagent-driven development)
-1. **Spike** — verify live access to Wikiloc search (fields incl. lat/lon), Wikiloc track
-   geometry without login, Airbnb search/details, Booking search; save fixtures. Report
-   which parts are feasible; adjust later tasks.
+1. ~~Spike~~ — done during planning (2026-10-09): Wikiloc search OK via httpx (lat/lon present,
+   tracks not decodable); Airbnb search by bbox + listing details OK via httpx; Booking only
+   intermittently reachable.
 2. Project scaffold, config, models, trip_window, cache
 3. Wikiloc source
 4. Airbnb provider
