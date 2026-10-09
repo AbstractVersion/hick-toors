@@ -63,3 +63,27 @@ def airbnb_listing_html(titles):
     blob = json.dumps({"sections": [{"title": t} for t in titles]},
                       ensure_ascii=False, separators=(",", ":"))
     return f"<html><script>{blob}</script></html>"
+
+
+def booking_property(pid, name, lat, lon, score=9.6, amount=354.0, page="anna-villa"):
+    return {
+        "__typename": "SearchResultProperty",
+        "displayName": {"text": name},
+        "basicPropertyData": {
+            "id": pid,
+            "pageName": page,
+            "location": {"latitude": lat, "longitude": lon, "countryCode": "gr"},
+            "reviews": {"totalScore": score},
+            "photos": {"main": {"highResUrl": {"relativeUrl": f"/xdata/images/hotel/square600/{pid}.webp"}}},
+        },
+        "priceDisplayInfoIrene": {"displayPrice": {"amountPerStay": {"amountUnformatted": amount, "currency": "EUR"}}},
+    }
+
+
+def booking_search_html(props):
+    store = {"ROOT_QUERY": {"searchQueries": {"search": {"results": props}}}}
+    return ('<html><script type="application/json" data-capla-store-data="apollo">'
+            f"{json.dumps(store)}</script></html>")
+
+
+BOOKING_BLOCKED_HTML = "<html><head><title>Just a moment...</title></head><body></body></html>"
