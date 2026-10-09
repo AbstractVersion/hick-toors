@@ -3,6 +3,7 @@ import base64
 import binascii
 import json
 import re
+import sys
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlencode
 
@@ -158,7 +159,8 @@ class AirbnbProvider:
             async with semaphore:
                 try:
                     html = await self._fetch(stay.url, {})
-                except Exception:
+                except Exception as exc:
+                    print(f"airbnb detail fetch failed for {stay.id}: {exc}", file=sys.stderr)
                     return
             pets, garden = parse_details(html)
             stay.has_garden = garden
