@@ -67,3 +67,15 @@ def test_end_before_start_is_422_with_message(tmp_path):
     r = client(tmp_path).post("/api/hikes", json={"start": "2026-10-25", "end": "2026-10-23"})
     assert r.status_code == 422
     assert "end date must be on or after start date" in r.text
+
+
+def test_index_loads_leaflet_and_app(tmp_path):
+    html = client(tmp_path).get("/").text
+    assert "leaflet@1.9.4" in html and "leaflet.markercluster@1.5.3" in html
+    assert "/static/app.js" in html and 'id="ask-form"' in html
+
+
+def test_static_assets_served(tmp_path):
+    c = client(tmp_path)
+    assert c.get("/static/app.js").status_code == 200
+    assert c.get("/static/style.css").status_code == 200

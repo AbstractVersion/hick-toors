@@ -1,3 +1,50 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>hick-toors</title></head>
-<body><div id="map"></div></body></html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>hick-toors</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header id="controls">
+    <strong class="brand">🥾 hick-toors</strong>
+    <label>📅 <input type="date" id="start"> → <input type="date" id="end"></label>
+    <span id="home-label">🏠 Athens</span>
+    <label>🚗 <input type="range" id="drive" min="0" max="9" step="1" value="0">
+      <span id="drive-label">Auto</span></label>
+    <label class="dog"><input type="checkbox" id="dog" checked> 🐕 Dog</label>
+    <fieldset id="modes">
+      <label><input type="radio" name="mode" value="near_home" checked> Near home</label>
+      <label><input type="radio" name="mode" value="place"> Place</label>
+      <label><input type="radio" name="mode" value="trip"> Trip plan</label>
+    </fieldset>
+    <input type="text" id="place" placeholder="e.g. Pelion, Zagori, Olympus" hidden>
+    <button id="search">Search</button>
+  </header>
+  <div id="notices"></div>
+  <main>
+    <aside id="sidebar">
+      <section><h2>🥾 Hikes <span id="hike-count"></span></h2><ul id="hike-list"></ul></section>
+      <section><h2>🏡 Stays <span id="stay-count"></span></h2><ul id="stay-list"></ul></section>
+      <section><h2>⭐ Combos <span id="combo-count"></span></h2><ul id="combo-list"></ul></section>
+    </aside>
+    <div id="map"></div>
+  </main>
+  <footer id="ask">
+    <form id="ask-form">
+      <input id="ask-input" maxlength="2000"
+             placeholder="💬 Ask Claude: quiet weekend, river hike, cabin with a garden under €120/night">
+      <button id="ask-button">Ask</button>
+    </form>
+    <div id="ask-status"></div>
+    <div id="ask-answer"></div>
+  </footer>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

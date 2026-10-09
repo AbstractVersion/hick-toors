@@ -1,0 +1,39 @@
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; font: 14px/1.4 system-ui, -apple-system, sans-serif; color: #1d2b24; background: #f4f6f3; }
+body { display: flex; flex-direction: column; }
+#controls { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; padding: 10px 16px; background: #fff; border-bottom: 1px solid #dde3dc; }
+#controls .brand { font-size: 16px; }
+#controls input[type=date], #place { padding: 4px 6px; border: 1px solid #c8d0c6; border-radius: 6px; }
+#modes { border: 0; margin: 0; padding: 0; display: flex; gap: 10px; }
+#search, #ask-button { padding: 6px 14px; border: 0; border-radius: 6px; background: #2f6f4e; color: #fff; cursor: pointer; }
+#search:disabled, #ask-button:disabled { opacity: .5; cursor: wait; }
+#notices { padding: 0 16px; }
+.notice { margin: 6px 0; padding: 6px 10px; border-radius: 6px; background: #fff4d6; border: 1px solid #f0d58a; }
+main { flex: 1; display: flex; min-height: 0; }
+#sidebar { width: 360px; overflow-y: auto; background: #fff; border-right: 1px solid #dde3dc; }
+#sidebar section { padding: 8px 12px; border-bottom: 1px solid #eef1ed; }
+#sidebar h2 { margin: 4px 0 8px; font-size: 15px; }
+#sidebar ul { list-style: none; margin: 0; padding: 0; }
+#sidebar li { padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+#sidebar li:hover, #sidebar li.active { background: #e7f1ea; }
+#sidebar li.selected { outline: 2px solid #2f6f4e; }
+#sidebar li .meta { color: #5d6b63; font-size: 12px; }
+.badge { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 10px; background: #e3efe7; margin-top: 2px; }
+.badge.garden_unconfirmed { background: #fff0cf; }
+#map { flex: 1; }
+.pin { background: none; border: 0; }
+.pin span { font-size: 22px; filter: drop-shadow(0 1px 1px rgba(0,0,0,.4)); }
+.pin b { display: block; margin-top: -4px; padding: 0 4px; border-radius: 4px; font-size: 11px; color: #fff; white-space: nowrap; }
+.pin.airbnb b { background: #e0565b; }
+.pin.booking b { background: #1f4fa3; }
+.popup img { width: 100%; max-height: 120px; object-fit: cover; border-radius: 4px; }
+#ask { padding: 8px 16px; background: #fff; border-top: 1px solid #dde3dc; }
+#ask-form { display: flex; gap: 8px; }
+#ask-input { flex: 1; padding: 6px 8px; border: 1px solid #c8d0c6; border-radius: 6px; }
+#ask-status { color: #5d6b63; font-size: 12px; min-height: 16px; }
+#ask-answer { white-space: pre-wrap; max-height: 120px; overflow-y: auto; }
+@media (max-width: 800px) {
+  main { flex-direction: column; }
+  #sidebar { width: 100%; max-height: 40vh; border-right: 0; }
+  #map { min-height: 50vh; }
+}
