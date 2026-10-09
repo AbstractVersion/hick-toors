@@ -1,5 +1,8 @@
 """Builders that mimic the real payload shapes of the scraped sites (probed 2026-10-09)."""
 
+import base64
+import json
+
 
 def wikiloc_spa(
     id,
@@ -29,3 +32,34 @@ def wikiloc_spa(
         "author": "someone",
         "thumbs": [{"url": f"https://s0.wklcdn.com/{id}_tn.jpg", "id": 1}],
     }
+
+
+def airbnb_result(listing_id, title, lat, lon, label="€202 total",
+                  rating="4.85 out of 5 average rating,  26 reviews"):
+    encoded = base64.b64encode(f"DemandStayListing:{listing_id}".encode()).decode()
+    return {
+        "__typename": "StaySearchResult",
+        "avgRatingA11yLabel": rating,
+        "title": "Cottage in Makrinitsa",
+        "subtitle": title,
+        "nameLocalized": {"localizedStringWithTranslationPreference": title},
+        "structuredDisplayPrice": {"primaryLine": {"accessibilityLabel": label, "price": label.split()[0]}},
+        "contextualPictures": [{"picture": f"https://a0.muscache.com/{listing_id}.jpg"}],
+        "demandStayListing": {
+            "id": encoded,
+            "location": {"coordinate": {"latitude": lat, "longitude": lon}},
+        },
+    }
+
+
+def airbnb_search_html(results):
+    state = {"niobeClientData": [["StaysSearch:{}", {"data": {"presentation": {
+        "staysSearch": {"results": {"searchResults": results}}}}}]]}
+    return ('<html><body><script id="data-deferred-state-0" type="application/json">'
+            f"{json.dumps(state)}</script></body></html>")
+
+
+def airbnb_listing_html(titles):
+    blob = json.dumps({"sections": [{"title": t} for t in titles]},
+                      ensure_ascii=False, separators=(",", ":"))
+    return f"<html><script>{blob}</script></html>"
