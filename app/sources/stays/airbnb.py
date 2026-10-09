@@ -178,7 +178,11 @@ class AirbnbProvider:
             for stay in pet_stays:
                 stay.pets_allowed = True
             pet_ids = {s.id for s in pet_stays}
-            others = [s for s in await self._search(base) if s.id not in pet_ids]
+            try:
+                others = [s for s in await self._search(base) if s.id not in pet_ids]
+            except ProviderUnavailable as exc:
+                print(f"airbnb: no-pets search failed, keeping pet results: {exc}", file=sys.stderr)
+                others = []
             await self._enrich(pet_stays[: self._top_n] + others[: self._top_n])
             stays = pet_stays + others
         link = {"check_in": q.check_in.isoformat(), "check_out": q.check_out.isoformat(), "adults": q.guests}

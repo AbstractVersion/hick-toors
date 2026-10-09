@@ -119,3 +119,15 @@ async def test_blocked_search_raises_provider_unavailable():
 
     with pytest.raises(ProviderUnavailable, match="Airbnb unavailable"):
         await AirbnbProvider(fetch=fetch).search(Q)
+
+
+async def test_dog_search_keeps_pet_results_when_no_pets_search_fails():
+    pet_html = airbnb_search_html([airbnb_result(1, "Pet house", 39.4, 23.0)])
+
+    async def fetch(url, params):
+        if "/rooms/" in url:
+            return airbnb_listing_html(["Pets allowed"])
+        return pet_html if params.get("pets") else "<html>captcha</html>"
+
+    stays = await AirbnbProvider(fetch=fetch).search(Q)
+    assert [s.id for s in stays] == ["airbnb:1"] and stays[0].pets_allowed is True

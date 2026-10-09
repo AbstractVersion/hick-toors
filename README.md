@@ -20,6 +20,8 @@ uv run uvicorn app.main:app --reload
 - **Ask Claude:** uses your local Claude Code login (`claude -p`) with this app's search tools only. It counts against your Claude Code plan's usage; no API key needed. Run `claude` once to log in if the box says unavailable.
 
 ## Use the tools from Claude Code
+Run this from the `hick-toors/` folder (it uses `$(pwd)`):
+
 ```bash
 claude mcp add hicktoors -- uv run --directory "$(pwd)" python -m app.mcp_tools
 ```

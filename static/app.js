@@ -8,7 +8,7 @@ const BADGES = {
   garden_unconfirmed: "⚠️ Garden – pets not confirmed",
 };
 const $ = (id) => document.getElementById(id);
-const state = { config: null, hikes: new Map(), stays: new Map(), markers: new Map(), items: new Map(), comboView: false };
+const state = { config: null, hikes: new Map(), stays: new Map(), markers: new Map(), items: new Map(), comboView: false, staysRequest: 0 };
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) =>
@@ -188,7 +188,8 @@ function drawReach(minutes) {
   if (minutes == null || !state.config) return;
   const home = state.config.home;
   reachCircle = L.circle([home.lat, home.lon], { radius: minutes * 1000, color: "#2f6f4e",
-    weight: 1, fillOpacity: 0.06, interactive: false }).addTo(map);
+    weight: 1, fillOpacity: 0.06, interactive: true })
+    .bindTooltip("≈ straight-line reach").addTo(map);
 }
 
 // ---- actions ----
@@ -209,11 +210,13 @@ async function searchHikes() {
   fitAll();
 }
 async function selectHike(id) {
+  const request = ++state.staysRequest;
   try {
     for (const li of document.querySelectorAll("#hike-list li.selected")) li.classList.remove("selected");
     state.items.get(id)?.classList.add("selected");
     const data = await api("/api/stays", { ...dates(), hike_id: id, dog: $("dog").checked,
       guests: state.config?.default_guests ?? 2 });
+    if (request !== state.staysRequest) return;
     clearStays();
     notices(data.warnings);
     data.stays.forEach(addStay);
@@ -223,7 +226,7 @@ async function selectHike(id) {
     if (layers.length > 1) map.fitBounds(L.featureGroup(layers).getBounds().pad(0.2));
     else if (hike) map.setView([hike.lat, hike.lon], 12);
   } catch (err) {
-    notices([err.message]);
+    if (request === state.staysRequest) notices([err.message]);
   }
 }
 
@@ -233,7 +236,7 @@ function renderCombos(combos) {
     if (!state.stays.has(c.stay.id)) addStay(c.stay);
     const label = c.score != null ? `${c.score}/100` : c.note || "";
     L.polyline([[c.hike.lat, c.hike.lon], [c.stay.lat, c.stay.lon]],
-      { dashArray: "6 6", color: "#2f6f4e", weight: 2 }).bindTooltip(label).addTo(overlay);
+      { dashArray: "6 6", color: "#2f6f4e", weight: 2 }).bindTooltip(esc(label)).addTo(overlay);
     const b = c.breakdown;
     const meta = b ? `hike ${b.hike} · stay ${b.stay} · near ${b.proximity} · price ${b.price}` : (c.note || "");
     const li = listItem($("combo-list"), `combo:${i}`, `${i + 1}. ${c.hike.name} + ${c.stay.name}`,

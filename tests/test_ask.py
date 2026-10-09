@@ -39,7 +39,8 @@ def test_build_command_flags(settings):
     path = r.write_mcp_config()
     cmd = r.build_command("hello", path)
     assert cmd[0] == sys.executable
-    assert cmd[1:3] == ["-p", "hello"]
+    assert cmd[1] == "-p"
+    assert cmd[-2:] == ["--", "hello"]
     assert cmd[cmd.index("--mcp-config") + 1] == str(path)
     assert "--strict-mcp-config" in cmd
     assert cmd[cmd.index("--allowedTools") + 1] == "mcp__hicktoors"
@@ -96,7 +97,7 @@ async def test_ask_happy_path(settings):
 
     result = await runner(settings, run).ask(AskRequest(question="weekend hike", context={}))
     assert result.hikes[0].id == "wikiloc:1"
-    assert seen[0][2].startswith("weekend hike")
+    assert seen[0][-1].startswith("weekend hike")
 
 
 async def test_ask_timeout(settings):
@@ -129,3 +130,28 @@ async def test_ask_rejects_concurrent_runs(settings):
     gate.set()
     await first
     assert second.warnings == ["Claude is still answering the previous question – please wait"]
+
+
+def test_parse_output_merges_tool_warnings():
+    payload = {"summary": "s", "hike_ids": ["wikiloc:1", "nope"], "warnings": ["Booking blocked", "Booking blocked"]}
+    result = AskRunner(Settings(_env_file=None), lookup=OBJECTS.get).parse_output(
+        0, envelope("```json\n" + json.dumps(payload) + "\n```"), "")
+    assert result.warnings == ["Booking blocked", "1 result(s) from Claude could not be found and were skipped"]
+
+
+def test_parse_output_missing_summary_strips_json_block():
+    text = 'Nice plan.\n```json\n{"hike_ids": ["wikiloc:1"]}\n```'
+    result = AskRunner(Settings(_env_file=None), lookup=OBJECTS.get).parse_output(0, envelope(text), "")
+    assert result.summary == "Nice plan."
+
+
+async def test_run_subprocess_has_no_stdin(settings):
+    code, out, _ = await runner(settings)._run_subprocess(
+        [sys.executable, "-c", "import sys; print(sys.stdin.read() == '')"])
+    assert code == 0 and "True" in out
+
+
+async def test_run_subprocess_timeout(tmp_path):
+    r = AskRunner(Settings(_env_file=None, cache_dir=tmp_path, ask_timeout_seconds=1), lookup=OBJECTS.get)
+    with pytest.raises(asyncio.TimeoutError):
+        await r._run_subprocess([sys.executable, "-c", "import time; time.sleep(5)"])
