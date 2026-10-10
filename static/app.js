@@ -9,7 +9,7 @@ const BADGES = {
 };
 const $ = (id) => document.getElementById(id);
 const state = { config: null, hikes: new Map(), stays: new Map(), markers: new Map(), items: new Map(), comboView: false, staysRequest: 0,
-  lastHikeBody: null, nextPageOffset: null, hikeGen: 0, hikeWarnings: [], catalogue: null, filters: null, dialogs: {} };
+  lastHikeBody: null, nextPageOffset: null, hikeTotal: null, hikeGen: 0, hikeWarnings: [], catalogue: null, filters: null, dialogs: {} };
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) =>
@@ -274,6 +274,7 @@ function clearAll() {
   state.staysRequest += 1;  // a stay answer still on its way belongs to the old search
   state.lastHikeBody = null;
   state.nextPageOffset = null;
+  state.hikeTotal = null;
   state.hikeWarnings = [];
   $("hike-total").textContent = "";
   $("load-more").hidden = true;
@@ -350,8 +351,9 @@ async function searchHikes() {
 function showHikeMeta(data) {
   $("hike-count").textContent = `(${state.hikes.size})`;
   state.nextPageOffset = data.next_page_offset ?? null;
-  $("hike-total").textContent = data.total_available != null
-    ? `Showing ${state.hikes.size.toLocaleString("en-US")} of ${Number(data.total_available).toLocaleString("en-US")} routes in this area`
+  state.hikeTotal = data.total_available ?? state.hikeTotal;  // a failed Load more carries no total
+  $("hike-total").textContent = state.hikeTotal != null
+    ? `Showing ${state.hikes.size.toLocaleString("en-US")} of ${Number(state.hikeTotal).toLocaleString("en-US")} routes in this area`
     : "";
   $("load-more").hidden = state.nextPageOffset == null;
 }

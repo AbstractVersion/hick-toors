@@ -127,6 +127,8 @@ class Engine:
                                  cached["has_more"])
         result = await self.wikiloc.search(box, sort=f.sort, pages=pages, filters=f if login else None,
                                            use_login=login, start_page=start_page)
+        if start_page > 0 and not result.hikes:
+            return result  # Load more past the end (or a hiccup): never pin an empty page in the cache
         self.cache.set(key, {"hikes": [h.model_dump(mode="json") for h in result.hikes], "total": result.total,
                              "pages_fetched": result.pages_fetched, "has_more": result.has_more}, 7 * DAY)
         return result
@@ -167,7 +169,9 @@ class Engine:
                 if q.filters.loop_only and LOOP_NEEDS_LOGIN not in warnings:
                     warnings.append(LOOP_NEEDS_LOGIN)  # the anonymous retry cannot filter by loop
         except WikilocUnavailable as exc:
-            return HikeSearch(warnings=warnings + [str(exc)], drive_limit_minutes=limit)
+            # A failed Load more keeps its button: the same page offset can be retried.
+            return HikeSearch(warnings=warnings + [str(exc)], drive_limit_minutes=limit,
+                              next_page_offset=q.page_offset or None)
         fetched = result.hikes
         total = result.total
         next_offset = q.page_offset + result.pages_fetched if result.has_more else None

@@ -136,6 +136,36 @@ async def test_total_and_next_offset_survive_a_filter_notice(settings):
     assert result.total_available == 900 and result.next_page_offset == 30  # filtered: 30 pages
 
 
+async def test_load_more_with_expired_login_falls_back_to_anonymous(settings):
+    wikiloc = FakeWikiloc([hike(1, 50, lat=38.1)], logged_in=True, expired=True, has_more=True)
+    engine = make_engine(settings, wikiloc=wikiloc, router=FakeRouter({38.1: 60}))
+    result = await engine.search_hikes(HikeQuery(start=FRI, end=SUN, page_offset=20, filters={"min_trailrank": 10}))
+    assert [m["use_login"] for m in wikiloc.modes] == [True, False] and wikiloc.starts == [20, 20]
+    assert [h.id for h in result.hikes] == ["wikiloc:1"]
+    assert result.warnings == [
+        "Wikiloc login may have expired – using local filtering. Update WIKILOC_COOKIE in .env"]
+    assert result.next_page_offset == 50
+
+
+async def test_empty_load_more_page_is_not_cached(settings):
+    wikiloc = FakeWikiloc([])
+    engine = make_engine(settings, wikiloc=wikiloc, router=FakeRouter({}))
+    await engine.search_hikes(HikeQuery(start=FRI, end=SUN, page_offset=20))
+    await engine.search_hikes(HikeQuery(start=FRI, end=SUN, page_offset=20))
+    assert wikiloc.starts == [20, 20]
+    await engine.search_hikes(HikeQuery(start=FRI, end=SUN))
+    await engine.search_hikes(HikeQuery(start=FRI, end=SUN))
+    assert wikiloc.starts == [20, 20, 0]  # an empty first page is still cached
+
+
+async def test_failed_load_more_keeps_its_offset_for_retry(settings):
+    engine = make_engine(settings, wikiloc=FakeWikiloc(fail=True))
+    more = await engine.search_hikes(HikeQuery(start=FRI, end=SUN, page_offset=20))
+    assert "Hikes temporarily unavailable" in more.warnings[0] and more.next_page_offset == 20
+    first = await engine.search_hikes(HikeQuery(start=FRI, end=SUN))
+    assert first.next_page_offset is None
+
+
 def test_defaults_are_deeper():
     from app.config import Settings
     s = Settings(_env_file=None)

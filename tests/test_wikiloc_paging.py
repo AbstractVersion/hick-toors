@@ -113,6 +113,26 @@ async def test_load_more_past_the_end_with_login_is_empty_not_expired():
     assert result.hikes == [] and result.has_more is False
 
 
+async def test_load_more_with_forward_to_login_raises_expired():
+    async def fetch(url, params, headers=None):
+        return {"spas": [], "forwardToLogin": True}
+
+    with pytest.raises(WikilocLoginExpired):
+        await WikilocSource(fetch=fetch, cookie="SESSION=abc").search(BOX, filters=HikeFilters(), start_page=4)
+
+
+async def test_failure_after_a_short_page_reports_no_more():
+    async def fetch(url, params):
+        if params["from"] == 0:
+            return full_page(0)
+        if params["from"] == 25:
+            return {"spas": [wikiloc_spa(900 + i, "s", 39.3, 22.9) for i in range(10)]}
+        return None
+
+    result = await WikilocSource(fetch=fetch, concurrency=3).search(BOX, pages=3)
+    assert len(result.hikes) == 35 and result.has_more is False
+
+
 async def test_load_more_first_page_failure_is_unavailable():
     async def fetch(url, params):
         return None

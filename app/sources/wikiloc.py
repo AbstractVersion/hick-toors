@@ -213,11 +213,13 @@ class WikilocSource:
                         )
                     # A later page failed: keep the pages before it (offsets stay contiguous) and
                     # let Load more resume from here.
-                    return WikilocResult(hikes, total, fetched, True)
-                if first and start_page == 0 and login:
+                    return WikilocResult(hikes, total, fetched, full)
+                if first and login:
+                    # Also on Load more: an expired session must not look like end-of-data.
                     restricted = bool(data.get("forwardToLogin") or data.get("restricted"))
                     if restricted:
                         raise WikilocLoginExpired()
+                if first and start_page == 0 and login:
                     if server and not data.get("spas"):
                         if "t" in server:
                             # No circular routes, or an expired login? Ask again without the loop filter.
