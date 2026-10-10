@@ -18,7 +18,7 @@ uv run uvicorn app.main:app --reload
 cd hick-toors
 cp .env.example .env        # optional, read at runtime via env_file (never baked into the image)
 docker compose up --build -d
-# open http://localhost:8080   (change with HICK_TOORS_PORT=9000 docker compose up -d)
+# open http://localhost        (port 80; change with HICK_TOORS_PORT=8080 docker compose up -d)
 docker compose logs -f      # follow logs
 docker compose down         # stop (the search cache volume `hick-cache` is kept)
 ```
