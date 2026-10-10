@@ -13,6 +13,7 @@
 <body>
   <header id="controls">
     <strong class="brand">🥾 hick-toors</strong>
+    <button type="button" id="trips-btn" class="tool-btn">🧳 My trips <span id="trips-count"></span></button>
     <span class="goto">📍 <input type="text" id="goto-input" maxlength="200" placeholder="Go to place… (Greek or English)">
       <button type="button" id="goto-btn" class="tool-btn">Go</button>
       <span class="spinner" data-spin="goto" role="status" aria-label="Looking up place" hidden></span></span>
@@ -63,11 +64,40 @@
     <div><span class="spinner" data-spin="ask" role="status" aria-label="Claude is thinking" hidden></span> <span id="ask-status"></span></div>
     <div id="ask-answer"></div>
   </footer>
+  <div id="trip-menu" class="trip-menu" role="menu" hidden></div>
+  <dialog id="trips-dialog" class="trips-dialog" aria-labelledby="trips-title">
+    <div class="dlg-head"><h2 id="trips-title">🧳 My trips</h2>
+      <button type="button" id="trips-close" class="tool-btn" aria-label="Close">✕</button></div>
+    <div id="trips-error" class="notice" hidden></div>
+    <div id="trips-list-view">
+      <ul id="trips-list" class="trips-list"></ul>
+      <p id="trips-empty" class="list-note" hidden>No saved trips yet – use ＋ Trip on a hike or stay, or 💾 Save on a Trip pick.</p>
+    </div>
+    <form id="trip-editor" hidden>
+      <button type="button" id="trip-back" class="link-btn">← All trips</button>
+      <label class="wide">Name <input id="trip-name" maxlength="120" required></label>
+      <div class="row">
+        <label>📅 <input type="date" id="trip-start"></label> → <input type="date" id="trip-end" aria-label="End date">
+        <label>👥 <input type="number" id="trip-guests" min="1" max="16" step="1"></label>
+        <label><input type="checkbox" id="trip-dog"> 🐕 Dog</label>
+      </div>
+      <h3>🥾 Hikes</h3><ul id="trip-hikes" class="trip-items"></ul>
+      <h3>🏡 Stays</h3><ul id="trip-stays" class="trip-items"></ul>
+      <label class="wide">📝 Notes <textarea id="trip-notes" maxlength="5000" rows="4"></textarea></label>
+      <div class="dlg-actions">
+        <button type="submit" id="trip-save" class="primary">Save changes</button>
+        <button type="button" id="trip-show" class="tool-btn">🗺️ Show on map</button>
+        <button type="button" id="trip-export" class="tool-btn">⬇ Export .md</button>
+        <button type="button" id="trip-delete" class="tool-btn danger">Delete</button>
+      </div>
+    </form>
+  </dialog>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
   <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
   <script src="/static/filters.js"></script>
   <script src="/static/dialog.js"></script>
   <script src="/static/app.js"></script>
+  <script src="/static/trips.js"></script>
 </body>
 </html>

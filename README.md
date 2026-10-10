@@ -20,7 +20,7 @@ cp .env.example .env        # optional, read at runtime via env_file (never bake
 docker compose up --build -d
 # open http://localhost        (port 80; change with HICK_TOORS_PORT=8080 docker compose up -d)
 docker compose logs -f      # follow logs
-docker compose down         # stop (the search cache volume `hick-cache` is kept)
+docker compose down         # stop (keeps both volumes: search cache `hick-cache` and saved trips `hick-data`)
 ```
 
 The **Ask Claude** box is unavailable inside the container (it needs your local, logged-in
@@ -31,6 +31,7 @@ The **Ask Claude** box is unavailable inside the container (it needs your local,
 - **Where vs what:** the mode radios say *where* – *Near home* (around Athens), *Place* (e.g. "Zagori") or *Drawn area*. Two buttons say *what*: **🔍 Search hikes** lists hikes there; **⭐ Suggest trips** ranks hike + stay combos (score /100) for the same *where* (a drawn shape, the place text, or the drive limit) and shows them in the **Trip picks** section, which stays hidden until there is something to show. Search hikes hides it again. The MCP `plan_trip` tool takes optional `place` / `area` too.
 - **📍 Go to place:** type a place in Greek or English in the header box and press Enter (or Go): the map flies there and drops a 📍 pin. It is navigation only – no hike or stay search runs and your results stay. The pin survives new searches (`GET /api/locate?q=`, Nominatim, cached 30 days).
 - **Loading spinners:** hikes, stays (Airbnb and Booking.com separately), Trip picks, Ask Claude and Go each show a small spinner while their request runs (a static "…" if your system prefers reduced motion).
+- **🧳 Saved trips:** **＋ Trip** on any hike or stay (list or map popup) adds it to a new or existing trip; **💾 Save** on a Trip pick saves that hike + stay as a trip. **🧳 My trips** lists them: rename, set dates/guests/dog, write notes, reorder or remove items, **Show on map**, **⬇ Export .md** (saves first, then downloads a Markdown file) and **Delete** (click twice). Trips live in a SQLite file (`data/trips.db`, change with `TRIPS_DB`; in Docker the `hick-data` volume) and keep a copy of each hike/stay as seen when added. There is one shared list and no login – anyone who can open the site can change it. Ask Claude can read them (`list_saved_trips`, `get_saved_trip`).
 - **🐕 Dog:** stays must allow pets (🐕) or have a garden (⚠️ pets not confirmed, shown last).
 - **⚙️ Filters:** *Hike filters* (activity, difficulty, distance, elevation gain, TrailRank, order) and *Stay filters* (price per night, rating, entire place, type, rooms, amenities, cancellation, …) open popups; **Apply** stores them in this browser, nothing searches until you press Search. `•N` shows how many differ from the defaults. Hike filters are applied after fetching from Wikiloc (more routes are fetched when filters are on). A stay source that can't apply a chosen filter is skipped with a notice (e.g. Booking.com can't filter by fireplace).
 - **✏️ Draw area:** draw a rectangle (button) or a circle (map toolbar) to search hikes inside it (*Drawn area* mode). *Suggest trips* with *Drawn area* selected plans trips inside the shape. A *Drawn area* search also loads the stays inside the shape automatically (clicking a hike afterwards shows that hike's stays instead). The MCP `search_stays` tool takes the same shape as `area`.
@@ -51,7 +52,7 @@ claude mcp add hicktoors -- uv run --directory "$(pwd)" python -m app.mcp_tools
 ```bash
 uv run pytest
 node tests/ui/filters_logic.test.js
-# headless Chrome check (needs Google Chrome; start the app on port 8765 first)
-uv run uvicorn app.main:app --port 8765 &
+# headless Chrome check (needs Google Chrome; start the app on port 8765 with a throwaway trips DB first)
+TRIPS_DB=$(mktemp -d)/trips.db uv run uvicorn app.main:app --port 8765 &
 uv run --with playwright python tests/ui/check_ui.py http://127.0.0.1:8765
 ```

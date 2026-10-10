@@ -1,12 +1,13 @@
-"""Headless-Chrome check of the filter popups (not collected by pytest).
+"""Headless-Chrome check of the filter popups, results, Trip picks and saved trips (not collected by pytest).
 
-Start the app first, then run the check against it:
-    env -u VIRTUAL_ENV uv run uvicorn app.main:app --port 8765
+Start the app first with a throwaway trips database, then run the check against it:
+    TRIPS_DB=$(mktemp -d)/trips.db env -u VIRTUAL_ENV uv run uvicorn app.main:app --port 8765
     env -u VIRTUAL_ENV uv run --with playwright python tests/ui/check_ui.py http://127.0.0.1:8765
 
 The script talks only to the local server. Search endpoints are answered by Playwright with
 canned JSON, so no Wikiloc/Airbnb/Booking request is made; the captured request bodies are
-asserted instead.
+asserted instead. The saved-trips API (/api/saved-trips...) is NOT mocked: the trips scenario
+creates, edits, exports and deletes a real trip, so it refuses to run unless the trips list is empty.
 """
 
 import json
@@ -118,6 +119,8 @@ def main() -> None:
             raise SystemExit("FAIL search sent no request")
 
         load(clear=True)
+        if page.evaluate("fetch('/api/saved-trips').then((r) => r.json())"):
+            raise SystemExit("FAIL start the server with a throwaway TRIPS_DB")  # never touch real trips
         expect(page.locator("#hike-filter-count")).to_be_hidden()
         expect(page.locator("#stay-filter-count")).to_be_hidden()
         print("PASS buttons enabled, no badges on defaults")
@@ -469,9 +472,9 @@ def main() -> None:
         NO_MATCH = "No stays match your filters"
         stays_with({"stays": [STAY], "warnings": []}, {"warnings": [NO_MATCH]})
         expect(page.locator("#stay-list li")).to_have_count(1)
-        expect(page.locator(".notice")).to_have_count(0)  # Airbnb filled the list: no stale "no stays"
+        expect(page.locator("#notices .notice")).to_have_count(0)  # Airbnb filled the list: no stale "no stays"
         stays_with({"warnings": [NO_MATCH]}, {"warnings": [NO_MATCH]})
-        expect(page.locator(".notice")).to_have_count(1)  # both empty: one combined notice
+        expect(page.locator("#notices .notice")).to_have_count(1)  # both empty: one combined notice
         expect(page.locator("#notices")).to_contain_text(NO_MATCH)
         stays_with({"warnings": ["Airbnb skipped – it can't filter by Breakfast included"]},
                    {"warnings": ["Booking.com skipped – it can't filter by Beds"]})
@@ -511,6 +514,107 @@ def main() -> None:
         expect(page.locator("#hike-list li")).to_have_count(1)
         assert page.evaluate("placeLayer.getLayers().length") == 1
         print("PASS Go to place: pin + fly, no search fired, warning, pin survives a new search")
+
+        # ---- saved trips (real API, throwaway TRIPS_DB) ----
+        saved_name = "Test hike + Area house"
+        expect(page.locator("#search")).to_be_enabled()
+        page.check('input[name="mode"][value="near_home"]')
+        page.click("#suggest-trips")
+        expect(page.locator("#combo-list li")).to_have_count(1)
+        save_btn = page.locator("#combo-list .save-combo")
+        save_btn.click()
+        expect(save_btn).to_have_text("✓ Saved")
+        expect(page.locator("#trips-count")).to_have_text("(1)")
+        expect(page.locator("#notices")).to_contain_text(f"Saved “{saved_name}”")
+        print("PASS 💾 Save on a Trip pick saves it; My trips count (1)")
+
+        # Search hikes (pick view off) with paging so HIKE2 is listed too.
+        expect(page.locator("#suggest-trips")).to_be_enabled()
+        paging["on"] = True
+        page.click("#search")
+        expect(page.locator("#load-more")).to_be_visible()
+        page.click("#load-more")
+        expect(page.locator("#hike-list li")).to_have_count(2)
+        paging["on"] = False
+        menu = page.locator("#trip-menu")
+        before = len(requests)
+        page.locator("#hike-list li", has_text="Test hike").locator(".add-trip").click()
+        expect(menu).to_be_visible()
+        expect(menu.locator("button")).to_have_count(2)
+        expect(menu.locator("button").first).to_have_text("➕ New trip")
+        menu.locator("button", has_text=saved_name).click()
+        expect(menu).to_be_hidden()
+        expect(page.locator("#notices")).to_contain_text(f"Already in “{saved_name}”")
+        page.wait_for_timeout(300)
+        assert not [r for r in requests[before:] if r[0] == "/api/stays"], requests[before:]
+        expect(page.locator("#hike-list li.selected")).to_have_count(0)
+        print("PASS ＋ Trip on a hike: menu, already-in notice, the hike is not selected")
+
+        page.locator("#hike-list li", has_text="Second hike").locator(".add-trip").click()
+        expect(menu).to_be_visible()
+        menu.locator("button", has_text=saved_name).click()
+        expect(page.locator("#notices")).to_contain_text(f"Added to “{saved_name}”")
+        print("PASS ＋ Trip adds a second hike to the saved trip")
+
+        dlg = page.locator("#trips-dialog")
+        page.click("#trips-btn")
+        expect(dlg).to_be_visible()
+        rows = page.locator("#trips-list li")
+        expect(rows).to_have_count(1)
+        expect(rows.first).to_contain_text("2 hikes · 1 stay · ⭐")
+        rows.first.click()
+        expect(page.locator("#trip-editor")).to_be_visible()
+        hikes_ul = page.locator("#trip-hikes li")
+        expect(hikes_ul).to_have_count(2)
+        expect(hikes_ul.nth(1)).to_contain_text("Second hike")
+        hikes_ul.nth(1).locator('button[title="Move up"]').click()
+        expect(hikes_ul.nth(0)).to_contain_text("Second hike")
+        page.fill("#trip-name", "Renamed trip")
+        page.click("#trip-save")
+        expect(page.locator("#trip-save")).to_have_text("✓ Saved")
+        trip_id = page.evaluate("fetch('/api/saved-trips').then((r) => r.json())")[0]["id"]
+        stored = page.evaluate("(id) => fetch(`/api/saved-trips/${encodeURIComponent(id)}`).then((r) => r.json())",
+                               trip_id)
+        assert stored["name"] == "Renamed trip", stored
+        assert [h["name"] for h in stored["hikes"]] == ["Second hike", "Test hike"], stored["hikes"]
+        page.click("#trip-back")
+        expect(rows.first).to_contain_text("Renamed trip")
+        rows.first.click()
+        expect(page.locator("#trip-name")).to_have_value("Renamed trip")
+        expect(hikes_ul.nth(0)).to_contain_text("Second hike")
+        print("PASS My trips: reorder + rename saved and persisted")
+
+        with page.expect_download() as dl_info:
+            page.click("#trip-export")
+        download = dl_info.value
+        # Chrome prefers the UTF-8 filename* ("Renamed trip.md"); the ASCII fallback is the slug.
+        assert download.suggested_filename in ("Renamed trip.md", "renamed-trip.md"), download.suggested_filename
+        disposition = page.evaluate("(url) => fetch(url).then((r) => r.headers.get('content-disposition'))",
+                                    download.url)
+        assert 'filename="renamed-trip.md"' in disposition, disposition
+        with open(download.path(), encoding="utf-8") as fh:
+            md = fh.read()
+        assert md.startswith("# Renamed trip"), md[:80]
+        assert "## 🥾 Hikes (2)" in md, md
+        print("PASS ⬇ Export .md downloads renamed-trip.md")
+
+        page.click("#trip-show")
+        expect(dlg).to_be_hidden()
+        expect(page.locator("#hike-list li")).to_have_count(2)
+        expect(page.locator("#notices")).to_contain_text("Showing trip “Renamed trip”")
+        print("PASS 🗺️ Show on map closes the dialog and lists the trip")
+
+        page.click("#trips-btn")
+        rows.first.click()
+        page.click("#trip-delete")
+        expect(page.locator("#trip-delete")).to_have_text("Confirm delete")
+        page.click("#trip-delete")
+        expect(rows).to_have_count(0)
+        expect(page.locator("#trips-empty")).to_be_visible()
+        expect(page.locator("#trips-count")).to_have_text("(0)")
+        page.click("#trips-close")
+        expect(dlg).to_be_hidden()
+        print("PASS Delete needs two clicks; list empty, count (0)")
 
         browser.close()
     if errors:

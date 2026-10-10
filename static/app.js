@@ -159,7 +159,7 @@ function hikePopup(h) {
     ${esc(h.near || "")}<br>
     ${h.distance_km ?? "?"} km · +${h.elevation_gain_m ?? "?"} m · ${esc(h.difficulty || "?")} · TrailRank ${h.trailrank ?? "?"}<br>
     🚗 ${h.ferry_needed ? "⛴️ ferry needed" : fmtMinutes(h.drive_minutes, h.drive_estimated)}<br>
-    <a href="${esc(safeUrl(h.url))}" target="_blank" rel="noopener">Open on Wikiloc ↗</a></div>`;
+    <a href="${esc(safeUrl(h.url))}" target="_blank" rel="noopener">Open on Wikiloc ↗</a><br>${tripButtonHtml("hike", h.id)}</div>`;
 }
 function stayPopup(s) {
   return `<div class="popup">${s.photo ? `<img src="${esc(safeUrl(s.photo))}" alt="">` : ""}
@@ -168,7 +168,7 @@ function stayPopup(s) {
     ${s.rating != null ? ` · ★ ${s.rating}` : ""}<br>
     ${s.badge ? `<span class="badge ${esc(s.badge)}">${esc(BADGES[s.badge])}</span><br>` : ""}
     ${s.distance_km != null ? `${s.distance_km} km from trailhead<br>` : ""}
-    <a href="${esc(safeUrl(s.url))}" target="_blank" rel="noopener">Open listing ↗</a></div>`;
+    <a href="${esc(safeUrl(s.url))}" target="_blank" rel="noopener">Open listing ↗</a><br>${tripButtonHtml("stay", s.id)}</div>`;
 }
 
 // ---- notices / api ----
@@ -182,9 +182,9 @@ function notices(list) {
     box.appendChild(div);
   }
 }
-async function api(path, body) {
+async function api(path, body, method) {
   const res = await fetch(path, {
-    method: body ? "POST" : "GET",
+    method: method || (body ? "POST" : "GET"),
     headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -330,9 +330,10 @@ function addHike(h) {
   marker.on("click", () => { if (!state.comboView) selectHike(h.id); });
   linkMarker(h.id, marker, hikeLayer);
   const drive = h.ferry_needed ? "⛴️ ferry" : `🚗 ${fmtMinutes(h.drive_minutes, h.drive_estimated)}`;
-  listItem($("hike-list"), h.id, h.name,
+  const li = listItem($("hike-list"), h.id, h.name,
     `${h.distance_km ?? "?"} km · +${h.elevation_gain_m ?? "?"} m · ${h.difficulty || "?"} · ${drive}`,
     null, () => { if (!state.comboView) selectHike(h.id); focusMarker(h.id); });
+  li.appendChild(tripButton("hike", h.id));
 }
 function addStay(s) {
   state.stays.set(s.id, s);
@@ -341,9 +342,10 @@ function addStay(s) {
   linkMarker(s.id, marker, stayLayer);
   const rating = s.rating != null ? ` · ★ ${s.rating}` : "";
   const km = s.distance_km != null ? ` · ${s.distance_km} km` : "";
-  listItem($("stay-list"), s.id, s.name,
+  const li = listItem($("stay-list"), s.id, s.name,
     `${s.source === "airbnb" ? "Airbnb" : "Booking.com"} · ${money(s.total_price, s.currency)}${rating}${km}`,
     s.badge, () => focusMarker(s.id));
+  li.appendChild(tripButton("stay", s.id));
 }
 function fitAll() {
   const layers = [...hikeLayer.getLayers(), ...stayLayer.getLayers()];
@@ -542,6 +544,7 @@ function renderCombos(combos) {
       `${c.score != null ? c.score + "/100 · " : ""}${meta}`, c.stay.badge,
       () => map.fitBounds(L.latLngBounds([[c.hike.lat, c.hike.lon], [c.stay.lat, c.stay.lon]]).pad(0.3)));
     li.title = meta;
+    li.appendChild(saveComboButton(c));
   });
   $("combo-count").textContent = `(${combos.length})`;
   $("stay-count").textContent = `(${state.stays.size})`;
