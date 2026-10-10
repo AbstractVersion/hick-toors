@@ -106,3 +106,27 @@ async def test_invalid_filters_return_error_json(engine):
     out = json.loads(await tools.search_hikes("2026-10-23", "2026-10-25", hike_filters={"min_rank": 5}))
     assert out["error"] == "filters.min_rank: Extra inputs are not permitted"
     assert engine.queries == []
+
+
+from app.models import SavedTripIn  # noqa: E402
+from app.trips_store import TripStore  # noqa: E402
+
+
+@pytest.fixture
+def trips(monkeypatch, tmp_path):
+    store = TripStore(tmp_path / "trips.db")
+    monkeypatch.setattr(tools, "_trip_store", store)
+    return store
+
+
+async def test_list_saved_trips(trips):
+    assert json.loads(await tools.list_saved_trips()) == []
+    t = trips.create(SavedTripIn(name="Zagori"))
+    out = json.loads(await tools.list_saved_trips())
+    assert [(s["id"], s["name"], s["hike_count"]) for s in out] == [(t.id, "Zagori", 0)]
+
+
+async def test_get_saved_trip_markdown_or_error(trips):
+    t = trips.create(SavedTripIn(name="Zagori"))
+    assert (await tools.get_saved_trip(t.id)).startswith("# Zagori\n")
+    assert json.loads(await tools.get_saved_trip("nope")) == {"error": "Trip not found"}

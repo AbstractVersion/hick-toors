@@ -32,7 +32,7 @@ class FakeAsk:
 
 
 def client(tmp_path, engine=None):
-    settings = Settings(_env_file=None, cache_dir=tmp_path)
+    settings = Settings(_env_file=None, cache_dir=tmp_path, trips_db=tmp_path / "trips.db")
     return TestClient(create_app(engine=engine or FakeEngine(), ask_runner=FakeAsk(), settings=settings))
 
 
@@ -82,7 +82,7 @@ def test_filters_catalogue_endpoint(tmp_path):
 
 
 def test_filters_catalogue_reports_wikiloc_login(tmp_path):
-    settings = Settings(_env_file=None, cache_dir=tmp_path, wikiloc_cookie="SESSION=abc")
+    settings = Settings(_env_file=None, cache_dir=tmp_path, trips_db=tmp_path / "trips.db", wikiloc_cookie="SESSION=abc")
     c = TestClient(create_app(engine=FakeEngine(), ask_runner=FakeAsk(), settings=settings))
     body = c.get("/api/filters").json()
     assert body["wikiloc_login"] is True and "SESSION" not in json.dumps(body)
@@ -146,7 +146,7 @@ class FakeAskRunner:
 
 
 def test_ask_endpoint(tmp_path):
-    settings = Settings(_env_file=None, cache_dir=tmp_path)
+    settings = Settings(_env_file=None, cache_dir=tmp_path, trips_db=tmp_path / "trips.db")
     runner = FakeAskRunner()
     c = TestClient(create_app(engine=FakeEngine(), ask_runner=runner, settings=settings))
     r = c.post("/api/ask", json={"question": "weekend hike", "context": {"dog": True}})

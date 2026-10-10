@@ -1,25 +1,32 @@
 import sys
+from datetime import date
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.ask import AskRequest, AskResult, AskRunner
 from app.config import BASE_DIR, Settings
 from app.filters import catalogue
-from app.models import HikeQuery, HikeSearch, StaySearch, StaySearchQuery, TripQuery, TripSearch
+from app.models import (HikeQuery, HikeSearch, SavedTrip, SavedTripIn, SavedTripSummary, StaySearch,
+                        StaySearchQuery, TripItemAdd, TripQuery, TripSearch)
+from app.trip_markdown import content_disposition, trip_markdown
+from app.trips_store import TripFull, TripStore
 from app.wiring import build_engine
 
 STATIC_DIR = BASE_DIR / "static"
 
 
-def create_app(engine=None, ask_runner=None, settings: Settings | None = None) -> FastAPI:
+def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
+               trip_store: TripStore | None = None) -> FastAPI:
     settings = settings or Settings()
     engine = engine or build_engine(settings)
     app = FastAPI(title="hick-toors")
     app.state.engine = engine
     ask_runner = ask_runner or AskRunner(settings, engine.lookup)
     app.state.ask = ask_runner
+    trip_store = trip_store or TripStore(settings.trips_db)
+    app.state.trips = trip_store
 
     @app.get("/api/config")
     async def config():
@@ -64,6 +71,47 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None) -
     @app.post("/api/ask", response_model=AskResult)
     async def ask(req: AskRequest):
         return await ask_runner.ask(req)
+
+    def found(trip):
+        if trip is None:
+            raise HTTPException(status_code=404, detail="Trip not found")
+        return trip
+
+    # Saved trips: sync handlers, so sqlite runs in FastAPI's threadpool.
+    @app.get("/api/saved-trips", response_model=list[SavedTripSummary])
+    def list_saved_trips():
+        return trip_store.list_trips()
+
+    @app.post("/api/saved-trips", response_model=SavedTrip, status_code=201)
+    def create_saved_trip(body: SavedTripIn):
+        return trip_store.create(body)
+
+    @app.get("/api/saved-trips/{trip_id}", response_model=SavedTrip)
+    def get_saved_trip(trip_id: str):
+        return found(trip_store.get(trip_id))
+
+    @app.put("/api/saved-trips/{trip_id}", response_model=SavedTrip)
+    def replace_saved_trip(trip_id: str, body: SavedTripIn):
+        return found(trip_store.replace(trip_id, body))
+
+    @app.delete("/api/saved-trips/{trip_id}", status_code=204)
+    def delete_saved_trip(trip_id: str):
+        if not trip_store.delete(trip_id):
+            raise HTTPException(status_code=404, detail="Trip not found")
+        return Response(status_code=204)
+
+    @app.post("/api/saved-trips/{trip_id}/items", response_model=SavedTrip)
+    def add_saved_trip_item(trip_id: str, body: TripItemAdd):
+        try:
+            return found(trip_store.add_item(trip_id, body))
+        except TripFull:
+            raise HTTPException(status_code=409, detail="A trip holds at most 50 hikes and 50 stays")
+
+    @app.get("/api/saved-trips/{trip_id}/export.md")
+    def export_saved_trip(trip_id: str):
+        trip = found(trip_store.get(trip_id))
+        return Response(trip_markdown(trip, date.today()), media_type="text/markdown; charset=utf-8",
+                        headers={"Content-Disposition": content_disposition(trip.name)})
 
     @app.get("/")
     async def index():

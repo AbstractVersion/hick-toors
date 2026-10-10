@@ -1,4 +1,5 @@
 import json
+from datetime import date
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import ValidationError
@@ -16,6 +17,19 @@ def engine():
 
         _engine = build_engine()
     return _engine
+
+
+_trip_store = None
+
+
+def trip_store():
+    global _trip_store
+    if _trip_store is None:
+        from app.config import Settings
+        from app.trips_store import TripStore
+
+        _trip_store = TripStore(Settings().trips_db)
+    return _trip_store
 
 
 def _limit(max_drive_minutes: int | None, unlimited: bool):
@@ -111,6 +125,30 @@ async def plan_trip(start: str, end: str, dog: bool = True, guests: int = 2,
     except ValidationError as exc:
         return _error(exc)
     return (await engine().plan_trip(q)).model_dump_json()
+
+
+@mcp.tool()
+async def list_saved_trips() -> str:
+    """List the user's saved trips (read-only), newest first.
+
+    Returns JSON [{id, name, start, end, source ("manual" | "suggested"), hike_count, stay_count,
+    updated_at}]. Use get_saved_trip(id) for the full trip.
+    """
+    return json.dumps([s.model_dump(mode="json") for s in trip_store().list_trips()])
+
+
+@mcp.tool()
+async def get_saved_trip(trip_id: str) -> str:
+    """Return one saved trip (id from list_saved_trips) as Markdown: dates, guests, dog, hikes with
+    Wikiloc links and stats, stays with links/prices/pet badges, and notes. Read-only.
+    Unknown id -> JSON {"error": "Trip not found"}.
+    """
+    from app.trip_markdown import trip_markdown
+
+    trip = trip_store().get(trip_id)
+    if trip is None:
+        return json.dumps({"error": "Trip not found"})
+    return trip_markdown(trip, date.today())
 
 
 if __name__ == "__main__":
