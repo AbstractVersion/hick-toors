@@ -109,6 +109,36 @@ def test_greek_name_kept_in_body():
     assert trip_markdown(trip(name="Ζαγόρι"), TODAY).startswith("# Ζαγόρι\n")
 
 
+def test_multiline_name_cannot_inject_block_markdown():
+    evil = HIKE.model_copy(update={"name": "A\n\n# injected", "near": "X\n- y"})
+    md = trip_markdown(trip(hikes=[evil]), TODAY)
+    assert not any(line.startswith("# injected") for line in md.splitlines())
+    assert "1. **[A # injected](https://es.wikiloc.com/vikos)**" in md
+    assert "   Near X - y · " in md
+
+
+def test_href_encodes_whitespace_and_angle_brackets():
+    odd = HIKE.model_copy(update={"url": "https://x.example/a\tb<c>\nd"})
+    md = trip_markdown(trip(hikes=[odd]), TODAY)
+    assert "(https://x.example/a%09b%3Cc%3E%0Ad)" in md
+
+
+def test_uppercase_scheme_is_linked():
+    up = HIKE.model_copy(update={"url": "HTTP://X.EXAMPLE/a"})
+    assert "[Vikos Gorge](HTTP://X.EXAMPLE/a)" in trip_markdown(trip(hikes=[up]), TODAY)
+
+
+def test_currency_is_escaped():
+    odd = STAY.model_copy(update={"currency": "C*H"})
+    assert "C\\*H 190 total" in trip_markdown(trip(stays=[odd]), TODAY)
+
+
+def test_suggested_without_score():
+    md = trip_markdown(trip(source="suggested", score=None), TODAY)
+    assert "⭐ Saved from Suggest trips\n" in md
+    assert "score" not in md
+
+
 def test_export_filename():
     assert export_filename("Zagori long weekend") == "zagori-long-weekend.md"
     assert export_filename("  Pelion: 3 days!! ") == "pelion-3-days.md"

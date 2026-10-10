@@ -17,18 +17,20 @@ SOURCES = {"airbnb": "Airbnb", "booking": "Booking.com"}
 DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 _SPECIAL = re.compile(r"([\\`*_\[\]<>])")
-_SAFE_URL = re.compile(r"^https?://", re.IGNORECASE)
+_WHITESPACE = re.compile(r"\s+")
+_HREF_UNSAFE = re.compile(r"[\s()<>]")
+_SAFE_URL =re.compile(r"^https?://", re.IGNORECASE)
 
 
 def md_escape(text: str) -> str:
-    return _SPECIAL.sub(r"\\\1", text)
+    return _SPECIAL.sub(r"\\\1", _WHITESPACE.sub(" ", text).strip())
 
 
 def _link(name: str, url: str | None) -> str:
     label = md_escape(name)
     if not url or not _SAFE_URL.match(url):
         return label
-    href = url.replace(" ", "%20").replace("(", "%28").replace(")", "%29")
+    href = _HREF_UNSAFE.sub(lambda m: quote(m.group(), safe=""), url)
     return f"[{label}]({href})"
 
 
@@ -46,7 +48,7 @@ def _minutes(m: int, estimated: bool) -> str:
 
 
 def _money(value: float, currency: str | None) -> str:
-    prefix = "€" if not currency or currency == "EUR" else f"{currency} "
+    prefix = "€" if not currency or currency == "EUR" else f"{md_escape(currency)} "
     return f"{prefix}{math.floor(value + 0.5)}"  # half-up, like the UI's Math.round
 
 
