@@ -4,8 +4,8 @@ import pytest
 
 from app.models import SIGHT_GROUPS, BBox
 from app.sources import nature
-from app.sources.nature import (ENDPOINTS, MAX_TILES, NatureSource, NatureUnavailable, parse_overpass, simplify,
-                                tile_query, tiles_for)
+from app.sources.nature import (ENDPOINTS, MAX_TILES, NatureSource, NatureUnavailable, Tile, cap_lines,
+                                parse_overpass, parse_tile, simplify, tile_query, tiles_for)
 
 
 def node(id_, tags, lat=37.6, lon=22.2):
@@ -88,7 +88,7 @@ def test_way_lake_has_center_and_one_line():
 def test_relation_river_gives_one_line_per_member_way():
     river = by_id(parse_overpass(FIXTURE))["osm:relation/20"]
     assert river.kind == "river" and river.url == "https://www.openstreetmap.org/relation/20"
-    assert [len(line) for line in river.lines] == [3, 4]
+    assert [len(line) for line in river.lines] == [4, 3]  # longest first
 
 
 def test_relation_lines_capped_at_40_and_center_from_bounds():
@@ -111,7 +111,7 @@ def test_points_total_capped_at_2000():
                          "center": {"lat": 37.0, "lon": 22.0},
                          "members": [{"type": "way", "ref": i, "geometry": geom(zigzag(300))} for i in range(10)]}]}
     (sight,) = parse_overpass(big)
-    assert sum(len(line) for line in sight.lines) <= 2000 and len(sight.lines) == 6
+    assert sum(len(line) for line in sight.lines) <= 2000 and len(sight.lines) == 10
 
 
 def test_lake_without_name_and_reservoir():
@@ -171,7 +171,8 @@ def test_tile_query_text():
     assert "(37.5,22.0,37.75,22.25)" in q
     assert 'node["waterway"="waterfall"]' in q and 'relation["boundary"="protected_area"]' in q
     assert 'way["natural"="water"]' in q
-    assert q.rstrip().endswith("out body geom(37.5,22.0,37.75,22.25) 600;")
+    assert ")->.points;\n.points out body 400;" in q
+    assert q.rstrip().endswith(")->.areas;\n.areas out body geom(37.5,22.0,37.75,22.25) 300;")
 
 
 async def test_fetch_tile_falls_back_to_second_endpoint():
@@ -183,7 +184,9 @@ async def test_fetch_tile_falls_back_to_second_endpoint():
             raise RuntimeError("504")
         return json.dumps(FIXTURE)
 
-    sights = await NatureSource(fetch=fetch).fetch_tile(37.5, 22.0)
+    tile = await NatureSource(fetch=fetch).fetch_tile(37.5, 22.0)
+    assert isinstance(tile, Tile) and tile.truncated is False
+    sights = tile.sights
     assert [u for u, _ in calls] == ENDPOINTS
     assert calls[0][1] == {"data": tile_query(37.5, 22.0)}
     assert "osm:node/1" in by_id(sights)
@@ -196,7 +199,7 @@ async def test_fetch_tile_first_endpoint_ok():
         calls.append(url)
         return json.dumps({"elements": []})
 
-    assert await NatureSource(fetch=fetch).fetch_tile(37.5, 22.0) == []
+    assert (await NatureSource(fetch=fetch).fetch_tile(37.5, 22.0)).sights == []
     assert calls == [ENDPOINTS[0]]
 
 
@@ -269,3 +272,82 @@ def test_merge_named_without_relation_keeps_first_id():
     (river,) = parse_overpass(data)
     assert river.id == "osm:way/5" and len(river.lines) == 2
     assert (river.lat, river.lon) == pytest.approx((37.15, 22.15))
+
+
+def test_park_relation_does_not_swallow_river_way():
+    data = {"elements": [
+        river_way(101, [(37.50, 22.00), (37.55, 22.05)], name="Ladonas"),
+        {"type": "relation", "id": 7, "tags": {"boundary": "protected_area", "name": "Park"},
+         "bounds": {"minlat": 37.5, "minlon": 22.0, "maxlat": 37.6, "maxlon": 22.05},
+         "members": [{"type": "way", "ref": 101, "geometry": geom([(37.50, 22.00), (37.55, 22.05)])}]},
+    ]}
+    assert [s.id for s in parse_overpass(data)] == ["osm:way/101", "osm:relation/7"]
+
+
+def lousios_way(id_, points, wikidata=None, en="Lousios", name="Λούσιος"):
+    tags = {"waterway": "river", "name": name, "name:en": en}
+    if wikidata:
+        tags["wikidata"] = wikidata
+    return {"type": "way", "id": id_, "tags": tags, "geometry": geom(points)}
+
+
+def test_mixed_wikidata_and_names_merge_into_one_river_named_in_english():
+    data = {"elements": [
+        lousios_way(1, [(37.50, 22.00), (37.55, 22.05)], wikidata="Q1872337"),
+        lousios_way(2, [(37.55, 22.05), (37.60, 22.02)]),
+        lousios_way(3, [(37.60, 22.02), (37.70, 22.10)], wikidata="Q1872337", name=" λούσιος"),
+        {"type": "relation", "id": 9, "tags": {"waterway": "river", "name": "Λούσιος"},
+         "members": [{"type": "way", "ref": 99, "geometry": geom([(37.70, 22.10), (37.75, 22.12)])}]},
+    ]}
+    (river,) = parse_overpass(data)
+    assert (river.id, river.name, len(river.lines)) == ("osm:relation/9", "Lousios", 4)
+
+
+def test_same_name_different_wikidata_stay_apart():
+    data = {"elements": [lousios_way(1, [(37.0, 22.0), (37.1, 22.0)], wikidata="Q1"),
+                         lousios_way(2, [(37.2, 22.0), (37.3, 22.0)], wikidata="Q2")]}
+    assert [s.id for s in parse_overpass(data)] == ["osm:way/1", "osm:way/2"]
+
+
+def test_parse_tile_meta_carries_merge_keys():
+    tile = parse_tile({"elements": [lousios_way(1, [(37.0, 22.0), (37.1, 22.0)], wikidata="Q1")]})
+    assert tile.meta["osm:way/1"] == {"wd": "Q1", "name": "λούσιοσ", "en": True}  # casefold: final ς -> σ
+    assert tile.truncated is False
+
+
+def test_cap_lines_longest_first_resimplifies_and_drops_degenerate():
+    long = [[37.0 + i * 0.01, 22.0 + (0.01 if i % 2 else 0.0)] for i in range(1500)]
+    other = [[38.0 + i * 0.01, 22.0 + (0.01 if i % 2 else 0.0)] for i in range(800)]
+    out = cap_lines([[[1.0, 1.0], [1.0, 1.0]], other, long])
+    assert out[0] is long or out[0] == long
+    assert len(out) == 2 and 2 <= len(out[1]) <= 500 and out[1][0] == other[0] and out[1][-1] == other[-1]
+    assert sum(len(line) for line in out) <= 2000
+
+
+def _fetch_with(elements):
+    async def fetch(url, data):
+        return json.dumps({"elements": elements})
+    return fetch
+
+
+async def test_fetch_tile_flags_truncated_points():
+    tile = await NatureSource(fetch=_fetch_with([node(i, {"natural": "spring"}) for i in range(400)])).fetch_tile(
+        37.5, 22.0)
+    assert tile.truncated is True and len(tile.sights) == 400
+
+
+async def test_fetch_tile_flags_truncated_areas_only_at_cap():
+    def lake(i):
+        return {"type": "way", "id": i, "tags": {"natural": "water", "water": "lake", "name": f"L{i}"},
+                "geometry": geom([(37.0, 22.0), (37.1, 22.1)])}
+
+    assert (await NatureSource(fetch=_fetch_with([lake(i) for i in range(299)])).fetch_tile(37.5, 22.0)).truncated \
+        is False
+    assert (await NatureSource(fetch=_fetch_with([lake(i) for i in range(300)])).fetch_tile(37.5, 22.0)).truncated
+
+
+def test_wikipedia_url_encodes_unsafe_characters():
+    (s,) = parse_overpass({"elements": [node(1, {"natural": "peak",
+                                                 "wikipedia": 'en:Olympus (mountain) [x]"<>\\|{}`\tΌλυμπος'})]})
+    assert s.wikipedia == ("https://en.wikipedia.org/wiki/Olympus_%28mountain%29_%5Bx%5D%22%3C%3E%5C%7C%7B%7D%60%09"
+                           "Όλυμπος")

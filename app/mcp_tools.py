@@ -164,7 +164,7 @@ async def nature_sights(lat: float, lon: float, radius_km: float = 10, groups: l
     """
     from math import isfinite
 
-    from app.engine import nature_box, nature_groups
+    from app.engine import ZOOM_IN_FOR_NATURE, nature_box, nature_groups
     from app.geo import bbox_around
     from app.models import LatLon
 
@@ -177,7 +177,10 @@ async def nature_sights(lat: float, lon: float, radius_km: float = 10, groups: l
         b = bbox_around(LatLon(lat=lat, lon=lon), radius_km)
         box = nature_box(b.south, b.west, b.north, b.east)
     except ValueError as exc:
-        return json.dumps({"error": str(exc)})
+        message = str(exc)
+        if message == ZOOM_IN_FOR_NATURE:  # the box spans too many tiles (narrow longitudes up north)
+            message = "radius_km too large for this latitude"
+        return json.dumps({"error": message})
     return (await engine().nature(box, chosen)).model_dump_json()
 
 

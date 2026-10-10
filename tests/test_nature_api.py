@@ -4,12 +4,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.mcp_tools as tools
-from app.cache import DAY, DiskCache
+from app.cache import DAY, HOUR, DiskCache
 from app.config import Settings
-from app.engine import NATURE_UNAVAILABLE, Engine
+import app.engine as engine_module
+from app.engine import NATURE_TRUNCATED, NATURE_UNAVAILABLE, Engine
 from app.main import create_app
 from app.models import BBox, NatureSearch, Sight
-from app.sources.nature import NatureUnavailable
+from app.sources.nature import NatureUnavailable, Tile
 from app.wiring import build_engine
 
 
@@ -19,16 +20,18 @@ def sight(id_, kind="waterfall", lat=37.6, lon=22.2, lines=None):
 
 
 class FakeNature:
-    def __init__(self, tiles=None, fail=()):
+    def __init__(self, tiles=None, fail=(), truncated=(), meta=None):
         self.tiles = tiles or {}
         self.fail = set(fail)
+        self.truncated = set(truncated)
+        self.meta = meta or {}
         self.calls = []
 
     async def fetch_tile(self, south, west):
         self.calls.append((south, west))
         if (south, west) in self.fail:
             raise NatureUnavailable("busy")
-        return self.tiles.get((south, west), [])
+        return Tile(self.tiles.get((south, west), []), dict(self.meta), (south, west) in self.truncated)
 
 
 class Clock:
@@ -75,7 +78,7 @@ async def test_engine_merges_same_sight_lines_and_caps(settings):
                          (37.5, 22.25): [sight("osm:relation/9", "river", lat=1.0, lines=[line] * 30)]})
     result = await make_engine(settings, nature).nature(BOX, ALL)
     (river,) = result.sights
-    assert len(river.lines) == 40 and river.lat == 37.6
+    assert len(river.lines) == 40 and river.lat == pytest.approx(37.605)  # centre of the combined lines
 
 
 async def test_engine_merges_same_named_river_across_tiles(settings):
@@ -127,7 +130,7 @@ async def test_engine_limits_concurrency_to_two(settings):
             running["max"] = max(running["max"], running["now"])
             await asyncio.sleep(0.01)
             running["now"] -= 1
-            return []
+            return Tile([], {})
 
     await make_engine(settings, Slow()).nature(BBox(south=37.0, west=22.0, north=38.0, east=23.0), ALL)
     assert running["max"] == 2
@@ -236,3 +239,92 @@ async def test_mcp_nature_sights_errors(mcp_engine, kwargs):
     args = {"lat": 37.6, "lon": 22.2, **kwargs}
     out = json.loads(await tools.nature_sights(**args))
     assert "error" in out and mcp_engine.calls == []
+
+
+# --- fix round -----------------------------------------------------------------------------------------
+
+
+async def test_engine_truncated_tile_warns_and_is_cached_one_hour(settings):
+    clock = Clock()
+    nature = FakeNature({(37.5, 22.0): [sight("osm:node/1")]}, truncated={(37.5, 22.0)})
+    engine = make_engine(settings, nature, clock)
+    result = await engine.nature(BOX, ALL)
+    assert result.warnings == [NATURE_TRUNCATED]
+    assert NATURE_TRUNCATED == "Some nature sights were left out here – zoom in for more"
+    again = await engine.nature(BOX, ALL)  # cached, still warns
+    assert again.warnings == [NATURE_TRUNCATED] and len(nature.calls) == 2
+    clock.now += HOUR + 1
+    await engine.nature(BOX, ALL)
+    assert nature.calls.count((37.5, 22.0)) == 2 and nature.calls.count((37.5, 22.25)) == 1
+
+
+async def test_engine_cache_write_failure_still_answers(settings):
+    engine = make_engine(settings, FakeNature({(37.5, 22.0): [sight("osm:node/1")]}))
+
+    def broken(*args, **kwargs):
+        raise OSError("disk full")
+
+    engine.cache.set = broken
+    result = await engine.nature(BOX, ALL)
+    assert [s.id for s in result.sights] == ["osm:node/1"] and result.warnings == []
+
+
+@pytest.mark.parametrize("entry", [[{"id": "osm:node/1"}], {"sights": [{"bad": 1}]}, "junk", {"sights": "x"}])
+async def test_engine_corrupt_cache_entry_is_a_miss(settings, entry):
+    nature = FakeNature({(37.5, 22.0): [sight("osm:node/1")]})
+    engine = make_engine(settings, nature)
+    engine.cache.set("nature:v1:37.50_22.00", entry, DAY)
+    result = await engine.nature(BOX, ALL)
+    assert [s.id for s in result.sights] == ["osm:node/1"] and (37.5, 22.0) in nature.calls
+
+
+async def test_engine_semaphore_shared_across_requests_and_tiles_coalesced(settings):
+    import asyncio
+
+    running = {"now": 0, "max": 0}
+    calls = []
+
+    class Slow(FakeNature):
+        async def fetch_tile(self, south, west):
+            calls.append((south, west))
+            running["now"] += 1
+            running["max"] = max(running["max"], running["now"])
+            await asyncio.sleep(0.02)
+            running["now"] -= 1
+            return Tile([], {})
+
+    engine = make_engine(settings, Slow())
+    other = BBox(south=36.55, west=22.10, north=36.75, east=22.35)
+    await asyncio.gather(engine.nature(BOX, ALL), engine.nature(BOX, ALL), engine.nature(other, ALL))
+    assert running["max"] == 2
+    assert sorted(calls) == [(36.5, 22.0), (36.5, 22.25), (37.5, 22.0), (37.5, 22.25)]  # BOX fetched once
+
+
+async def test_engine_tile_deadline(settings, monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(engine_module, "NATURE_TILE_DEADLINE_S", 0.01)
+
+    class Hang(FakeNature):
+        async def fetch_tile(self, south, west):
+            await asyncio.sleep(1)
+            return Tile([], {})
+
+    result = await make_engine(settings, Hang()).nature(BOX, ALL)
+    assert result.warnings == [NATURE_UNAVAILABLE]
+
+
+async def test_engine_merges_across_tiles_by_wikidata_and_prefers_english_name(settings):
+    a = sight("osm:way/1", "river", lines=[[[37.6, 22.2], [37.7, 22.24]]])
+    b = sight("osm:relation/2", "river", lon=22.3, lines=[[[37.7, 22.26], [37.74, 22.3]]])
+    a.name, b.name = "Lousios", "Λούσιος"
+    meta = {"osm:way/1": {"wd": "Q1872337", "name": "λούσιος", "en": True},
+            "osm:relation/2": {"wd": None, "name": "λούσιος", "en": False}}
+    nature = FakeNature({(37.5, 22.0): [a], (37.5, 22.25): [b]}, meta=meta)
+    (river,) = (await make_engine(settings, nature).nature(BOX, ALL)).sights
+    assert (river.id, river.name) == ("osm:relation/2", "Lousios")
+
+
+async def test_mcp_nature_sights_box_too_big_for_latitude(mcp_engine):
+    out = json.loads(await tools.nature_sights(80.0, 22.2, radius_km=30))
+    assert out == {"error": "radius_km too large for this latitude"} and mcp_engine.calls == []

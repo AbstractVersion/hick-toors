@@ -1,9 +1,12 @@
 """Natural sights from OpenStreetMap through the Overpass API, one 0.25° tile per query."""
 
+import asyncio
 import json
 import math
 import re
 import sys
+import unicodedata
+from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
 import httpx
@@ -16,7 +19,8 @@ USER_AGENT = "hick-toors/1.0 (personal hiking planner)"
 TIMEOUT_S = 40.0
 TILE_DEG = 0.25
 MAX_TILES = 16
-MAX_ELEMENTS = 600
+MAX_POINT_ELEMENTS = 400  # nodes per tile (Overpass output cap)
+MAX_AREA_ELEMENTS = 300  # ways + relations per tile
 TOLERANCE_DEG = 0.0005
 MAX_LINES = 40
 MAX_POINTS = 2000
@@ -79,12 +83,15 @@ def tile_query(south: float, west: float) -> str:
 
     `out body geom`, not the spec's `out tags center geom`: probed 2026-10-10, `tags` drops relation members
     (so no river/protected-area lines) and `geom` overrides `center` anyway (positions come from `bounds`).
+    Points and areas are capped separately so a forest-heavy tile can't push out the springs; hitting a
+    cap marks the tile truncated (see parse_tile).
     """
     box = _box(south, west)
-    lines = [f"  node{f}{box};" for f in NODE_FILTERS]
-    lines += [f"  {t}{f}{box};" for t in ("way", "relation") for f in AREA_FILTERS]
-    return ("[out:json][timeout:25];\n(\n" + "\n".join(lines) + "\n);\n"
-            f"out body geom{box} {MAX_ELEMENTS};\n")
+    points = [f"  node{f}{box};" for f in NODE_FILTERS]
+    areas = [f"  {t}{f}{box};" for t in ("way", "relation") for f in AREA_FILTERS]
+    return ("[out:json][timeout:25];\n(\n" + "\n".join(points) + f"\n)->.points;\n"
+            f".points out body {MAX_POINT_ELEMENTS};\n(\n" + "\n".join(areas) + "\n)->.areas;\n"
+            f".areas out body geom{box} {MAX_AREA_ELEMENTS};\n")
 
 
 def _kind(t: dict) -> str | None:
@@ -170,13 +177,26 @@ def simplify(points: list, tol: float) -> list:
     return [p for p, k in zip(points, keep) if k]
 
 
+def _degenerate(line: list) -> bool:
+    return len(line) < 2 or all(p == line[0] for p in line)
+
+
 def cap_lines(lines: list) -> list:
-    """At most MAX_LINES lines and MAX_POINTS points per sight; lines that don't fit are skipped."""
+    """At most MAX_LINES lines and MAX_POINTS points per sight, longest lines first.
+
+    A line over the remaining point budget is simplified again with a doubled tolerance until it fits
+    (rather than dropped); lines of one repeated point are dropped.
+    """
     out, total = [], 0
-    for line in lines:
-        if len(out) >= MAX_LINES:
+    for line in sorted((ln for ln in lines if not _degenerate(ln)), key=len, reverse=True):
+        budget = MAX_POINTS - total
+        if len(out) >= MAX_LINES or budget < 2:
             break
-        if total + len(line) > MAX_POINTS:
+        tol = TOLERANCE_DEG
+        while len(line) > budget:  # ends: a large enough tolerance leaves only the two end points
+            tol *= 2
+            line = simplify(line, tol)
+        if _degenerate(line):
             continue
         out.append(line)
         total += len(line)
@@ -191,8 +211,16 @@ def _lines(el: dict) -> list:
                for seg in _segments(m.get("geometry"))]
     else:
         raw = []
-    simplified = (simplify(line, TOLERANCE_DEG) for line in raw)
-    return cap_lines([line for line in simplified if len(line) >= 2])
+    return cap_lines([simplify(line, TOLERANCE_DEG) for line in raw])
+
+
+def lines_centre(lines: list) -> tuple[float, float] | None:
+    """Centre of the bounds of all points of `lines` (None without points)."""
+    pts = [p for line in lines for p in line]
+    if not pts:
+        return None
+    lats, lons = [p[0] for p in pts], [p[1] for p in pts]
+    return (min(lats) + max(lats)) / 2, (min(lons) + max(lons)) / 2
 
 
 def _position(el: dict, lines: list) -> tuple[float, float] | None:
@@ -204,11 +232,7 @@ def _position(el: dict, lines: list) -> tuple[float, float] | None:
     b = el.get("bounds")
     if isinstance(b, dict) and _finite(b.get("minlat"), b.get("minlon"), b.get("maxlat"), b.get("maxlon")):
         return (b["minlat"] + b["maxlat"]) / 2, (b["minlon"] + b["maxlon"]) / 2
-    pts = [p for line in lines for p in line]
-    if pts:
-        lats, lons = [p[0] for p in pts], [p[1] for p in pts]
-        return (min(lats) + max(lats)) / 2, (min(lons) + max(lons)) / 2
-    return None
+    return lines_centre(lines)
 
 
 def _elevation(value) -> int | None:
@@ -216,71 +240,139 @@ def _elevation(value) -> int | None:
     return int(round(float(m.group(1)))) if m else None
 
 
+URL_UNSAFE = set('%?#()[]"<>\\|{}`')
+
+
+def _url_char(c: str) -> str:
+    if c == " ":
+        return "_"
+    if c in URL_UNSAFE or c.isspace() or unicodedata.category(c) == "Cc":
+        return "".join(f"%{b:02X}" for b in c.encode())
+    return c  # non-ASCII letters stay readable (browsers encode them)
+
+
 def _wikipedia(value) -> str | None:
     m = WIKIPEDIA_RE.match(str(value).strip()) if value else None
     if not m:
         return None
-    title = m.group(2).strip().replace("%", "%25").replace("?", "%3F").replace("#", "%23").replace(" ", "_")
+    title = "".join(_url_char(c) for c in m.group(2).strip())
     return f"https://{m.group(1)}.wikipedia.org/wiki/{title}" if title else None
 
 
-LINE_KINDS = {"river", "lake", "forest", "protected_area"}  # merged by name: one river is many OSM ways
+LINE_KINDS = {"river", "lake", "forest", "protected_area"}  # one river is many OSM ways: merged
 
 
-def merge_named(sights: list[Sight]) -> list[Sight]:
-    """Join line-kind sights sharing kind + name into one, at the place of the first.
+def _norm(name: str) -> str:
+    return unicodedata.normalize("NFC", name).casefold().strip()
 
-    The id (and the other fields) come from a relation when the group has one, else from the first sight;
-    its lines go first, then the others' (capped); the position is the centre of the combined lines' bounds.
+
+def default_meta(s: Sight) -> dict:
+    """Merge data for a sight without tags at hand: {"wd": wikidata id, "name": merge name, "en": has name:en}."""
+    return {"wd": None, "name": _norm(s.name), "en": False}
+
+
+def merge_named(sights: list[Sight], meta: dict[str, dict] | None = None) -> tuple[list[Sight], dict[str, dict]]:
+    """Join line-kind sights that are the same feature into one, at the place of the first.
+
+    Same feature = same kind and same wikidata id; a sight without wikidata joins the one wikidata group of
+    the same kind with its (normalised) name, else the name-only group. The id and the other fields come
+    from a relation when the group has one, else from the first sight; the display name from the first
+    member with a name:en; lines are joined (capped); the position is the centre of the combined lines.
+    Returns the sights and their merge data (for merging again across tiles).
     """
-    groups: dict[tuple[str, str], list[Sight]] = {}
+    meta = {s.id: (meta or {}).get(s.id) or default_meta(s) for s in sights}
+    name_wd: dict[tuple, set] = {}
+    for s in sights:
+        if s.kind in LINE_KINDS and meta[s.id]["wd"]:
+            name_wd.setdefault((s.kind, meta[s.id]["name"]), set()).add(meta[s.id]["wd"])
+
+    def key(s: Sight) -> tuple:
+        m = meta[s.id]
+        if m["wd"]:
+            return s.kind, "wd", m["wd"]
+        wds = name_wd.get((s.kind, m["name"]), set())
+        return (s.kind, "wd", next(iter(wds))) if len(wds) == 1 else (s.kind, "name", m["name"])
+
+    groups: dict[tuple, list[Sight]] = {}
     order: list = []
     for s in sights:
         if s.kind in LINE_KINDS:
-            key = (s.kind, s.name)
-            if key not in groups:
-                groups[key] = []
-                order.append(key)
-            groups[key].append(s)
+            k = key(s)
+            if k not in groups:
+                groups[k] = []
+                order.append(k)
+            groups[k].append(s)
         else:
             order.append(s)
-    out = []
+    out, out_meta = [], {}
     for item in order:
-        if isinstance(item, Sight):
-            out.append(item)
-            continue
-        group = groups[item]
+        group = [item] if isinstance(item, Sight) else groups[item]
         if len(group) == 1:
             out.append(group[0])
+            out_meta[group[0].id] = meta[group[0].id]
             continue
         main = next((s for s in group if s.id.startswith("osm:relation/")), group[0])
         rest = [s for s in group if s is not main]
+        members = [main] + rest
         lines = cap_lines(main.lines + [line for s in rest for line in s.lines])
-        update: dict = {"lines": lines}
-        pts = [p for line in lines for p in line]
-        if pts:
-            lats, lons = [p[0] for p in pts], [p[1] for p in pts]
-            update.update(lat=(min(lats) + max(lats)) / 2, lon=(min(lons) + max(lons)) / 2)
+        update: dict = {"lines": lines,
+                        "name": next((s.name for s in members if meta[s.id]["en"]), main.name)}
+        centre = lines_centre(lines)
+        if centre:
+            update.update(lat=centre[0], lon=centre[1])
         if main.wikipedia is None:
             update["wikipedia"] = next((s.wikipedia for s in rest if s.wikipedia), None)
         if main.elevation_m is None:
             update["elevation_m"] = next((s.elevation_m for s in rest if s.elevation_m is not None), None)
         out.append(main.model_copy(update=update))
-    return out
+        out_meta[main.id] = {"wd": next((meta[s.id]["wd"] for s in members if meta[s.id]["wd"]), None),
+                             "name": meta[main.id]["name"], "en": any(meta[s.id]["en"] for s in members)}
+    return out, out_meta
 
 
-def parse_overpass(data: dict) -> list[Sight]:
-    """Elements -> sights; ways that are members of a returned relation sight are dropped, then
-    same-named line kinds are merged (merge_named)."""
+@dataclass
+class Tile:
+    """One tile's sights, their merge data, and whether Overpass hit an output cap (some left out)."""
+
+    sights: list[Sight]
+    meta: dict[str, dict] = field(default_factory=dict)
+    truncated: bool = False
+
+    def to_cache(self) -> dict:
+        return {"sights": [s.model_dump(mode="json") for s in self.sights], "meta": self.meta,
+                "truncated": self.truncated}
+
+    @classmethod
+    def from_cache(cls, value) -> "Tile | None":
+        """None for anything that isn't a valid cache entry (old format, corrupt file)."""
+        if not isinstance(value, dict) or not isinstance(value.get("sights"), list):
+            return None
+        try:
+            sights = [Sight(**s) for s in value["sights"]]
+        except (TypeError, ValueError):
+            return None
+        meta = value.get("meta")
+        meta = {k: v for k, v in meta.items()
+                if isinstance(v, dict) and {"wd", "name", "en"} <= set(v)} if isinstance(meta, dict) else {}
+        return cls(sights, meta, bool(value.get("truncated")))
+
+
+def parse_tile(data: dict) -> Tile:
+    """Elements -> sights. A way that is a member of a returned relation of the same kind is dropped (the
+    relation stands for it), then same-feature line kinds are merged (merge_named)."""
     elements = [el for el in data.get("elements") or [] if isinstance(el, dict)]
-    in_relation = {m.get("ref") for el in elements
-                   if el.get("type") == "relation" and isinstance(el.get("tags"), dict) and _kind(el["tags"])
-                   for m in el.get("members") or [] if isinstance(m, dict) and m.get("type") == "way"}
-    sights = []
+    relation_kinds: dict = {}  # way id -> kinds of the relations it belongs to
     for el in elements:
-        if el.get("type") == "way" and el.get("id") in in_relation:
-            continue
-        if not isinstance(el, dict) or el.get("type") not in ("node", "way", "relation"):
+        kind = _kind(el["tags"]) if el.get("type") == "relation" and isinstance(el.get("tags"), dict) else None
+        if kind:
+            for m in el.get("members") or []:
+                if isinstance(m, dict) and m.get("type") == "way":
+                    relation_kinds.setdefault(m.get("ref"), set()).add(kind)
+    nodes = sum(1 for el in elements if el.get("type") == "node")
+    truncated = nodes >= MAX_POINT_ELEMENTS or len(elements) - nodes >= MAX_AREA_ELEMENTS
+    sights, meta = [], {}
+    for el in elements:
+        if el.get("type") not in ("node", "way", "relation"):
             continue
         if not isinstance(el.get("id"), int) or not isinstance(el.get("tags"), dict):
             continue
@@ -288,17 +380,27 @@ def parse_overpass(data: dict) -> list[Sight]:
         kind = _kind(tags)
         if kind is None:
             continue
+        if el["type"] == "way" and kind in relation_kinds.get(el["id"], ()):
+            continue
         lines = _lines(el)
         pos = _position(el, lines)
         if pos is None:
             continue
-        name = (str(tags.get("name:en") or "").strip() or str(tags.get("name") or "").strip()
-                or SIGHT_LABELS[kind])
+        name_en, name_local = str(tags.get("name:en") or "").strip(), str(tags.get("name") or "").strip()
+        name = (name_en or name_local or SIGHT_LABELS[kind])[:MAX_NAME]
+        sight_id = f"osm:{el['type']}/{el['id']}"
         sights.append(Sight(
-            id=f"osm:{el['type']}/{el['id']}", name=name[:MAX_NAME], kind=kind, lat=pos[0], lon=pos[1],
+            id=sight_id, name=name, kind=kind, lat=pos[0], lon=pos[1],
             elevation_m=_elevation(tags.get("ele")), url=f"{OSM_URL}/{el['type']}/{el['id']}",
             wikipedia=_wikipedia(tags.get("wikipedia")), lines=lines))
-    return merge_named(sights)
+        meta[sight_id] = {"wd": str(tags.get("wikidata") or "").strip() or None,
+                          "name": _norm(name_local or name_en or name), "en": bool(name_en)}
+    sights, meta = merge_named(sights, meta)
+    return Tile(sights, meta, truncated)
+
+
+def parse_overpass(data: dict) -> list[Sight]:
+    return parse_tile(data).sights
 
 
 def make_fetch(transport: httpx.AsyncBaseTransport | None = None) -> FetchText:
@@ -316,7 +418,7 @@ class NatureSource:
     def __init__(self, fetch: FetchText | None = None):
         self._fetch = fetch or make_fetch()
 
-    async def fetch_tile(self, south: float, west: float) -> list[Sight]:
+    async def fetch_tile(self, south: float, west: float) -> Tile:
         """All sights of one tile; tries each endpoint in turn, NatureUnavailable when none answers."""
         query = tile_query(south, west)
         for url in ENDPOINTS:
@@ -332,5 +434,5 @@ class NatureSource:
             if "error" in remark.lower():  # e.g. a timeout mid-query: partial results must not be cached
                 print(f"overpass {url}: {remark[:200]}", file=sys.stderr)
                 continue
-            return parse_overpass(data)
+            return await asyncio.to_thread(parse_tile, data)  # big tiles: keep the event loop free
         raise NatureUnavailable("Overpass did not answer")
