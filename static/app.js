@@ -182,11 +182,12 @@ function notices(list) {
     box.appendChild(div);
   }
 }
-async function api(path, body, method) {
+async function api(path, body, method, signal) {
   const res = await fetch(path, {
     method: method || (body ? "POST" : "GET"),
     headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
+    signal,
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {

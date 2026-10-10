@@ -843,6 +843,12 @@ def main() -> None:
         expect(page.locator("#trip-sights-spin")).to_be_visible()
         for busy in busy_ids:
             expect(page.locator(busy)).to_be_disabled()
+        # The editor is locked while the search runs: item buttons, prices and fields can't change.
+        expect(page.locator("#trip-hikes li").first.get_by_role("button", name=re.compile("^Remove"))).to_be_disabled()
+        expect(page.locator("#trip-stays .price-edit input").first).to_be_disabled()
+        expect(page.locator("#trip-notes")).not_to_be_editable()
+        expect(page.locator("#trip-name")).not_to_be_editable()
+        expect(page.locator("#trip-dog")).to_be_disabled()
         trip_url = f"{BASE}/api/saved-trips/{trip_id}"
         assert sent.index(("PUT", trip_url)) < sent.index(("POST", f"{trip_url}/nearby-sights")), sent
         assert nearby_held[0].request.post_data_json == {"radius_km": 5}, nearby_held[0].request.post_data
@@ -854,10 +860,14 @@ def main() -> None:
         expect(sights_ul).to_have_count(2)
         expect(sights_ul.nth(0)).to_contain_text("💧 Test falls")
         expect(sights_ul.nth(1)).to_contain_text("Test river")
-        expect(page.locator("#trip-sights-info")).to_have_text(f"Added 2 nature sights within 5 km · {spread}")
+        expect(page.locator("#trip-sights-info")).to_have_text(f"Added 2 new sights (3 found within 5 km) · {spread}")
         expect(page.locator("#trip-sights-spin")).to_be_hidden()
         for busy in busy_ids:
             expect(page.locator(busy)).to_be_enabled()
+        expect(page.locator("#trip-hikes li").first.get_by_role("button", name=re.compile("^Remove"))).to_be_enabled()
+        expect(page.locator("#trip-hikes li").first.get_by_role("button", name=re.compile("^Move up"))).to_be_disabled()
+        expect(page.locator("#trip-notes")).to_be_editable()
+        expect(page.locator("#trip-dog")).to_be_enabled()
         print("PASS 🌿 Find nearby sights saves first, disables buttons, lists the added sights with the info line")
 
         nearby_click()
@@ -866,8 +876,8 @@ def main() -> None:
         expect(page.locator("#trip-sights-info")).to_have_text("No new named sights within 5 km")
         expect(sights_ul).to_have_count(2)  # saved by this click's PUT, so the stored trip now holds them
         nearby_click()
-        nearby_answer({"detail": "Add a hike or stay first"}, status=422)
-        expect(page.locator("#trips-error")).to_have_text("Add a hike or stay first")
+        nearby_answer({"detail": "Wait a moment before searching this trip again"}, status=429)
+        expect(page.locator("#trips-error")).to_have_text("Wait a moment before searching this trip again")
         expect(page.locator("#trip-find-sights")).to_be_enabled()
         nearby_click()  # stale: the editor closes before the answer
         page.click("#trip-back")

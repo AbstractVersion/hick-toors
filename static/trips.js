@@ -221,6 +221,7 @@ function renderTripItems() {
       ul.appendChild(li);
     });
   }
+  lockEditor();
 }
 // Every stay shows its total price; EUR (or unpriced) stays can be edited – typed prices are EUR, saved with
 // Save changes. Prices in another currency are shown read-only.
@@ -266,12 +267,30 @@ function lookupFields() {
   return { start: start || null, end: end || null,
     guests: Math.min(16, Math.max(1, Math.round(Number($("trip-guests").value)) || 1)), dog: $("trip-dog").checked };
 }
-// Save / Export / PDF / ＋ Add / Find nearby sights are disabled while a save, a lookup or a sights search runs.
+// Save / Export / PDF / ＋ Add / Find nearby sights are disabled while a save, a lookup or a sights search runs,
+// and the editor is locked (fields read-only, item buttons and prices disabled) so nothing typed is lost when
+// the answer replaces the trip.
 function setBusy(delta) {
   trips.busy += delta;
   for (const id of ["trip-save", "trip-export", "trip-pdf", "trip-airbnb-add", "trip-find-sights"]) {
     $(id).disabled = trips.busy > 0;
   }
+  lockEditor();
+}
+const LOCKED_FIELDS = ["trip-name", "trip-start", "trip-end", "trip-guests", "trip-notes"];
+function lockEditor() {
+  const locked = trips.busy > 0;
+  for (const el of document.querySelectorAll("#trip-editor .trip-items button, #trip-editor .trip-items input")) {
+    if (locked && !el.disabled) {
+      el.disabled = true;
+      el.dataset.locked = "1";  // only these are re-enabled: ↑ on the first row etc. stay disabled
+    } else if (!locked && el.dataset.locked) {
+      el.disabled = false;
+      delete el.dataset.locked;
+    }
+  }
+  for (const id of LOCKED_FIELDS) $(id).readOnly = locked;
+  $("trip-dog").disabled = locked;
 }
 const editorOpen = (id) => trips.current?.id === id && !$("trip-editor").hidden && $("trips-dialog").open;
 async function addAirbnbLink() {
@@ -307,6 +326,7 @@ async function addAirbnbLink() {
 }
 // 🌿 Find nearby sights: save what is on screen, then let the server add every named sight near the trip.
 const NEARBY_KM = 5;
+const NEARBY_TIMEOUT_MS = 150000;  // the server gives up on Overpass after 120 s
 function showSightsInfo(messages) {
   const text = (messages || []).join(" · ");
   $("trip-sights-info").textContent = text;
@@ -314,23 +334,37 @@ function showSightsInfo(messages) {
 }
 async function findNearbySights() {
   if (!trips.current || trips.busy) return;
+  // Validate before locking: read-only and disabled fields are skipped by the browser's validity check.
+  if (!$("trip-editor").checkValidity()) {
+    $("trip-editor").reportValidity();
+    showTripsError("Fix the highlighted field first");
+    return;
+  }
   const tripId = trips.current.id;
   showTripsError("");
   showSightsInfo([]);
   $("trip-sights-spin").hidden = false;
   setBusy(1);
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), NEARBY_TIMEOUT_MS);
   try {
     if (!(await persistTrip()) || !editorOpen(tripId)) return;
-    const res = await api(tripPath(tripId, "/nearby-sights"), { radius_km: NEARBY_KM });
+    let res;
+    try {
+      res = await api(tripPath(tripId, "/nearby-sights"), { radius_km: NEARBY_KM }, "POST", abort.signal);
+    } catch (err) {
+      throw err.name === "AbortError" ? new Error("Search took too long – try again") : err;
+    }
     if (!editorOpen(tripId)) return;  // the editor moved to another trip or closed meanwhile
     trips.current = res.trip;
     renderTripItems();
-    showSightsInfo([res.added > 0 ? `Added ${plural(res.added, "nature sight")} within ${NEARBY_KM} km`
+    showSightsInfo([res.added > 0 ? `Added ${plural(res.added, "new sight")} (${res.found} found within ${NEARBY_KM} km)`
       : `No new named sights within ${NEARBY_KM} km`, ...(res.warnings || [])]);
-    await refreshTrips();
+    refreshTrips().catch(() => {});  // only the list count: the sights are saved, don't report a failure here
   } catch (err) {
     if (editorOpen(tripId)) showTripsError(err.message);
   } finally {
+    clearTimeout(timer);
     $("trip-sights-spin").hidden = true;
     setBusy(-1);
   }
