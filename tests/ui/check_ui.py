@@ -1,11 +1,12 @@
-"""Headless-Chrome check of the filter popups, results, Trip picks and saved trips (not collected by pytest).
+"""Headless-Chrome check of the filter popups, results, Trip picks, saved trips and the 🌿 Nature layer
+(not collected by pytest).
 
 Start the app first with a throwaway trips database, then run the check against it:
     TRIPS_DB=$(mktemp -d)/trips.db env -u VIRTUAL_ENV uv run uvicorn app.main:app --port 8765
     env -u VIRTUAL_ENV uv run --with playwright python tests/ui/check_ui.py http://127.0.0.1:8765
 
 The script talks only to the local server. Search endpoints are answered by Playwright with
-canned JSON, so no Wikiloc/Airbnb/Booking request is made; the captured request bodies are
+canned JSON, so no Wikiloc/Airbnb/Booking/Overpass request is made; the captured request bodies are
 asserted instead. The saved-trips API (/api/saved-trips...) is NOT mocked: the trips scenario
 creates, edits, exports and deletes a real trip, so it refuses to run unless the trips list is empty.
 """
@@ -13,6 +14,7 @@ creates, edits, exports and deletes a real trip, so it refuses to run unless the
 import json
 import re
 import sys
+from urllib.parse import parse_qs, urlsplit
 
 from playwright.sync_api import expect, sync_playwright
 
@@ -36,6 +38,13 @@ LINKED_STAY = {"id": "airbnb:576031322358400592", "source": "airbnb", "name": "B
                "photo": None, "pets_allowed": False, "has_garden": True, "badge": None, "distance_km": None}
 PRICE_NOT_FOUND = "Price not found for these dates – you can type it in"
 LOCATE_RE = re.compile(r".*/api/locate(\?.*)?$")
+WATERFALL = {"id": "osm:node/1", "name": "Test falls", "kind": "waterfall", "lat": 38.48, "lon": 22.72,
+             "elevation_m": 420, "url": "https://www.openstreetmap.org/node/1",
+             "wikipedia": "https://en.wikipedia.org/wiki/Test_falls", "lines": []}
+RIVER = {"id": "osm:way/2", "name": "Test river", "kind": "river", "lat": 38.56, "lon": 22.55, "elevation_m": None,
+         "url": "https://www.openstreetmap.org/way/2", "wikipedia": None,
+         "lines": [[[38.55, 22.50], [38.56, 22.55], [38.57, 22.60]]]}
+NATURE_DOWN = "Nature sights unavailable for part of the map – try again in a minute"
 # Set by the Load more step: hikes answers then carry a total and a next page.
 paging = {"on": False}
 
@@ -105,6 +114,22 @@ def main() -> None:
             if path != "/api/locate":
                 page.route(f"**{path}", answer)
         page.route(LOCATE_RE, answer)
+
+        # 🌿 Nature: GET /api/nature answered with canned sights; query params recorded; can be held.
+        nature_reqs: list[dict] = []
+        nature_held: list = []
+        nature_cfg = {"hold": False, "payload": None, "status": 200}
+
+        def nature_answer(route):
+            query = {k: v[0] for k, v in parse_qs(urlsplit(route.request.url).query).items()}
+            nature_reqs.append(query)
+            if nature_cfg["hold"]:
+                nature_held.append(route)
+                return
+            payload = nature_cfg["payload"] or {"sights": [WATERFALL, RIVER], "warnings": []}
+            route.fulfill(status=nature_cfg["status"], content_type="application/json", body=json.dumps(payload))
+
+        page.route("**/api/nature**", nature_answer)
 
         def load(clear: bool = False) -> None:
             page.goto(BASE)
@@ -771,6 +796,193 @@ def main() -> None:
         page.click("#trips-close")
         expect(dlg).to_be_hidden()
         print("PASS Delete needs two clicks; list empty, count (0)")
+
+        # ---- 🌿 Nature layer (canned /api/nature; the trip part uses the real saved-trips API) ----
+        def nature_settle(ms: int = 900) -> None:
+            page.wait_for_timeout(ms)  # longer than the 600 ms debounce
+
+        def wait_nature(count: int) -> dict:
+            for _ in range(60):
+                if len(nature_reqs) >= count:
+                    return nature_reqs[count - 1]
+                page.wait_for_timeout(100)
+            raise SystemExit(f"FAIL expected {count} nature requests, have {len(nature_reqs)}")
+
+        def wait_nature_held(count: int) -> None:
+            for _ in range(40):
+                if len(nature_held) >= count:
+                    return
+                page.wait_for_timeout(100)
+            raise SystemExit(f"FAIL expected {count} held nature requests, have {len(nature_held)}")
+
+        sight_pins = page.locator(".leaflet-marker-icon.pin.sight:not(.trip-sight)")
+        page.evaluate("map.setView([38.5, 22.6], 7, {animate: false})")
+        nature_settle()
+        assert not nature_reqs, nature_reqs  # toggle off: no request
+        expect(page.locator("#nature-chips")).to_be_hidden()
+        page.click("#nature-btn")
+        expect(page.locator("#nature-btn")).to_have_class(re.compile(r"\bactive\b"))
+        expect(page.locator("#nature-chips")).to_be_visible()
+        expect(page.locator("#nature-hint")).to_be_visible()
+        expect(page.locator("#nature-hint")).to_have_text("Zoom in to see nature sights")
+        nature_settle()
+        assert not nature_reqs, nature_reqs
+        print("PASS 🌿 Nature on at low zoom: hint, chips, no request")
+
+        page.evaluate("map.setView([38.52, 22.62], 12, {animate: false})")
+        q = wait_nature(1)
+        expect(sight_pins).to_have_count(2)
+        expect(page.locator("#nature-hint")).to_be_hidden()
+        assert q["groups"] == "water,landforms,views,protected", q
+        view = page.evaluate("(() => { const b = map.getBounds(); return {s: b.getSouth(), w: b.getWest(), "
+                             "n: b.getNorth(), e: b.getEast()}; })()")
+        s_, w_, n_, e_ = (float(q[k]) for k in ("south", "west", "north", "east"))
+        pad_lat, pad_lon = (view["n"] - view["s"]) * 0.1, (view["e"] - view["w"]) * 0.1
+        assert abs(s_ - (view["s"] - pad_lat)) < 1e-3 and abs(n_ - (view["n"] + pad_lat)) < 1e-3, (q, view)
+        assert abs(w_ - (view["w"] - pad_lon)) < 1e-3 and abs(e_ - (view["e"] + pad_lon)) < 1e-3, (q, view)
+        assert page.evaluate("nature.layer.getLayers().filter((l) => l instanceof L.Polyline).length") == 1
+        expect(page.locator('#map path[stroke="#3b7dd8"]')).to_have_count(1)
+        nature_settle()
+        assert len(nature_reqs) == 1, nature_reqs  # moveend + zoomend debounced into one request
+        expect(page.locator(".leaflet-control-attribution")).to_contain_text("Nature sights © OpenStreetMap")
+        print("PASS zoom ≥ 10: one request with all groups and the padded bbox; pins + river line drawn")
+
+        page.click('.nature-chip[data-group="views"]')
+        expect(page.locator('.nature-chip[data-group="views"]')).to_have_attribute("aria-pressed", "false")
+        q = wait_nature(2)
+        assert q["groups"] == "water,landforms,protected", q
+        print("PASS chip off: request without that group")
+
+        before = len(nature_reqs)
+        for _ in range(5):
+            page.evaluate("map.panBy([40, 0], {animate: false})")
+            page.wait_for_timeout(100)
+        nature_settle()
+        assert len(nature_reqs) == before + 1, nature_reqs[before:]
+        print("PASS panning quickly makes one request (debounce)")
+
+        # A stale answer is ignored: the newer request answers first, the older one afterwards.
+        nature_cfg["hold"] = True
+        page.evaluate("map.panBy([-100, 0], {animate: false})")
+        wait_nature_held(1)
+        expect(page.locator('[data-spin="nature"]')).to_be_visible()
+        page.evaluate("map.panBy([-100, 0], {animate: false})")
+        wait_nature_held(2)
+        nature_cfg["hold"] = False
+        nature_held.pop(1).fulfill(status=200, content_type="application/json",
+                                   body=json.dumps({"sights": [WATERFALL], "warnings": []}))
+        expect(sight_pins).to_have_count(1)
+        expect(page.locator('[data-spin="nature"]')).to_be_hidden()
+        nature_held.pop(0).fulfill(status=200, content_type="application/json",
+                                   body=json.dumps({"sights": [WATERFALL, RIVER], "warnings": []}))
+        page.wait_for_timeout(300)
+        expect(sight_pins).to_have_count(1)
+        print("PASS a stale nature answer is ignored; spinner chip while loading")
+
+        # Warnings: shown once, not repeated while panning; "Zoom in" (422) shows the hint.
+        nature_cfg["payload"] = {"sights": [WATERFALL, RIVER], "warnings": [NATURE_DOWN]}
+        before = len(nature_reqs)
+        page.evaluate("map.panBy([60, 0], {animate: false})")
+        wait_nature(before + 1)
+        expect(page.locator("#notices")).to_contain_text(NATURE_DOWN)
+        page.evaluate("notices(['other notice'])")
+        page.evaluate("map.panBy([60, 0], {animate: false})")
+        wait_nature(before + 2)
+        page.wait_for_timeout(300)
+        expect(page.locator("#notices")).to_have_text("other notice")
+        nature_cfg.update(payload={"detail": "Zoom in to see nature sights"}, status=422)
+        page.evaluate("map.panBy([60, 0], {animate: false})")
+        wait_nature(before + 3)
+        expect(page.locator("#nature-hint")).to_be_visible()
+        expect(sight_pins).to_have_count(0)
+        expect(page.locator("#notices")).not_to_contain_text("Zoom in")
+        nature_cfg.update(payload=None, status=200)
+        print("PASS nature warning shown once (no spam); 422 Zoom in shows the hint")
+
+        page.evaluate("map.setView([38.52, 22.62], 12, {animate: false})")
+        expect(sight_pins).to_have_count(2)
+        expect(page.locator("#search")).to_be_enabled()
+        page.check('input[name="mode"][value="near_home"]')
+        page.click("#search")
+        expect(page.locator("#hike-list li")).to_have_count(1)
+        expect(page.locator("#search-all")).to_be_enabled()
+        page.click("#search-all")
+        expect(page.locator("#hike-list li")).to_have_count(1)
+        expect(page.locator("#search-all")).to_be_enabled()
+        page.evaluate("map.setView([38.52, 22.62], 12, {animate: false})")
+        nature_settle()
+        expect(sight_pins).to_have_count(2)
+        assert page.evaluate("nature.layer.getLayers().length") == 3
+        print("PASS Search hikes / Search all keep the nature pins")
+
+        # ＋ Trip on the waterfall popup → New trip; again → Already in.
+        get_trip = "(id) => fetch(`/api/saved-trips/${encodeURIComponent(id)}`).then((r) => r.json())"
+        sight_pins.filter(has_text="💧").click()
+        popup = page.locator(".leaflet-popup")
+        expect(popup).to_contain_text("Test falls")
+        expect(popup).to_contain_text("Waterfall · 420 m")
+        expect(popup.locator("a", has_text="↗ OpenStreetMap")).to_have_attribute("href", WATERFALL["url"])
+        expect(popup.locator("a", has_text="↗ Wikipedia")).to_have_attribute("href", WATERFALL["wikipedia"])
+        expect(popup).to_contain_text("© OpenStreetMap contributors")
+        popup.locator(".add-trip").click()
+        expect(menu).to_be_visible()
+        expect(menu.locator("button")).to_have_count(1)  # no trips left: only ➕ New trip
+        menu.locator("button").first.click()
+        expect(page.locator("#notices")).to_contain_text("Added to “Test falls”")
+        expect(page.locator("#trips-count")).to_have_text("(1)")
+        sight_pins.filter(has_text="💧").click()
+        popup.locator(".add-trip").click()
+        menu.locator("button", has_text="Test falls").click()
+        expect(page.locator("#notices")).to_contain_text("Already in “Test falls”")
+        print("PASS ＋ Trip on a sight popup: new trip, then Already in")
+
+        page.click("#trips-btn")
+        expect(rows).to_have_count(1)
+        expect(rows.first).to_contain_text("0 hikes · 0 stays · 1 sight")
+        rows.first.click()
+        sights_ul = page.locator("#trip-sights li")
+        expect(sights_ul).to_have_count(1)
+        expect(sights_ul.first).to_contain_text("💧 Test falls")
+        expect(sights_ul.first.locator("a")).to_have_attribute("href", WATERFALL["url"])
+        expect(sights_ul.first.locator('button[title="Remove"]')).to_be_visible()
+        sight_trip_id = page.evaluate("fetch('/api/saved-trips').then((r) => r.json())")[0]["id"]
+        stored = page.evaluate(get_trip, sight_trip_id)
+        assert [x["id"] for x in stored["sights"]] == ["osm:node/1"] and stored["sights"][0]["lines"] == [], stored
+        with page.expect_download() as dl_info:
+            page.click("#trip-export")
+        with open(dl_info.value.path(), encoding="utf-8") as fh:
+            md = fh.read()
+        assert "## 🌿 Nature (1)" in md and "Test falls" in md, md
+        print("PASS editor lists the sight under 🌿 Nature; export has ## 🌿 Nature (1)")
+
+        page.click("#trip-show")
+        expect(dlg).to_be_hidden()
+        expect(page.locator(".leaflet-marker-icon.pin.trip-sight")).to_have_count(1)
+        nature_settle()
+        assert page.evaluate("nature.layer.getLayers().length") > 0  # Show on map leaves the nature layer
+        page.click("#nature-btn")  # off: layer, chips, attribution go; the trip's sight stays
+        expect(page.locator("#nature-chips")).to_be_hidden()
+        assert page.evaluate("nature.layer.getLayers().length") == 0
+        expect(page.locator(".leaflet-marker-icon.pin.trip-sight")).to_have_count(1)
+        expect(page.locator(".leaflet-control-attribution")).not_to_contain_text("Nature sights")
+        expect(page.locator("#search-all")).to_be_enabled()
+        page.click("#search-all")  # clearAll empties the trip sights
+        expect(page.locator(".leaflet-marker-icon.pin.trip-sight")).to_have_count(0)
+        print("PASS Show on map pins trip sights; toggle off clears the layer; clearAll drops trip sights")
+
+        page.click("#nature-btn")  # on again: toggle + chips persist across reloads
+        load()
+        expect(page.locator("#nature-btn")).to_have_class(re.compile(r"\bactive\b"))
+        expect(page.locator('.nature-chip[data-group="views"]')).to_have_attribute("aria-pressed", "false")
+        expect(page.locator('.nature-chip[data-group="water"]')).to_have_attribute("aria-pressed", "true")
+        page.evaluate("localStorage.setItem('hick-toors:nature-groups', '{bad')")
+        load()
+        expect(page.locator('.nature-chip[data-group="views"]')).to_have_attribute("aria-pressed", "true")
+        page.click("#nature-btn")
+        status = page.evaluate("(id) => fetch(`/api/saved-trips/${encodeURIComponent(id)}`, {method: 'DELETE'})"
+                               ".then((r) => r.status)", sight_trip_id)
+        assert status in (200, 204), status
+        print("PASS nature toggle + chips persisted; corrupt storage falls back to all groups")
 
         browser.close()
     if errors:

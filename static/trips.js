@@ -1,6 +1,7 @@
 "use strict";
-// Saved trips: ＋ Trip menu on hikes/stays, 💾 Save on Trip picks, and the 🧳 My trips dialog.
-// Loaded after app.js and uses its globals ($, esc, state, api, notices, dates, guests, clearAll, ...).
+// Saved trips: ＋ Trip menu on hikes/stays/nature sights, 💾 Save on Trip picks, and the 🧳 My trips dialog.
+// Loaded after app.js and nature.js and uses their globals ($, esc, state, api, notices, dates, guests, clearAll,
+// showTripSights, SIGHT_EMOJI, ...).
 const trips = { list: [], current: null, deleteTimer: null, busy: 0, saving: Promise.resolve() };
 const LAST_TRIP_KEY = "hick-toors:last-trip";
 
@@ -18,7 +19,9 @@ function formTripFields() {
   const { start, end } = dates();
   return { start: start || null, end: end || null, guests: guests(), dog: $("dog").checked };
 }
-function itemOf(kind, id) { return (kind === "hike" ? state.hikes : state.stays).get(id); }
+const ITEM_LIST = { hike: "hikes", stay: "stays", sight: "sights" };
+const ITEM_COUNT = { hike: "hike_count", stay: "stay_count", sight: "sight_count" };
+function itemOf(kind, id) { return ({ hike: state.hikes, stay: state.stays, sight: state.sights })[kind]?.get(id); }
 
 // ---- ＋ Trip (list items and map popups) ----
 function tripButton(kind, id) {
@@ -67,17 +70,17 @@ async function openTripMenu(button) {
 }
 async function newTripWith(kind, item) {
   const trip = await api("/api/saved-trips", { name: String(item.name || "New trip").slice(0, 120), ...formTripFields(),
-    hikes: kind === "hike" ? [item] : [], stays: kind === "stay" ? [item] : [] });
+    hikes: kind === "hike" ? [item] : [], stays: kind === "stay" ? [item] : [], sights: kind === "sight" ? [item] : [] });
   rememberTrip(trip.id);
   await refreshTrips();
   notices([`Added to “${trip.name}” – rename it in 🧳 My trips`]);
 }
 async function addToTrip(summary, kind, item) {
-  const before = kind === "hike" ? summary.hike_count : summary.stay_count;
+  const before = summary[ITEM_COUNT[kind]] ?? 0;
   const trip = await api(tripPath(summary.id, "/items"), { [kind]: item });
   rememberTrip(trip.id);
   await refreshTrips();
-  const after = (kind === "hike" ? trip.hikes : trip.stays).length;
+  const after = (trip[ITEM_LIST[kind]] || []).length;
   notices([after > before ? `Added to “${trip.name}”` : `Already in “${trip.name}”`]);
 }
 // Capture phase: a ＋ Trip click must not also select the hike / focus the stay underneath it.
@@ -153,7 +156,7 @@ function renderTripList(list) {
     strong.textContent = t.name;
     const meta = document.createElement("div");
     meta.className = "meta";
-    meta.textContent = `${tripDates(t)} · ${plural(t.hike_count, "hike")} · ${plural(t.stay_count, "stay")}${t.source === "suggested" ? " · ⭐" : ""}`;
+    meta.textContent = `${tripDates(t)} · ${plural(t.hike_count, "hike")} · ${plural(t.stay_count, "stay")}${t.sight_count > 0 ? ` · ${plural(t.sight_count, "sight")}` : ""}${t.source === "suggested" ? " · ⭐" : ""}`;
     li.append(strong, meta);
     li.addEventListener("click", () => openTrip(t.id));
     li.addEventListener("keydown", (e) => { if (e.key === "Enter") openTrip(t.id); });
@@ -178,10 +181,10 @@ async function openTrip(id) {
   $("trip-editor").hidden = false;
 }
 function renderTripItems() {
-  for (const kind of ["hikes", "stays"]) {
+  for (const kind of ["hikes", "stays", "sights"]) {
     const ul = $(`trip-${kind}`);
     ul.replaceChildren();
-    const items = trips.current[kind];
+    const items = trips.current[kind] || (trips.current[kind] = []);  // trips saved before sights existed
     if (!items.length) {
       const li = document.createElement("li");
       li.className = "list-note";
@@ -193,7 +196,7 @@ function renderTripItems() {
       const li = document.createElement("li");
       const safe = /^https?:\/\//i.test(String(item.url ?? ""));
       const label = document.createElement(safe ? "a" : "span");
-      label.textContent = item.name;
+      label.textContent = kind === "sights" ? `${SIGHT_EMOJI[item.kind] || "🌿"} ${item.name}` : item.name;
       if (safe) { label.href = item.url; label.target = "_blank"; label.rel = "noopener"; }
       const tools = document.createElement("span");
       tools.className = "item-tools";
@@ -308,7 +311,7 @@ function editorBody() {
   const t = trips.current;
   return { name: $("trip-name").value, start: $("trip-start").value || null, end: $("trip-end").value || null,
     guests: Math.min(16, Math.max(1, Math.round(Number($("trip-guests").value)) || 1)), dog: $("trip-dog").checked,
-    notes: $("trip-notes").value, source: t.source, score: t.score, hikes: t.hikes, stays: t.stays,
+    notes: $("trip-notes").value, source: t.source, score: t.score, hikes: t.hikes, stays: t.stays, sights: t.sights || [],
     expected_updated_at: t.updated_at };  // server answers 409 if another tab/visitor saved in between
 }
 // Saves run one after another (each PUT carries the updated_at the previous one returned).
@@ -359,13 +362,14 @@ function showTripOnMap() {
   clearAll();
   t.hikes.forEach(addHike);
   t.stays.forEach(addStay);
+  const sightMarkers = showTripSights(t.sights || []);  // after clearAll, which empties the previous trip's sights
   state.comboView = true;  // clicking a trip hike must not replace its stays with a new search
   $("hike-count").textContent = `(${state.hikes.size})`;
   $("stay-count").textContent = `(${state.stays.size})`;
   $("stay-note").textContent = `in trip “${name}”`;
   notices([`Showing trip “${name}”`]);
   $("trips-dialog").close();
-  fitAll();
+  fitLayers([...hikeLayer.getLayers(), ...stayLayer.getLayers(), ...sightMarkers]);
 }
 function resetDelete() {
   clearTimeout(trips.deleteTimer);

@@ -14,6 +14,7 @@
   <header id="controls">
     <strong class="brand">🥾 hick-toors</strong>
     <button type="button" id="trips-btn" class="tool-btn">🧳 My trips <span id="trips-count"></span></button>
+    <button type="button" id="nature-btn" class="tool-btn" aria-pressed="false" title="Show nature sights (OpenStreetMap) on the map">🌿 Nature</button>
     <span class="goto">📍 <input type="text" id="goto-input" maxlength="200" placeholder="Go to place… (Greek or English)">
       <button type="button" id="goto-btn" class="tool-btn">Go</button>
       <span class="spinner" data-spin="goto" role="status" aria-label="Looking up place" hidden></span></span>
@@ -54,7 +55,15 @@
         <div id="stay-note" class="list-note"></div><ul id="stay-list"></ul></section>
       <section id="combo-section" aria-busy="false" hidden><h2>⭐ Trip picks (hike + stay) <span id="combo-count"></span> <span class="spinner" data-spin="combos" role="status" aria-label="Planning trips" hidden></span></h2><ul id="combo-list"></ul></section>
     </aside>
-    <div id="map-wrap"><div id="map"></div><div id="draw-hint" hidden></div></div>
+    <div id="map-wrap"><div id="map"></div><div id="draw-hint" hidden></div>
+      <div id="nature-hint" class="map-hint" role="status" hidden>Zoom in to see nature sights</div>
+      <div id="nature-chips" role="group" aria-label="Nature sight categories" hidden>
+        <button type="button" class="nature-chip" data-group="water" aria-pressed="true">💧 Water</button>
+        <button type="button" class="nature-chip" data-group="landforms" aria-pressed="true">⛰️ Landforms</button>
+        <button type="button" class="nature-chip" data-group="views" aria-pressed="true">👁️ Views &amp; beaches</button>
+        <button type="button" class="nature-chip" data-group="protected" aria-pressed="true">🌲 Protected</button>
+        <span class="load-chip" data-spin="nature" role="status" hidden>Nature… <i class="spinner"></i></span>
+      </div></div>
   </main>
   <footer id="ask" aria-busy="false">
     <form id="ask-form">
@@ -72,7 +81,7 @@
     <div id="trips-error" class="notice" hidden></div>
     <div id="trips-list-view">
       <ul id="trips-list" class="trips-list"></ul>
-      <p id="trips-empty" class="list-note" hidden>No saved trips yet – use ＋ Trip on a hike or stay, or 💾 Save on a Trip pick.</p>
+      <p id="trips-empty" class="list-note" hidden>No saved trips yet – use ＋ Trip on a hike, stay or nature sight, or 💾 Save on a Trip pick.</p>
     </div>
     <form id="trip-editor" hidden>
       <button type="button" id="trip-back" class="link-btn">← All trips</button>
@@ -90,6 +99,7 @@
         <span class="spinner" id="trip-airbnb-spin" role="status" aria-label="Looking up the Airbnb listing" hidden></span>
       </div>
       <div id="trip-airbnb-info" class="list-note" role="status" hidden></div>
+      <h3>🌿 Nature</h3><ul id="trip-sights" class="trip-items"></ul>
       <label class="wide">📝 Notes <textarea id="trip-notes" maxlength="5000" rows="4"></textarea></label>
       <div class="dlg-actions">
         <button type="submit" id="trip-save" class="primary">Save changes</button>
@@ -105,6 +115,7 @@
   <script src="/static/filters.js"></script>
   <script src="/static/dialog.js"></script>
   <script src="/static/app.js"></script>
+  <script src="/static/nature.js"></script>
   <script src="/static/trips.js"></script>
 </body>
 </html>

@@ -90,7 +90,8 @@ class TripStore:
             rows = db.execute("SELECT id, doc FROM trips ORDER BY updated_at DESC, rowid DESC").fetchall()
         trips = [t for t in (self._parse(trip_id, doc) for trip_id, doc in rows) if t is not None]
         return [SavedTripSummary(id=t.id, name=t.name, start=t.start, end=t.end, source=t.source,
-                                 hike_count=len(t.hikes), stay_count=len(t.stays), updated_at=t.updated_at)
+                                 hike_count=len(t.hikes), stay_count=len(t.stays), sight_count=len(t.sights),
+                                 updated_at=t.updated_at)
                 for t in trips]
 
     def get(self, trip_id: str) -> SavedTrip | None:

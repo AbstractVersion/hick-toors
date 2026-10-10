@@ -329,6 +329,7 @@ function clearAll() {
   clearStays();
   state.markers.clear();
   state.items.clear();
+  window.clearTripSights?.();  // nature.js: a shown trip's sights go too; the 🌿 Nature layer stays
 }
 // "↗" link on a list item: opens the source page in a new tab without selecting the item.
 function openLink(url, label, title) {

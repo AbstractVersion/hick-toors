@@ -25,7 +25,8 @@ main { flex: 1; display: flex; min-height: 0; }
 .badge.garden_unconfirmed { background: #fff0cf; }
 #map-wrap { flex: 1; position: relative; display: flex; }
 #map { flex: 1; }
-#draw-hint { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 1000; padding: 6px 14px; border-radius: 16px; background: #1d2b24; color: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.3); pointer-events: none; }
+#nature-hint { top: 52px; }
+#draw-hint, #nature-hint { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 1000; padding: 6px 14px; border-radius: 16px; background: #1d2b24; color: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.3); pointer-events: none; }
 .draw-group { display: inline-flex; gap: 6px; align-items: center; }
 .tool-btn.active { background: #2f6f4e; color: #fff; border-color: #2f6f4e; }
 .pin { background: none; border: 0; }
@@ -110,3 +111,13 @@ main { flex: 1; display: flex; min-height: 0; }
 .dlg-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .dlg-actions .primary { padding: 6px 14px; border: 0; border-radius: 6px; background: #2f6f4e; color: #fff; cursor: pointer; }
 .tool-btn.danger { color: #a8322d; border-color: #e3b5b2; }
+#nature-chips { position: absolute; top: 64px; right: 10px; z-index: 1000; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; pointer-events: none; }
+#nature-chips[hidden], #nature-hint[hidden] { display: none; }
+#nature-chips > * { pointer-events: auto; }
+.nature-chip { padding: 3px 10px; border: 1px solid #c8d0c6; border-radius: 14px; background: #fff; color: #5d6b63; font: inherit; font-size: 12px; cursor: pointer; box-shadow: 0 1px 4px rgba(0,0,0,.2); }
+.nature-chip[aria-pressed="true"] { background: #2f6f4e; border-color: #2f6f4e; color: #fff; }
+#nature-chips .load-chip { box-shadow: 0 1px 4px rgba(0,0,0,.2); }
+.pin.sight span { font-size: 18px; }
+.popup .sight-kind { color: #5d6b63; }
+.popup .sight-links a { margin-right: 8px; }
+.popup .osm-credit { display: block; margin-top: 4px; color: #5d6b63; font-size: 11px; }

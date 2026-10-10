@@ -427,6 +427,7 @@ class SavedTripSummary(BaseModel):
     source: Literal["manual", "suggested"] = "manual"
     hike_count: int
     stay_count: int
+    sight_count: int = 0
     updated_at: datetime
 
 

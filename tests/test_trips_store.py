@@ -193,3 +193,10 @@ def test_add_sight_full_raises_sights_kind(store):
     with pytest.raises(TripFull) as exc:
         store.add_item(full_hikes.id, TripItemAdd(hike=hike(999)))
     assert exc.value.kind == "hikes"
+
+
+def test_list_counts_sights(store):
+    store.create(SavedTripIn(name="N", sights=[sight(1), sight(2)]))
+    store.create(SavedTripIn(name="H", hikes=[hike(1)]))
+    counts = {s.name: s.sight_count for s in store.list_trips()}
+    assert counts == {"N": 2, "H": 0}
