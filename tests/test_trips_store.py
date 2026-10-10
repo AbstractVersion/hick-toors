@@ -78,7 +78,17 @@ def test_add_item_full_raises_and_keeps_trip(store):
     with pytest.raises(TripFull):
         store.add_item(trip.id, TripItemAdd(stay=stay(999)))
     assert len(store.get(trip.id).stays) == MAX_ITEMS
-    store.add_item(trip.id, TripItemAdd(hike=hike(1)))  # hikes have their own limit
+    added = store.add_item(trip.id, TripItemAdd(hike=hike(1)))  # hikes have their own limit
+    assert [h.id for h in added.hikes] == ["wikiloc:1"]
+
+
+def test_concurrent_add_item_loses_nothing(store):
+    from concurrent.futures import ThreadPoolExecutor
+
+    trip = store.create(SavedTripIn(name="T"))
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        list(pool.map(lambda i: store.add_item(trip.id, TripItemAdd(hike=hike(i))), range(10)))
+    assert {h.id for h in store.get(trip.id).hikes} == {f"wikiloc:{i}" for i in range(10)}
 
 
 def test_persists_across_instances(tmp_path):

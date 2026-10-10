@@ -31,7 +31,8 @@ class TripStore:
         with self._db() as db:
             db.execute("CREATE TABLE IF NOT EXISTS trips ("
                        "id TEXT PRIMARY KEY, doc TEXT NOT NULL, updated_at TEXT NOT NULL)")
-            db.execute("PRAGMA user_version = 1")
+            if db.execute("PRAGMA user_version").fetchone()[0] == 0:
+                db.execute("PRAGMA user_version = 1")
 
     @contextmanager
     def _db(self):
@@ -74,6 +75,7 @@ class TripStore:
 
     def replace(self, trip_id: str, data: SavedTripIn) -> SavedTrip | None:
         with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")  # lock before reading: no lost updates
             old = self._load(db, trip_id)
             if old is None:
                 return None
@@ -89,6 +91,7 @@ class TripStore:
     def add_item(self, trip_id: str, item: TripItemAdd) -> SavedTrip | None:
         kind, value = ("hikes", item.hike) if item.hike is not None else ("stays", item.stay)
         with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")  # lock before reading: no lost updates, limit holds
             trip = self._load(db, trip_id)
             if trip is None:
                 return None
