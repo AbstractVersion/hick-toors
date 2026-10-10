@@ -75,6 +75,71 @@ def test_add_items_dedupe_and_full(tmp_path):
     assert r.json() == {"detail": "A trip holds at most 50 hikes and 50 stays"}
 
 
+def test_nan_coordinates_rejected_and_list_survives(tmp_path):
+    c, store = make(tmp_path)
+    ok = c.post("/api/saved-trips", json={"name": "ok", "hikes": [HIKE]}).json()
+    raw = '{"name": "poison", "hikes": [{"id": "w:9", "name": "n", "url": "u", "lat": NaN, "lon": 20.7}]}'
+    r = c.post("/api/saved-trips", content=raw, headers={"content-type": "application/json"})
+    assert r.status_code == 422 and "hikes.0: lat/lon must be finite coordinates" in r.text
+    raw_item = '{"stay": {"id": "a:9", "source": "airbnb", "name": "n", "url": "u", "lat": 1, "lon": 2,' \
+               ' "total_price": Infinity}}'
+    r = c.post(f"/api/saved-trips/{ok['id']}/items", content=raw_item, headers={"content-type": "application/json"})
+    assert r.status_code == 422 and "stay: total_price must be a finite number" in r.text
+    r = c.get("/api/saved-trips")
+    assert r.status_code == 200 and [t["id"] for t in r.json()] == [ok["id"]]
+
+
+def test_corrupt_row_is_skipped_404_and_deletable(tmp_path):
+    import sqlite3
+
+    c, store = make(tmp_path)
+    ok = c.post("/api/saved-trips", json={"name": "ok"}).json()
+    with sqlite3.connect(store.path) as db:
+        db.execute("INSERT INTO trips (id, doc, updated_at) VALUES ('bad', '{\"name\": null}', 'z')")
+    assert [t["id"] for t in c.get("/api/saved-trips").json()] == [ok["id"]]
+    assert c.get("/api/saved-trips/bad").status_code == 404
+    assert c.get("/api/saved-trips/bad/export.md").status_code == 404
+    assert c.delete("/api/saved-trips/bad").status_code == 204
+
+
+def test_size_caps(tmp_path):
+    c, _ = make(tmp_path)
+    fat = [{**HIKE, "id": f"wikiloc:{i}", "name": "x" * 6000} for i in range(50)]
+    r = c.post("/api/saved-trips", json={"name": "big", "hikes": fat})
+    assert r.status_code == 422 and "Trip is too large (max 256 KB)" in r.text
+    tid = c.post("/api/saved-trips", json={"name": "big", "hikes": fat[:40]}).json()["id"]
+    statuses = [c.post(f"/api/saved-trips/{tid}/items", json={"hike": h}) for h in fat[40:]]
+    too_large = [r for r in statuses if r.status_code == 413]
+    assert too_large and too_large[0].json() == {"detail": "Trip is too large (max 256 KB)"}
+    assert c.get(f"/api/saved-trips/{tid}").status_code == 200
+
+
+def test_trip_count_cap(tmp_path):
+    settings = Settings(_env_file=None, cache_dir=tmp_path, trips_db=tmp_path / "unused.db")
+    store = TripStore(tmp_path / "trips.db", max_trips=2)
+    c = TestClient(create_app(engine=FakeEngine(), ask_runner=FakeAsk(), settings=settings, trip_store=store))
+    assert [c.post("/api/saved-trips", json={"name": f"t{i}"}).status_code for i in range(2)] == [201, 201]
+    r = c.post("/api/saved-trips", json={"name": "t3"})
+    assert r.status_code == 409
+    assert r.json() == {"detail": "At most 500 saved trips – delete some first"}
+
+
+def test_put_expected_updated_at_detects_lost_edits(tmp_path):
+    c, _ = make(tmp_path)
+    trip = c.post("/api/saved-trips", json={"name": "t", "expected_updated_at": "2000-01-01T00:00:00Z"}).json()
+    assert trip["name"] == "t"  # POST ignores the field
+    tid = trip["id"]
+    tab_a = c.put(f"/api/saved-trips/{tid}", json={"name": "A", "expected_updated_at": trip["updated_at"]})
+    assert tab_a.status_code == 200
+    tab_b = c.put(f"/api/saved-trips/{tid}", json={"name": "B", "expected_updated_at": trip["updated_at"]})
+    assert tab_b.status_code == 409
+    assert tab_b.json() == {"detail": "Trip changed elsewhere – reopen it to see the latest version"}
+    assert c.get(f"/api/saved-trips/{tid}").json()["name"] == "A"
+    again = c.put(f"/api/saved-trips/{tid}", json={"name": "A2", "expected_updated_at": tab_a.json()["updated_at"]})
+    assert again.status_code == 200 and "expected_updated_at" not in again.json()
+    assert c.put(f"/api/saved-trips/{tid}", json={"name": "no check"}).status_code == 200
+
+
 def test_export_markdown(tmp_path):
     c, _ = make(tmp_path)
     tid = c.post("/api/saved-trips", json={"name": "Ζαγόρι weekend", "hikes": [HIKE]}).json()["id"]

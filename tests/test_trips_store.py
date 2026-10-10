@@ -1,7 +1,12 @@
+import json
+import sqlite3
+from datetime import timedelta, timezone
+
 import pytest
 
-from app.models import Hike, SavedTripIn, Stay, TripItemAdd
-from app.trips_store import MAX_ITEMS, TripFull, TripStore
+from app.models import MAX_TRIP_BYTES, Hike, SavedTripIn, Stay, TripItemAdd
+from app.trips_store import (MAX_ITEMS, MAX_TRIPS, TooManyTrips, TripConflict, TripFull, TripStore,
+                             TripTooLarge)
 
 
 def hike(i):
@@ -89,6 +94,73 @@ def test_concurrent_add_item_loses_nothing(store):
     with ThreadPoolExecutor(max_workers=10) as pool:
         list(pool.map(lambda i: store.add_item(trip.id, TripItemAdd(hike=hike(i))), range(10)))
     assert {h.id for h in store.get(trip.id).hikes} == {f"wikiloc:{i}" for i in range(10)}
+
+
+def _insert_raw(store, trip_id, doc, updated_at="2026-10-10T00:00:00.000000Z"):
+    with sqlite3.connect(store.path) as db:
+        db.execute("INSERT INTO trips (id, doc, updated_at) VALUES (?, ?, ?)", (trip_id, doc, updated_at))
+
+
+def test_corrupt_rows_are_skipped_not_fatal(store, capsys):
+    good = store.create(SavedTripIn(name="Good", hikes=[hike(1)]))
+    poisoned = json.loads(good.model_dump_json()) | {"id": "bad1", "name": "Bad"}
+    poisoned["hikes"][0]["lat"] = None  # what a stored NaN turns into
+    _insert_raw(store, "bad1", json.dumps(poisoned), "2099-01-01T00:00:00.000000Z")
+    _insert_raw(store, "bad2", "{not json")
+    assert [s.id for s in store.list_trips()] == [good.id]
+    err = capsys.readouterr().err
+    assert "bad1" in err and "bad2" in err and "ValidationError" in err
+    assert len(err.strip().splitlines()) == 2
+    assert store.get("bad1") is None and store.get("bad2") is None
+    assert store.replace("bad1", SavedTripIn(name="x")) is None
+    assert store.add_item("bad1", TripItemAdd(hike=hike(2))) is None
+    assert store.delete("bad1") is True and store.delete("bad2") is True
+    assert store.get(good.id) == good
+
+
+def test_add_item_cannot_grow_trip_past_size_cap(store):
+    def fat(i):
+        return hike(i).model_copy(update={"name": "x" * 6000})
+
+    trip = store.create(SavedTripIn(name="T", hikes=[fat(i) for i in range(40)]))
+    before = store.get(trip.id)
+    for i in range(40, 50):
+        try:
+            store.add_item(trip.id, TripItemAdd(hike=fat(i)))
+        except TripTooLarge:
+            break
+    else:
+        pytest.fail("TripTooLarge not raised")
+    after = store.get(trip.id)
+    assert len(after.model_dump_json(include=set(SavedTripIn.model_fields)).encode()) <= MAX_TRIP_BYTES
+    assert len(after.hikes) < 50 and len(after.hikes) >= len(before.hikes)
+    with pytest.raises(TripTooLarge):  # still too large: nothing stored
+        store.add_item(trip.id, TripItemAdd(hike=fat(99)))
+    assert store.get(trip.id) == after
+
+
+def test_create_caps_number_of_trips(tmp_path):
+    small = TripStore(tmp_path / "trips.db", max_trips=3)
+    trips = [small.create(SavedTripIn(name=f"T{i}")) for i in range(3)]
+    with pytest.raises(TooManyTrips):
+        small.create(SavedTripIn(name="one too many"))
+    assert len(small.list_trips()) == 3
+    small.delete(trips[0].id)
+    assert small.create(SavedTripIn(name="room again")).name == "room again"
+    assert MAX_TRIPS == 500
+
+
+def test_replace_with_expected_updated_at(store):
+    trip = store.create(SavedTripIn(name="T"))
+    same_moment = trip.updated_at.astimezone(timezone(timedelta(hours=3)))  # equal datetime, other tz
+    first = store.replace(trip.id, SavedTripIn(name="A"), expected_updated_at=same_moment)
+    assert first.name == "A"
+    with pytest.raises(TripConflict):  # stale: still holds the pre-edit timestamp
+        store.replace(trip.id, SavedTripIn(name="B"), expected_updated_at=trip.updated_at)
+    assert store.get(trip.id).name == "A"
+    assert store.replace(trip.id, SavedTripIn(name="C"), expected_updated_at=first.updated_at).name == "C"
+    assert store.replace(trip.id, SavedTripIn(name="D")).name == "D"  # no expectation: last write wins
+    assert store.replace("missing", SavedTripIn(name="x"), expected_updated_at=trip.updated_at) is None
 
 
 def test_persists_across_instances(tmp_path):

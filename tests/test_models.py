@@ -211,3 +211,51 @@ def test_trip_item_add_needs_exactly_one():
         TripItemAdd()
     with pytest.raises(ValidationError, match="Give exactly one of hike or stay"):
         TripItemAdd(hike=_hike(), stay=_stay())
+
+
+@pytest.mark.parametrize("update, message", [
+    ({"lat": float("nan")}, "hikes.0: lat/lon must be finite coordinates"),
+    ({"lon": float("inf")}, "hikes.0: lat/lon must be finite coordinates"),
+    ({"lat": 91.0}, "hikes.0: lat/lon must be finite coordinates"),
+    ({"lon": -180.5}, "hikes.0: lat/lon must be finite coordinates"),
+    ({"distance_km": float("nan")}, "hikes.0: distance_km must be a finite number"),
+])
+def test_saved_trip_in_rejects_non_finite_hike_numbers(update, message):
+    bad = _hike().model_copy(update=update)  # Hike itself still accepts it (scrapers build Hikes)
+    with pytest.raises(ValidationError, match=message):
+        SavedTripIn(name="t", hikes=[bad])
+
+
+@pytest.mark.parametrize("update, message", [
+    ({"lat": float("-inf")}, "stays.1: lat/lon must be finite coordinates"),
+    ({"total_price": float("inf")}, "stays.1: total_price must be a finite number"),
+    ({"rating": float("nan")}, "stays.1: rating must be a finite number"),
+    ({"distance_km": float("-inf")}, "stays.1: distance_km must be a finite number"),
+])
+def test_saved_trip_in_rejects_non_finite_stay_numbers(update, message):
+    bad = _stay("airbnb:2").model_copy(update=update)
+    with pytest.raises(ValidationError, match=message):
+        SavedTripIn(name="t", stays=[_stay(), bad])
+
+
+def test_hike_and_stay_themselves_still_accept_nan():
+    assert Hike(id="h", name="h", url="u", lat=float("nan"), lon=0.0).lon == 0.0
+
+
+def test_saved_trip_in_accepts_edge_coordinates():
+    edge = _hike().model_copy(update={"lat": -90.0, "lon": 180.0})
+    assert SavedTripIn(name="t", hikes=[edge]).hikes[0].lat == -90.0
+
+
+def test_trip_item_add_rejects_non_finite_numbers():
+    with pytest.raises(ValidationError, match="hike: lat/lon must be finite coordinates"):
+        TripItemAdd(hike=_hike().model_copy(update={"lon": float("nan")}))
+    with pytest.raises(ValidationError, match="stay: total_price must be a finite number"):
+        TripItemAdd(stay=_stay().model_copy(update={"total_price": float("nan")}))
+
+
+def test_saved_trip_in_rejects_documents_over_256_kb():
+    big = [_hike(f"wikiloc:{i}").model_copy(update={"name": "x" * 6000}) for i in range(45)]
+    with pytest.raises(ValidationError, match=r"Trip is too large \(max 256 KB\)"):
+        SavedTripIn(name="t", hikes=big)
+    assert len(SavedTripIn(name="t", hikes=big[:40]).hikes) == 40

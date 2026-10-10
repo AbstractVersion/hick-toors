@@ -1,7 +1,8 @@
 from datetime import date, datetime
+from math import isfinite
 from typing import Annotated, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 Badge = Literal["pets", "pets_garden", "garden", "garden_unconfirmed"]
 DriveLimit = Union[Annotated[int, Field(gt=0)], Literal["auto", "unlimited"]]
@@ -262,6 +263,8 @@ class TripSearch(BaseModel):
 
 
 MAX_TRIP_ITEMS = 50
+MAX_TRIP_BYTES = 256 * 1024  # serialized SavedTripIn fields of one trip
+TRIP_TOO_LARGE = "Trip is too large (max 256 KB)"
 
 
 def _unique_by_id(items: list) -> list:
@@ -274,8 +277,33 @@ def _unique_by_id(items: list) -> list:
     return out
 
 
+def _check_item_numbers(item: "Hike | Stay", where: str) -> None:
+    # Hike/Stay accept anything float (scrapers build them); saved trips must be JSON-safe:
+    # NaN/Infinity would be stored as null and break every later load.
+    if not (isfinite(item.lat) and isfinite(item.lon) and -90 <= item.lat <= 90 and -180 <= item.lon <= 180):
+        raise ValueError(f"{where}: lat/lon must be finite coordinates")
+    for name in type(item).model_fields:
+        value = getattr(item, name)
+        if isinstance(value, float) and not isfinite(value):
+            raise ValueError(f"{where}: {name} must be a finite number")
+
+
+def _finite_items(items: list, info: ValidationInfo) -> list:
+    for i, item in enumerate(items):
+        _check_item_numbers(item, f"{info.field_name}.{i}")
+    return _unique_by_id(items)
+
+
+def trip_size(trip: "SavedTripIn") -> int:
+    """Bytes of the trip's SavedTripIn fields as JSON (id/timestamps excluded, so POST and load agree)."""
+    return len(trip.model_dump_json(include=set(SavedTripIn.model_fields)).encode())
+
+
+# Stored documents are re-validated against SavedTrip (this model + id/timestamps) on every load, and rows
+# that fail are skipped. Keep field changes backward-compatible: only add optional fields; don't narrow
+# Literals or limits without a migration (bump PRAGMA user_version in TripStore).
 class SavedTripIn(BaseModel):
-    """Body of POST/PUT /api/saved-trips: a named bucket of hikes and stays (snapshots as seen)."""
+    """Body of POST /api/saved-trips: a named bucket of hikes and stays (snapshots as seen)."""
 
     name: str = Field(min_length=1, max_length=120)
     start: date | None = None
@@ -293,13 +321,25 @@ class SavedTripIn(BaseModel):
     def _strip_name(cls, value):
         return value.strip() if isinstance(value, str) else value
 
-    _dedupe_items = field_validator("hikes", "stays")(_unique_by_id)
+    _check_items = field_validator("hikes", "stays")(_finite_items)  # also dedupes by id
 
     @model_validator(mode="after")
     def _check_dates(self):
         if self.start and self.end and self.end < self.start:
             raise ValueError("end must be on or after start")
         return self
+
+    @model_validator(mode="after")
+    def _check_size(self):
+        if trip_size(self) > MAX_TRIP_BYTES:
+            raise ValueError(TRIP_TOO_LARGE)
+        return self
+
+
+class SavedTripUpdate(SavedTripIn):
+    """Body of PUT /api/saved-trips/{id}: optionally the updated_at the editor started from."""
+
+    expected_updated_at: datetime | None = None
 
 
 class SavedTrip(SavedTripIn):
@@ -329,4 +369,5 @@ class TripItemAdd(BaseModel):
     def _exactly_one(self):
         if (self.hike is None) == (self.stay is None):
             raise ValueError("Give exactly one of hike or stay")
+        _check_item_numbers(self.hike or self.stay, "hike" if self.hike is not None else "stay")
         return self

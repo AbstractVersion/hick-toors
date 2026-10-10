@@ -1,18 +1,34 @@
 """Saved trips in SQLite: one row per trip holding the SavedTrip JSON document."""
 
 import sqlite3
+import sys
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.models import MAX_TRIP_ITEMS, SavedTrip, SavedTripIn, SavedTripSummary, TripItemAdd
+from app.models import (MAX_TRIP_BYTES, MAX_TRIP_ITEMS, SavedTrip, SavedTripIn, SavedTripSummary, TripItemAdd,
+                        trip_size)
 
 MAX_ITEMS = MAX_TRIP_ITEMS
+MAX_TRIPS = 500
+_TRIP_FIELDS = set(SavedTripIn.model_fields)
 
 
 class TripFull(Exception):
     """The trip already holds MAX_ITEMS hikes (or stays)."""
+
+
+class TripTooLarge(Exception):
+    """Adding the item would grow the trip document past MAX_TRIP_BYTES."""
+
+
+class TooManyTrips(Exception):
+    """The store already holds max_trips trips."""
+
+
+class TripConflict(Exception):
+    """The trip was saved elsewhere since the editor loaded it (updated_at differs)."""
 
 
 def _now() -> datetime:
@@ -25,8 +41,9 @@ def _stamp(moment: datetime) -> str:
 
 
 class TripStore:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, max_trips: int = MAX_TRIPS):
         self.path = Path(path)
+        self.max_trips = max_trips
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._db() as db:
             db.execute("CREATE TABLE IF NOT EXISTS trips ("
@@ -44,9 +61,19 @@ class TripStore:
             conn.close()
 
     @staticmethod
-    def _load(db, trip_id: str) -> SavedTrip | None:
+    def _parse(trip_id: str, doc: str) -> SavedTrip | None:
+        # A row that no longer validates (corrupt, or from an incompatible version) is skipped, not fatal:
+        # one bad trip must not break the list for everyone. delete() still removes it.
+        try:
+            return SavedTrip.model_validate_json(doc)
+        except ValueError as exc:  # pydantic's ValidationError is a ValueError
+            print(f"trips: skipping unreadable trip {trip_id} ({type(exc).__name__})", file=sys.stderr)
+            return None
+
+    @classmethod
+    def _load(cls, db, trip_id: str) -> SavedTrip | None:
         row = db.execute("SELECT doc FROM trips WHERE id = ?", (trip_id,)).fetchone()
-        return SavedTrip.model_validate_json(row[0]) if row else None
+        return cls._parse(trip_id, row[0]) if row else None
 
     @staticmethod
     def _save(db, trip: SavedTrip) -> None:
@@ -55,8 +82,8 @@ class TripStore:
 
     def list_trips(self) -> list[SavedTripSummary]:
         with self._db() as db:
-            rows = db.execute("SELECT doc FROM trips ORDER BY updated_at DESC, rowid DESC").fetchall()
-        trips = [SavedTrip.model_validate_json(row[0]) for row in rows]
+            rows = db.execute("SELECT id, doc FROM trips ORDER BY updated_at DESC, rowid DESC").fetchall()
+        trips = [t for t in (self._parse(trip_id, doc) for trip_id, doc in rows) if t is not None]
         return [SavedTripSummary(id=t.id, name=t.name, start=t.start, end=t.end, source=t.source,
                                  hike_count=len(t.hikes), stay_count=len(t.stays), updated_at=t.updated_at)
                 for t in trips]
@@ -67,19 +94,25 @@ class TripStore:
 
     def create(self, data: SavedTripIn) -> SavedTrip:
         now = _now()
-        trip = SavedTrip.model_validate({**data.model_dump(), "id": uuid.uuid4().hex,
+        trip = SavedTrip.model_validate({**data.model_dump(include=_TRIP_FIELDS), "id": uuid.uuid4().hex,
                                          "created_at": now, "updated_at": now})
         with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")  # lock before counting: the cap holds under concurrency
+            if db.execute("SELECT COUNT(*) FROM trips").fetchone()[0] >= self.max_trips:
+                raise TooManyTrips()
             self._save(db, trip)
         return trip
 
-    def replace(self, trip_id: str, data: SavedTripIn) -> SavedTrip | None:
+    def replace(self, trip_id: str, data: SavedTripIn,
+                expected_updated_at: datetime | None = None) -> SavedTrip | None:
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")  # lock before reading: no lost updates
             old = self._load(db, trip_id)
             if old is None:
                 return None
-            trip = SavedTrip.model_validate({**data.model_dump(), "id": old.id,
+            if expected_updated_at is not None and expected_updated_at != old.updated_at:
+                raise TripConflict()  # aware datetimes compare by instant, whatever the offset
+            trip = SavedTrip.model_validate({**data.model_dump(include=_TRIP_FIELDS), "id": old.id,
                                              "created_at": old.created_at, "updated_at": _now()})
             self._save(db, trip)
         return trip
@@ -101,5 +134,7 @@ class TripStore:
             if len(items) >= MAX_ITEMS:
                 raise TripFull()
             trip = trip.model_copy(update={kind: [*items, value], "updated_at": _now()})
+            if trip_size(trip) > MAX_TRIP_BYTES:
+                raise TripTooLarge()
             self._save(db, trip)
         return trip

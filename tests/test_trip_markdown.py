@@ -83,6 +83,13 @@ def test_same_day_dates_have_no_nights_or_per_night():
     assert "€190 total ·" in md and "/night" not in md
 
 
+def test_start_only_or_end_only_dates():
+    md = trip_markdown(trip(start=date(2026, 10, 23), stays=[STAY]), TODAY)
+    assert "📅 From Fri 23 Oct 2026 · 👥 " in md and "/night" not in md
+    md = trip_markdown(trip(end=date(2026, 10, 25)), TODAY)
+    assert "📅 Until Sun 25 Oct 2026 · 👥 " in md
+
+
 def test_drive_variants_and_booking():
     ferry = HIKE.model_copy(update={"id": "wikiloc:3", "ferry_needed": True})
     est = HIKE.model_copy(update={"id": "wikiloc:4", "drive_minutes": 45, "drive_estimated": True})

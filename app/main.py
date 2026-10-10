@@ -1,20 +1,34 @@
 import sys
 from datetime import date
+from math import isfinite
 
 from fastapi import FastAPI, HTTPException, Query, Response
-from fastapi.responses import FileResponse
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.ask import AskRequest, AskResult, AskRunner
 from app.config import BASE_DIR, Settings
 from app.filters import catalogue
-from app.models import (HikeQuery, HikeSearch, SavedTrip, SavedTripIn, SavedTripSummary, StaySearch,
-                        StaySearchQuery, TripItemAdd, TripQuery, TripSearch)
+from app.models import (TRIP_TOO_LARGE, HikeQuery, HikeSearch, SavedTrip, SavedTripIn, SavedTripSummary,
+                        SavedTripUpdate, StaySearch, StaySearchQuery, TripItemAdd, TripQuery, TripSearch)
 from app.trip_markdown import content_disposition, trip_markdown
-from app.trips_store import TripFull, TripStore
+from app.trips_store import TooManyTrips, TripConflict, TripFull, TripStore, TripTooLarge
 from app.wiring import build_engine
 
 STATIC_DIR = BASE_DIR / "static"
+
+
+def _json_safe(value):
+    """Replace NaN/Infinity (not valid JSON) with None, recursively."""
+    if isinstance(value, float) and not isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    return value
 
 
 def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
@@ -27,6 +41,11 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
     app.state.ask = ask_runner
     trip_store = trip_store or TripStore(settings.trips_db)
     app.state.trips = trip_store
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request, exc: RequestValidationError):
+        # Like FastAPI's default, but a NaN/Infinity echoed back in "input" must not turn the 422 into a 500.
+        return JSONResponse(status_code=422, content={"detail": _json_safe(jsonable_encoder(exc.errors()))})
 
     @app.get("/api/config")
     async def config():
@@ -84,15 +103,22 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
 
     @app.post("/api/saved-trips", response_model=SavedTrip, status_code=201)
     def create_saved_trip(body: SavedTripIn):
-        return trip_store.create(body)
+        try:
+            return trip_store.create(body)
+        except TooManyTrips:
+            raise HTTPException(status_code=409, detail="At most 500 saved trips – delete some first")
 
     @app.get("/api/saved-trips/{trip_id}", response_model=SavedTrip)
     def get_saved_trip(trip_id: str):
         return found(trip_store.get(trip_id))
 
     @app.put("/api/saved-trips/{trip_id}", response_model=SavedTrip)
-    def replace_saved_trip(trip_id: str, body: SavedTripIn):
-        return found(trip_store.replace(trip_id, body))
+    def replace_saved_trip(trip_id: str, body: SavedTripUpdate):
+        try:
+            return found(trip_store.replace(trip_id, body, expected_updated_at=body.expected_updated_at))
+        except TripConflict:
+            raise HTTPException(status_code=409,
+                                detail="Trip changed elsewhere – reopen it to see the latest version")
 
     @app.delete("/api/saved-trips/{trip_id}", status_code=204)
     def delete_saved_trip(trip_id: str):
@@ -106,6 +132,8 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
             return found(trip_store.add_item(trip_id, body))
         except TripFull:
             raise HTTPException(status_code=409, detail="A trip holds at most 50 hikes and 50 stays")
+        except TripTooLarge:
+            raise HTTPException(status_code=413, detail=TRIP_TOO_LARGE)
 
     @app.get("/api/saved-trips/{trip_id}/export.md")
     def export_saved_trip(trip_id: str):

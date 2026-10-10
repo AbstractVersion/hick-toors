@@ -65,6 +65,10 @@ def _summary(trip: SavedTrip, nights: int) -> str:
         when = f"📅 {_day(trip.start)} → {_day(trip.end)}"
         if nights > 0:
             when += f" ({_plural(nights, 'night')})"
+    elif trip.start:
+        when = f"📅 From {_day(trip.start)}"
+    elif trip.end:
+        when = f"📅 Until {_day(trip.end)}"
     else:
         when = "📅 Dates not set"
     parts = [when, f"👥 {_plural(trip.guests, 'guest')}"]
