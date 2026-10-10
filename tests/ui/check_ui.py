@@ -668,6 +668,29 @@ def main() -> None:
         assert "## 🥾 Hikes (2)" in md, md
         print("PASS ⬇ Export .md downloads renamed-trip.md")
 
+        # 🖨️ PDF saves first (PUT), then opens the printable page in a new tab. The tab's /print is stubbed so
+        # no print dialog fires; the real page is then loaded with ?noprint=1.
+        puts: list[str] = []
+        on_request = lambda req: puts.append(req.url) if req.method == "PUT" else None  # noqa: E731
+        page.on("request", on_request)
+        print_re = re.compile(r"/api/saved-trips/[^/?]+/print$")
+        page.context.route(print_re, lambda route: route.fulfill(status=200, content_type="text/html",
+                                                                  body="<p>stub</p>"))
+        page.fill("#trip-notes", "pdf <b>notes</b>")
+        with page.context.expect_page() as pdf_tab:
+            page.click("#trip-pdf")
+        tab = pdf_tab.value
+        assert tab.url.endswith(f"/api/saved-trips/{trip_id}/print"), tab.url
+        assert any(u.endswith(f"/api/saved-trips/{trip_id}") for u in puts), puts
+        page.remove_listener("request", on_request)
+        page.context.unroute(print_re)
+        tab.goto(tab.url + "?noprint=1")
+        expect(tab.locator("h1")).to_have_text("Renamed trip")
+        expect(tab.locator(".notes")).to_have_text("pdf <b>notes</b>")
+        expect(tab.locator("h2", has_text="🥾 Hikes (2)")).to_be_visible()
+        tab.close()
+        print("PASS 🖨️ PDF saves first, then opens the printable page in a new tab")
+
         page.click("#trip-show")
         expect(dlg).to_be_hidden()
         expect(page.locator("#hike-list li")).to_have_count(2)
@@ -743,14 +766,14 @@ def main() -> None:
         page.click("#trip-airbnb-add")
         wait_held(1)
         expect(page.locator("#trip-airbnb-spin")).to_be_visible()
-        for busy in ("#trip-save", "#trip-export", "#trip-airbnb-add"):  # nothing races the lookup
+        for busy in ("#trip-save", "#trip-export", "#trip-pdf", "#trip-airbnb-add"):  # nothing races the lookup
             expect(page.locator(busy)).to_be_disabled()
         release(payload={"detail": "Paste an Airbnb room link (airbnb.com/rooms/…)"}, status=422)
         hold.discard("/api/stays/lookup")
         expect(page.locator("#trips-error")).to_have_text("Paste an Airbnb room link (airbnb.com/rooms/…)")
         expect(page.locator("#trip-airbnb-spin")).to_be_hidden()
         expect(stays_ul).to_have_count(2)
-        for busy in ("#trip-save", "#trip-export", "#trip-airbnb-add"):
+        for busy in ("#trip-save", "#trip-export", "#trip-pdf", "#trip-airbnb-add"):
             expect(page.locator(busy)).to_be_enabled()
         print("PASS Airbnb link: duplicate says Already in this trip; API error shown; buttons disabled while waiting")
 

@@ -265,10 +265,10 @@ function lookupFields() {
   return { start: start || null, end: end || null,
     guests: Math.min(16, Math.max(1, Math.round(Number($("trip-guests").value)) || 1)), dog: $("trip-dog").checked };
 }
-// Save / Export / ＋ Add are disabled while a save or a lookup runs.
+// Save / Export / PDF / ＋ Add are disabled while a save or a lookup runs.
 function setBusy(delta) {
   trips.busy += delta;
-  for (const id of ["trip-save", "trip-export", "trip-airbnb-add"]) $(id).disabled = trips.busy > 0;
+  for (const id of ["trip-save", "trip-export", "trip-pdf", "trip-airbnb-add"]) $(id).disabled = trips.busy > 0;
 }
 const editorOpen = (id) => trips.current?.id === id && !$("trip-editor").hidden && $("trips-dialog").open;
 async function addAirbnbLink() {
@@ -355,6 +355,11 @@ async function exportTrip() {
   if (!trips.current || !(await persistTrip())) return;
   window.location.href = tripPath(trips.current.id, "/export.md");
 }
+async function printTrip() {
+  // Same as export, but opens the printable page (its print dialog offers "Save as PDF").
+  if (!trips.current || trips.busy || !(await persistTrip())) return;
+  window.open(tripPath(trips.current.id, "/print"), "_blank", "noopener");
+}
 function showTripOnMap() {
   const t = trips.current;
   if (!t) return;
@@ -399,6 +404,7 @@ $("trip-back").addEventListener("click", () => { showTripsError(""); showTripLis
 $("trip-editor").addEventListener("submit", saveTrip);
 $("trip-show").addEventListener("click", showTripOnMap);
 $("trip-export").addEventListener("click", exportTrip);
+$("trip-pdf").addEventListener("click", printTrip);
 $("trip-delete").addEventListener("click", deleteTrip);
 $("trip-airbnb-add").addEventListener("click", addAirbnbLink);
 $("trip-airbnb-url").addEventListener("keydown", (event) => {

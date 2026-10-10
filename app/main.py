@@ -5,7 +5,7 @@ from math import isfinite
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.ask import AskRequest, AskResult, AskRunner
@@ -16,6 +16,7 @@ from app.models import (TRIP_TOO_LARGE, HikeQuery, HikeSearch, NatureSearch, Sav
                         SavedTripSummary, SavedTripUpdate, StayLookup, StayLookupResult, StaySearch, StaySearchQuery,
                         TripItemAdd, TripQuery, TripSearch)
 from app.trip_markdown import content_disposition, trip_markdown
+from app.trip_print import CSP, trip_print_html
 from app.trips_store import TooManyTrips, TripConflict, TripFull, TripStore, TripTooLarge
 from app.wiring import build_engine
 
@@ -168,6 +169,12 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
         trip = found(trip_store.get(trip_id))
         return Response(trip_markdown(trip, date.today()), media_type="text/markdown; charset=utf-8",
                         headers={"Content-Disposition": content_disposition(trip.name)})
+
+    @app.get("/api/saved-trips/{trip_id}/print", response_class=HTMLResponse)
+    def print_saved_trip(trip_id: str):
+        trip = found(trip_store.get(trip_id))
+        return HTMLResponse(trip_print_html(trip, date.today()),
+                            headers={"Content-Security-Policy": CSP, "Cache-Control": "no-cache"})
 
     @app.get("/")
     async def index():

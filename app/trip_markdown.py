@@ -28,14 +28,18 @@ def md_escape(text: str) -> str:
 
 def _link(name: str, url: str | None) -> str:
     label = md_escape(name)
-    if not url or not _SAFE_URL.match(url):
+    if not safe_url(url):
         return label
     href = _HREF_UNSAFE.sub(lambda m: quote(m.group(), safe=""), url)
     return f"[{label}]({href})"
 
 
+def map_url(lat: float, lon: float) -> str:
+    return f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
+
+
 def _map(lat: float, lon: float) -> str:
-    return f"[📍 Map](https://www.google.com/maps/search/?api=1&query={lat},{lon})"
+    return f"[📍 Map]({map_url(lat, lon)})"
 
 
 def _day(d: date) -> str:
@@ -48,7 +52,7 @@ def _minutes(m: int, estimated: bool) -> str:
 
 
 def _money(value: float, currency: str | None) -> str:
-    prefix = "€" if not currency or currency == "EUR" else f"{md_escape(currency)} "
+    prefix = "€" if not currency or currency == "EUR" else f"{currency} "
     return f"{prefix}{math.floor(value + 0.5)}"  # half-up, like the UI's Math.round
 
 
@@ -56,11 +60,12 @@ def _plural(n: int, word: str) -> str:
     return f"{n} {word}{'' if n == 1 else 's'}"
 
 
-def _nights(trip: SavedTrip) -> int:
+# Shared with app/trip_print.py: these return plain text (no Markdown/HTML escaping) – callers escape.
+def trip_nights(trip: SavedTrip) -> int:
     return (trip.end - trip.start).days if trip.start and trip.end else 0
 
 
-def _summary(trip: SavedTrip, nights: int) -> str:
+def trip_summary(trip: SavedTrip, nights: int) -> str:
     if trip.start and trip.end:
         when = f"📅 {_day(trip.start)} → {_day(trip.end)}"
         if nights > 0:
@@ -77,26 +82,31 @@ def _summary(trip: SavedTrip, nights: int) -> str:
     return " · ".join(parts)
 
 
-def _hike_lines(n: int, h: Hike) -> list[str]:
+def suggested_line(trip: SavedTrip) -> str | None:
+    if trip.source != "suggested":
+        return None
+    score = f" – score {trip.score:g}/100" if trip.score is not None else ""
+    return f"⭐ Saved from Suggest trips{score}"
+
+
+def hike_facts(h: Hike) -> list[str]:
     facts = []
     if h.distance_km is not None:
         facts.append(f"{h.distance_km:g} km")
     if h.elevation_gain_m is not None:
         facts.append(f"+{h.elevation_gain_m} m")
     if h.difficulty:
-        facts.append(md_escape(h.difficulty))
+        facts.append(h.difficulty)
     if h.trailrank is not None:
         facts.append(f"TrailRank {h.trailrank}")
     if h.ferry_needed:
         facts.append("🚗 ⛴️ ferry needed")
     elif h.drive_minutes is not None:
         facts.append(f"🚗 {_minutes(h.drive_minutes, h.drive_estimated)}")
-    head = f"{n}. **{_link(h.name, h.url)}**" + (f" – {' · '.join(facts)}" if facts else "")
-    second = [f"Near {md_escape(h.near)}"] if h.near else []
-    return [head, "   " + " · ".join([*second, _map(h.lat, h.lon)])]
+    return facts
 
 
-def _stay_lines(s: Stay, nights: int) -> list[str]:
+def stay_facts(s: Stay, nights: int) -> list[str]:
     facts = [SOURCES.get(s.source, s.source)]
     if s.total_price is not None:
         price = f"{_money(s.total_price, s.currency)} total"
@@ -107,25 +117,52 @@ def _stay_lines(s: Stay, nights: int) -> list[str]:
         facts.append(f"★ {s.rating:g}")
     if s.badge:
         facts.append(BADGES[s.badge])
+    return facts
+
+
+def sight_facts(s: Sight) -> list[str]:
+    facts = [SIGHT_LABELS.get(s.kind, s.kind)]
+    if s.elevation_m is not None:
+        facts.append(f"{s.elevation_m} m")
+    return facts
+
+
+def sight_emoji(s: Sight) -> str:
+    return SIGHT_EMOJI.get(s.kind, "🌿")
+
+
+def safe_url(url: str | None) -> bool:
+    return bool(url and _SAFE_URL.match(url))
+
+
+FOOTER = "Prices and ratings as seen when saved."
+
+
+def _hike_lines(n: int, h: Hike) -> list[str]:
+    facts = [md_escape(f) for f in hike_facts(h)]
+    head = f"{n}. **{_link(h.name, h.url)}**" + (f" – {' · '.join(facts)}" if facts else "")
+    second = [f"Near {md_escape(h.near)}"] if h.near else []
+    return [head, "   " + " · ".join([*second, _map(h.lat, h.lon)])]
+
+
+def _stay_lines(s: Stay, nights: int) -> list[str]:
+    facts = [md_escape(f) for f in stay_facts(s, nights)]
     return [f"- **{_link(s.name, s.url)}** – {' · '.join(facts)}", "  " + _map(s.lat, s.lon)]
 
 
 def _sight_line(s: Sight) -> str:
-    facts = [SIGHT_LABELS.get(s.kind, s.kind)]
-    if s.elevation_m is not None:
-        facts.append(f"{s.elevation_m} m")
-    if s.wikipedia and _SAFE_URL.match(s.wikipedia):
+    facts = [md_escape(f) for f in sight_facts(s)]
+    if safe_url(s.wikipedia):
         facts.append(_link("Wikipedia", s.wikipedia))
     facts.append(_map(s.lat, s.lon))
-    return f"- {SIGHT_EMOJI.get(s.kind, '🌿')} **{_link(s.name, s.url)}** – {' · '.join(facts)}"
+    return f"- {sight_emoji(s)} **{_link(s.name, s.url)}** – {' · '.join(facts)}"
 
 
 def trip_markdown(trip: SavedTrip, today: date) -> str:
-    nights = _nights(trip)
-    out = [f"# {md_escape(trip.name)}", "", _summary(trip, nights)]
-    if trip.source == "suggested":
-        score = f" – score {trip.score:g}/100" if trip.score is not None else ""
-        out.append(f"⭐ Saved from Suggest trips{score}")
+    nights = trip_nights(trip)
+    out = [f"# {md_escape(trip.name)}", "", trip_summary(trip, nights)]
+    if suggested := suggested_line(trip):
+        out.append(suggested)
     out += ["", f"## 🥾 Hikes ({len(trip.hikes)})", ""]
     if trip.hikes:
         for n, h in enumerate(trip.hikes, 1):
@@ -143,7 +180,7 @@ def trip_markdown(trip: SavedTrip, today: date) -> str:
         out += [_sight_line(s) for s in trip.sights]
     if trip.notes.strip():
         out += ["", "## 📝 Notes", "", trip.notes.strip()]
-    out += ["", "---", f"Exported from hick-toors on {today.isoformat()}. Prices and ratings as seen when saved."]
+    out += ["", "---", f"Exported from hick-toors on {today.isoformat()}. {FOOTER}"]
     return "\n".join(out) + "\n"
 
 

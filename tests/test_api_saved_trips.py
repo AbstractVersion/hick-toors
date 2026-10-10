@@ -151,6 +151,20 @@ def test_export_markdown(tmp_path):
     assert "**[Vikos Gorge](https://es.wikiloc.com/v)**" in r.text
 
 
+def test_print_page(tmp_path):
+    c, _ = make(tmp_path)
+    tid = c.post("/api/saved-trips", json={"name": "Ζαγόρι weekend", "hikes": [HIKE]}).json()["id"]
+    r = c.get(f"/api/saved-trips/{tid}/print")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "text/html; charset=utf-8"
+    assert r.headers["content-security-policy"] == ("default-src 'none'; img-src https: data:; "
+                                                    "style-src 'unsafe-inline'; script-src 'unsafe-inline'")
+    assert r.headers["cache-control"] == "no-cache"
+    assert "<title>Ζαγόρι weekend</title>" in r.text
+    r = c.get("/api/saved-trips/nope/print")
+    assert r.status_code == 404 and r.json() == {"detail": "Trip not found"}
+
+
 def test_default_store_uses_settings_path(tmp_path):
     settings = Settings(_env_file=None, cache_dir=tmp_path, trips_db=tmp_path / "d" / "trips.db")
     c = TestClient(create_app(engine=FakeEngine(), ask_runner=FakeAsk(), settings=settings))
