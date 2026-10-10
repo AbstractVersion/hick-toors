@@ -18,7 +18,8 @@ a circle around Mount Parnassos and get only hikes inside it.
 - Backend persistence of filters (filters persist in browser localStorage behind two functions so a
   later backend store can replace them).
 - Freehand polygons; drawn area limiting stays (stays still searched around the chosen hike).
-- Wikiloc server-side filtering (login-gated, see §3.1).
+- Wikiloc server-side filtering for anonymous callers (login-gated, see §3.1); with a user-supplied
+  session cookie it is used (§3.1a).
 
 ## 2. UX (agreed with user)
 Header gains: `[⚙️ Hike filters •N] [⚙️ Stay filters •N] [✏️ Draw area]`, and a fourth mode
@@ -50,7 +51,31 @@ Drawing (Leaflet.draw 1.0.4 from unpkg, rectangle + circle tools only):
 - When any hike filter differs from defaults, fetch more pages (`hike_pages_filtered = 10`, i.e. up
   to 250 routes) so filtering still leaves useful results.
 - Search payload gives: picto (activity id), distance (km, "11,81"), slope (elevation gain m),
-  skill (1–5), trailrank, lat/lon. Loop/circular is not in the payload → no loop filter.
+  skill (1–5), trailrank, lat/lon. Loop/circular is not in the payload → no loop filter in
+  anonymous mode (see §3.1a).
+
+### 3.1a Wikiloc login mode (verified 2026-10-10 with the user's logged-in browser cookies)
+Same `find.do` endpoint and UA `wikiloc-app/1.0`, plus a `Cookie:` header: the server-side filters
+**work** when logged in (anonymous: count 0). Probes: `a=1` → 42019, all picto 1; `a=1,43` → 50685,
+picto {1,43}; `lfr=10&lto=15` (km) → 21409, distances 10.1–14.8; `ufr=800` (m) → 8636, slope ≥ 803
+(`uto` symmetric); `sfr=3&sto=4` → 7833, skill 3–4 (filter scale 1–4, results 1–5); `t=1`
+(circular only) → 66979. The JSON carries `forwardToLogin` and `restricted` (None/False when OK).
+- Setting `wikiloc_cookie: str | None = None` (env `WIKILOC_COOKIE`, only in the gitignored `.env`;
+  `.env.example` gets a commented placeholder, never a real value). The cookie is never logged or
+  printed.
+- With the cookie set, `WikilocSource` sends it and translates HikeFilters into server params:
+  activities → `a` (comma-joined), distance → `lfr`/`lto`, elevation → `ufr`/`uto`, difficulty →
+  `sfr`/`sto` (clamped to 4; user max 5 → no `sto`), new filter `loop_only: bool = False` → `t=1`;
+  `sort` as before. The engine post-filter stays on as an idempotent safety net in both modes.
+- `loop_only` can't be post-checked (no loop field in the payload): in anonymous mode it is ignored
+  with the notice "Circular-only needs a Wikiloc login (WIKILOC_COOKIE)". The catalogue marks it
+  "Needs Wikiloc login" and `GET /api/filters` exposes `wikiloc_login: bool` so the UI disables the
+  checkbox when not logged in.
+- Expiry: if the logged-in server-filtered page 0 comes back empty (or `forwardToLogin` is true),
+  retry once anonymously (no cookie, no filter params) and post-filter; if that yields matching
+  hikes, warn "Wikiloc login may have expired – using local filtering. Update WIKILOC_COOKIE in .env".
+- Logged in, the normal `hike_pages` (6) is enough even with filters; `hike_pages_filtered` (10)
+  applies to anonymous mode only.
 
 ### 3.2 Airbnb (verified params; all AND together)
 price_min/price_max (EUR per night), min_bedrooms, min_beds, min_bathrooms,
@@ -81,9 +106,11 @@ retry on 202 (≈50% success observed) — replaces v1's `/searchresults.html`, 
 | distance_min_km / distance_max_km | float ≥ 0 | None | engine |
 | elevation_min_m / elevation_max_m | int ≥ 0 | None | engine |
 | min_trailrank | int 0–100 | None | engine |
+| loop_only | bool | False | Wikiloc `t=1`, logged-in only (§3.1a); anonymous → ignored with notice |
 | sort | "popular" \| "top_rated" | "popular" | Wikiloc (`sort=trailrank` for top_rated) |
 
-Hikes with a missing value for a filtered field are **kept** only if that field is unfiltered
+In login mode (§3.1a) activities, difficulty, distance and elevation are also sent to Wikiloc; the
+engine filter still runs. Hikes with a missing value for a filtered field are **kept** only if that field is unfiltered
 (e.g. distance None is dropped when a distance range is set — the user asked for a range).
 
 ### 4.2 StayFilters
