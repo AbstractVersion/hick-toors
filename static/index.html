@@ -83,6 +83,12 @@
       </div>
       <h3>🥾 Hikes</h3><ul id="trip-hikes" class="trip-items"></ul>
       <h3>🏡 Stays</h3><ul id="trip-stays" class="trip-items"></ul>
+      <div class="row airbnb-add">
+        <input id="trip-airbnb-url" type="text" inputmode="url" autocomplete="off" maxlength="2000" placeholder="Paste an Airbnb link…" aria-label="Airbnb room link">
+        <button type="button" id="trip-airbnb-add" class="tool-btn">＋ Add</button>
+        <span class="spinner" id="trip-airbnb-spin" role="status" aria-label="Looking up the Airbnb listing" hidden></span>
+      </div>
+      <div id="trip-airbnb-info" class="list-note" role="status" hidden></div>
       <label class="wide">📝 Notes <textarea id="trip-notes" maxlength="5000" rows="4"></textarea></label>
       <div class="dlg-actions">
         <button type="submit" id="trip-save" class="primary">Save changes</button>

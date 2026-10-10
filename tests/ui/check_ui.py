@@ -29,6 +29,12 @@ COMBO = {"hike": HIKE, "stay": STAY, "score": 77.5, "note": None,
 PLACE = {"place": {"name": "Μακρινίτσα, Δήμος Βόλου", "lat": 39.39, "lon": 22.99,
                    "bbox": {"south": 39.38, "west": 22.98, "north": 39.40, "east": 23.00}}, "warnings": []}
 BOOKING_DOWN = "Booking.com unavailable (blocked by the site) – showing other sources"
+AIRBNB_LINK = "https://www.airbnb.com/rooms/576031322358400592?adults=9&check_in=2027-01-01&check_out=2027-01-05"
+LINKED_STAY = {"id": "airbnb:576031322358400592", "source": "airbnb", "name": "Bezeniko Amazing Arcadian Property!",
+               "url": "https://www.airbnb.com/rooms/576031322358400592?check_in=2026-10-23&check_out=2026-10-25&adults=4",
+               "lat": 37.71914, "lon": 22.25123, "total_price": None, "currency": None, "rating": 4.96,
+               "photo": None, "pets_allowed": False, "has_garden": True, "badge": None, "distance_km": None}
+PRICE_NOT_FOUND = "Price not found for these dates – you can type it in"
 LOCATE_RE = re.compile(r".*/api/locate(\?.*)?$")
 # Set by the Load more step: hikes answers then carry a total and a next page.
 paging = {"on": False}
@@ -50,6 +56,7 @@ CANNED = {
                                 "warnings": [], "center": None},
     "/api/trips": lambda body: {"combos": [COMBO], "warnings": []},
     "/api/locate": lambda body: PLACE,
+    "/api/stays/lookup": lambda body: {"stay": LINKED_STAY, "warnings": [PRICE_NOT_FOUND]},
 }
 
 
@@ -640,6 +647,62 @@ def main() -> None:
         expect(rows.first).to_contain_text("Changed elsewhere")
         expect(rows.first).to_contain_text("From 2026-10-23 · ")
         print("PASS consecutive saves work; a stale save is refused (409); start-only shows From …")
+
+        # Paste an Airbnb link: dates/guests/dog come from the editor (not the link), the stay is saved at once.
+        get_trip = "(id) => fetch(`/api/saved-trips/${encodeURIComponent(id)}`).then((r) => r.json())"
+        rows.first.click()
+        stays_ul = page.locator("#trip-stays li")
+        expect(stays_ul).to_have_count(1)
+        page.fill("#trip-end", "2026-10-25")
+        page.fill("#trip-guests", "4")
+        before = len(requests)
+        page.fill("#trip-airbnb-url", AIRBNB_LINK)
+        page.press("#trip-airbnb-url", "Enter")
+        body = wait_request("/api/stays/lookup", before)
+        assert body == {"url": AIRBNB_LINK, "start": "2026-10-23", "end": "2026-10-25", "guests": 4,
+                        "dog": True}, body
+        linked = page.locator("#trip-stays li", has_text="Bezeniko")
+        expect(linked).to_have_count(1)
+        expect(page.locator("#trip-airbnb-info")).to_have_text(PRICE_NOT_FOUND)
+        expect(page.locator("#trip-airbnb-url")).to_have_value("")
+        expect(page.locator("#trip-airbnb-spin")).to_be_hidden()
+        price = linked.locator(".price-edit input")
+        expect(price).to_be_visible()
+        expect(page.locator("#trip-stays li", has_text="Area house").locator(".price-edit")).to_have_count(0)
+        expect(page.locator("#trip-save")).to_have_text("Save changes")  # Enter did not submit the form
+        for _ in range(30):  # persisted right away, together with the unsaved end date
+            stored = page.evaluate(get_trip, trip_id)
+            if len(stored["stays"]) == 2:
+                break
+            page.wait_for_timeout(100)
+        assert [s["id"] for s in stored["stays"]] == ["airbnb:1", "airbnb:576031322358400592"], stored["stays"]
+        assert stored["stays"][1]["total_price"] is None and stored["end"] == "2026-10-25", stored
+        print("PASS Airbnb link: editor dates/guests sent, stay listed with a price field, saved at once")
+
+        page.fill("#trip-airbnb-url", "576031322358400592")
+        page.click("#trip-airbnb-add")
+        expect(page.locator("#trip-airbnb-info")).to_have_text("Already in this trip")
+        expect(stays_ul).to_have_count(2)
+        hold.add("/api/stays/lookup")
+        page.fill("#trip-airbnb-url", "https://evil.com/rooms/1")
+        page.click("#trip-airbnb-add")
+        wait_held(1)
+        expect(page.locator("#trip-airbnb-spin")).to_be_visible()
+        release(payload={"detail": "Paste an Airbnb room link (airbnb.com/rooms/…)"}, status=422)
+        hold.discard("/api/stays/lookup")
+        expect(page.locator("#trips-error")).to_have_text("Paste an Airbnb room link (airbnb.com/rooms/…)")
+        expect(page.locator("#trip-airbnb-spin")).to_be_hidden()
+        expect(stays_ul).to_have_count(2)
+        print("PASS Airbnb link: duplicate says Already in this trip; API error shown, spinner while waiting")
+
+        price.fill("350")
+        page.click("#trip-save")
+        expect(page.locator("#trip-save")).to_have_text("✓ Saved")
+        expect(linked.locator(".price-edit input")).to_have_value("350")
+        stored = page.evaluate(get_trip, trip_id)
+        assert (stored["stays"][1]["total_price"], stored["stays"][1]["currency"]) == (350, "EUR"), stored["stays"]
+        page.click("#trip-back")
+        print("PASS typed total price saved with Save changes (EUR)")
 
         rows.first.click()
         page.click("#trip-delete")

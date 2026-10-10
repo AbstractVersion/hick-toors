@@ -1,7 +1,7 @@
 "use strict";
 // Saved trips: ＋ Trip menu on hikes/stays, 💾 Save on Trip picks, and the 🧳 My trips dialog.
 // Loaded after app.js and uses its globals ($, esc, state, api, notices, dates, guests, clearAll, ...).
-const trips = { list: [], current: null, deleteTimer: null };
+const trips = { list: [], current: null, deleteTimer: null, handPriced: new Set() };  // handPriced: stay ids
 const LAST_TRIP_KEY = "hick-toors:last-trip";
 
 function lastTripId() { try { return localStorage.getItem(LAST_TRIP_KEY); } catch { return null; } }
@@ -170,6 +170,9 @@ async function openTrip(id) {
   $("trip-guests").value = t.guests;
   $("trip-dog").checked = t.dog;
   $("trip-notes").value = t.notes || "";
+  $("trip-airbnb-url").value = "";
+  showAirbnbInfo([]);
+  trips.handPriced.clear();
   resetDelete();
   renderTripItems();
   $("trips-list-view").hidden = true;
@@ -209,9 +212,77 @@ function renderTripItems() {
       tool("↑", "Move up", i === 0, () => moveItem(kind, i, -1));
       tool("↓", "Move down", i === items.length - 1, () => moveItem(kind, i, 1));
       tool("✕", "Remove", false, () => { items.splice(i, 1); renderTripItems(); });
-      li.append(label, tools);
+      li.append(label);
+      if (kind === "stays" && (item.total_price == null || trips.handPriced.has(item.id))) li.append(priceField(item));
+      li.append(tools);
       ul.appendChild(li);
     });
+  }
+}
+// A stay without a price gets a "€ total" field; typed prices are EUR and saved with Save changes.
+function priceField(item) {
+  trips.handPriced.add(item.id);  // keep the field while editing, even once a price is typed
+  const label = document.createElement("label");
+  label.className = "price-edit";
+  label.textContent = "€";
+  const input = document.createElement("input");
+  input.type = "number";
+  input.min = "0";
+  input.step = "1";
+  input.placeholder = "total";
+  input.title = "Total price for the stay (EUR)";
+  input.setAttribute("aria-label", `Total price in EUR: ${item.name}`);
+  if (item.total_price != null) input.value = String(item.total_price);
+  input.addEventListener("input", () => {
+    const value = input.value.trim() === "" ? NaN : Number(input.value);
+    if (Number.isFinite(value) && value >= 0) {
+      item.total_price = value;
+      item.currency = "EUR";
+    } else {
+      item.total_price = null;
+      item.currency = null;
+    }
+  });
+  label.appendChild(input);
+  return label;
+}
+function showAirbnbInfo(messages) {
+  const text = (messages || []).join(" · ");
+  $("trip-airbnb-info").textContent = text;
+  $("trip-airbnb-info").hidden = !text;
+}
+// Dates/guests/dog come from the trip editor (header dates as a fallback), never from the pasted link.
+function lookupFields() {
+  let start = $("trip-start").value, end = $("trip-end").value;
+  if (!start && !end) ({ start, end } = dates());
+  return { start: start || null, end: end || null,
+    guests: Math.min(16, Math.max(1, Math.round(Number($("trip-guests").value)) || 1)), dog: $("trip-dog").checked };
+}
+async function addAirbnbLink() {
+  const url = $("trip-airbnb-url").value.trim();
+  const t = trips.current;
+  if (!t || !url || !$("trip-airbnb-spin").hidden) return;
+  showTripsError("");
+  showAirbnbInfo([]);
+  $("trip-airbnb-spin").hidden = false;
+  $("trip-airbnb-add").disabled = true;
+  try {
+    const { stay, warnings } = await api("/api/stays/lookup", { url, ...lookupFields() });
+    if (trips.current !== t) return;  // the editor moved on while Airbnb answered
+    if (t.stays.some((s) => s.id === stay.id)) {
+      showAirbnbInfo(["Already in this trip"]);
+      return;
+    }
+    t.stays.push(stay);
+    renderTripItems();
+    $("trip-airbnb-url").value = "";
+    showAirbnbInfo(warnings);
+    await persistTrip();
+  } catch (err) {
+    showTripsError(err.message);
+  } finally {
+    $("trip-airbnb-spin").hidden = true;
+    $("trip-airbnb-add").disabled = false;
   }
 }
 function moveItem(kind, i, delta) {
@@ -230,6 +301,7 @@ async function persistTrip() {
   showTripsError("");
   try {
     trips.current = await api(tripPath(trips.current.id), editorBody(), "PUT");
+    renderTripItems();  // the rows must act on the saved objects, not the replaced ones
     await refreshTrips();
     return true;
   } catch (err) {
@@ -292,4 +364,10 @@ $("trip-editor").addEventListener("submit", saveTrip);
 $("trip-show").addEventListener("click", showTripOnMap);
 $("trip-export").addEventListener("click", exportTrip);
 $("trip-delete").addEventListener("click", deleteTrip);
+$("trip-airbnb-add").addEventListener("click", addAirbnbLink);
+$("trip-airbnb-url").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();  // Enter here adds the link; it must not submit (save) the editor form
+  addAirbnbLink();
+});
 refreshTrips().catch(() => { $("trips-count").textContent = ""; });
