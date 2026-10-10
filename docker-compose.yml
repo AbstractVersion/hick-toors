@@ -1,0 +1,18 @@
+services:
+  hick-toors:
+    build: .
+    image: hick-toors:local
+    container_name: hick-toors
+    ports:
+      # Host port defaults to 8080 so it doesn't clash with a local `uvicorn` on 8000.
+      - "${HICK_TOORS_PORT:-8080}:8000"
+    env_file:
+      # Optional: ORS_API_KEY, WIKILOC_COOKIE, HOME_* … (see .env.example). Never baked into the image.
+      - path: .env
+        required: false
+    volumes:
+      - hick-cache:/app/.cache
+    restart: unless-stopped
+
+volumes:
+  hick-cache:

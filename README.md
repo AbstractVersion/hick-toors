@@ -12,6 +12,20 @@ uv run uvicorn app.main:app --reload
 # open http://localhost:8000
 ```
 
+### Run with Docker Compose
+
+```bash
+cd hick-toors
+cp .env.example .env        # optional, read at runtime via env_file (never baked into the image)
+docker compose up --build -d
+# open http://localhost:8080   (change with HICK_TOORS_PORT=9000 docker compose up -d)
+docker compose logs -f      # follow logs
+docker compose down         # stop (the search cache volume `hick-cache` is kept)
+```
+
+The **Ask Claude** box is unavailable inside the container (it needs your local, logged-in
+`claude` CLI) — use the non-Docker run above for that. Everything else works the same.
+
 ## How it works
 - **Dates → reach:** 1 day ≈ 1.5 h drive, 2–3 days ≈ 4 h, 4+ days anywhere (islands marked ⛴️). The 🚗 slider overrides it.
 - **Where vs what:** the mode radios say *where* – *Near home* (around Athens), *Place* (e.g. "Zagori") or *Drawn area*. Two buttons say *what*: **🔍 Search hikes** lists hikes there; **⭐ Suggest trips** ranks hike + stay combos (score /100) for the same *where* (a drawn shape, the place text, or the drive limit) and shows them in the **Trip picks** section, which stays hidden until there is something to show. Search hikes hides it again. The MCP `plan_trip` tool takes optional `place` / `area` too.
