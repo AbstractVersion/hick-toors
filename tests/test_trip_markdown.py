@@ -156,3 +156,21 @@ def test_export_filename():
 def test_content_disposition():
     assert content_disposition("Ζαγόρι 2") == (
         "attachment; filename=\"2.md\"; filename*=UTF-8''%CE%96%CE%B1%CE%B3%CF%8C%CF%81%CE%B9%202.md")
+
+
+def test_nature_section():
+    from app.models import Sight
+    sights = [Sight(id="osm:node/1", name="Kalavrita falls", kind="waterfall", lat=38.0, lon=22.1, elevation_m=120,
+                    url="https://www.openstreetmap.org/node/1",
+                    wikipedia="https://en.wikipedia.org/wiki/Kalavrita_falls"),
+              Sight(id="osm:node/2", name="Spring", kind="spring", lat=38.1, lon=22.2,
+                    url="https://www.openstreetmap.org/node/2")]
+    md = trip_markdown(trip(sights=sights, notes="Bring water"), TODAY)
+    expected = """## 🌿 Nature (2)
+
+- 💧 **[Kalavrita falls](https://www.openstreetmap.org/node/1)** – Waterfall · 120 m · [Wikipedia](https://en.wikipedia.org/wiki/Kalavrita_falls) · [📍 Map](https://www.google.com/maps/search/?api=1&query=38.0,22.1)
+- 🚰 **[Spring](https://www.openstreetmap.org/node/2)** – Spring · [📍 Map](https://www.google.com/maps/search/?api=1&query=38.1,22.2)
+"""
+    assert "\n" + expected + "\n## 📝 Notes" in md
+    assert md.index("## 🏡 Stays") < md.index("## 🌿 Nature") < md.index("## 📝 Notes")
+    assert "Nature" not in trip_markdown(trip(), TODAY)

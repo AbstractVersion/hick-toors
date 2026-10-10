@@ -207,9 +207,9 @@ def test_saved_trip_in_dedupes_items_keeping_first():
 
 def test_trip_item_add_needs_exactly_one():
     assert TripItemAdd(hike=_hike()).stay is None
-    with pytest.raises(ValidationError, match="Give exactly one of hike or stay"):
+    with pytest.raises(ValidationError, match="Give exactly one of hike, stay or sight"):
         TripItemAdd()
-    with pytest.raises(ValidationError, match="Give exactly one of hike or stay"):
+    with pytest.raises(ValidationError, match="Give exactly one of hike, stay or sight"):
         TripItemAdd(hike=_hike(), stay=_stay())
 
 
@@ -269,3 +269,39 @@ def test_saved_trip_in_rejects_documents_over_256_kb():
     with pytest.raises(ValidationError, match=r"Trip is too large \(max 256 KB\)"):
         SavedTripIn(name="t", hikes=big)
     assert len(SavedTripIn(name="t", hikes=big[:40]).hikes) == 40
+
+
+def _sight(i=1, **kw):
+    from app.models import Sight
+    base = dict(id=f"osm:node/{i}", name="Falls", kind="waterfall", lat=38.0, lon=22.0,
+                url=f"https://www.openstreetmap.org/node/{i}")
+    return Sight(**{**base, **kw})
+
+
+def test_saved_trip_sights_dedupe_and_drop_lines():
+    t = SavedTripIn(name="t", sights=[_sight(1, lines=[[[1.0, 2.0], [3.0, 4.0]]]), _sight(1), _sight(2)])
+    assert [s.id for s in t.sights] == ["osm:node/1", "osm:node/2"]
+    assert all(s.lines == [] for s in t.sights)
+
+
+def test_saved_trip_sights_limit_and_nan():
+    with pytest.raises(ValidationError):
+        SavedTripIn(name="t", sights=[_sight(i) for i in range(101)])
+    with pytest.raises(ValidationError, match="finite"):
+        SavedTripIn(name="t", sights=[_sight(1, lat=float("nan"))])
+
+
+def test_old_trip_doc_without_sights_loads():
+    from app.models import SavedTrip
+    doc = ('{"name": "t", "id": "x", "created_at": "2026-10-10T12:00:00Z", "updated_at": "2026-10-10T12:00:00Z",'
+           ' "hikes": [], "stays": []}')
+    assert SavedTrip.model_validate_json(doc).sights == []
+
+
+def test_trip_item_add_needs_exactly_one():
+    msg = "Give exactly one of hike, stay or sight"
+    with pytest.raises(ValidationError, match=msg):
+        TripItemAdd()
+    with pytest.raises(ValidationError, match=msg):
+        TripItemAdd(sight=_sight(1), hike=Hike(id="w:1", name="n", url="u", lat=1, lon=1))
+    assert TripItemAdd(sight=_sight(1)).sight.id == "osm:node/1"

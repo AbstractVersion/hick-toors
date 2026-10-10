@@ -167,3 +167,29 @@ def test_persists_across_instances(tmp_path):
     path = tmp_path / "trips.db"
     trip = TripStore(path).create(SavedTripIn(name="Kept", hikes=[hike(1)]))
     assert TripStore(path).get(trip.id).name == "Kept"
+
+
+def sight(i, **kw):
+    from app.models import Sight
+    return Sight(id=f"osm:node/{i}", name=f"S{i}", kind="spring", lat=38.0, lon=22.0,
+                 url=f"https://www.openstreetmap.org/node/{i}", **kw)
+
+
+def test_add_sight_appends_and_dedupes(store):
+    trip = store.create(SavedTripIn(name="T"))
+    added = store.add_item(trip.id, TripItemAdd(sight=sight(1, lines=[[[1.0, 2.0], [3.0, 4.0]]])))
+    assert [s.id for s in added.sights] == ["osm:node/1"]
+    again = store.add_item(trip.id, TripItemAdd(sight=sight(1)))
+    assert len(again.sights) == 1 and again.updated_at == added.updated_at
+
+
+def test_add_sight_full_raises_sights_kind(store):
+    trip = store.create(SavedTripIn(name="T", sights=[sight(i) for i in range(100)]))
+    with pytest.raises(TripFull) as exc:
+        store.add_item(trip.id, TripItemAdd(sight=sight(999)))
+    assert exc.value.kind == "sights"
+    assert len(store.get(trip.id).sights) == 100
+    full_hikes = store.create(SavedTripIn(name="H", hikes=[hike(i) for i in range(MAX_ITEMS)]))
+    with pytest.raises(TripFull) as exc:
+        store.add_item(full_hikes.id, TripItemAdd(hike=hike(999)))
+    assert exc.value.kind == "hikes"

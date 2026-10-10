@@ -5,7 +5,7 @@ import re
 from datetime import date
 from urllib.parse import quote
 
-from app.models import Hike, SavedTrip, Stay
+from app.models import SIGHT_EMOJI, SIGHT_LABELS, Hike, SavedTrip, Sight, Stay
 
 BADGES = {
     "pets": "🐕 Pets allowed",
@@ -110,6 +110,16 @@ def _stay_lines(s: Stay, nights: int) -> list[str]:
     return [f"- **{_link(s.name, s.url)}** – {' · '.join(facts)}", "  " + _map(s.lat, s.lon)]
 
 
+def _sight_line(s: Sight) -> str:
+    facts = [SIGHT_LABELS.get(s.kind, s.kind)]
+    if s.elevation_m is not None:
+        facts.append(f"{s.elevation_m} m")
+    if s.wikipedia and _SAFE_URL.match(s.wikipedia):
+        facts.append(_link("Wikipedia", s.wikipedia))
+    facts.append(_map(s.lat, s.lon))
+    return f"- {SIGHT_EMOJI.get(s.kind, '🌿')} **{_link(s.name, s.url)}** – {' · '.join(facts)}"
+
+
 def trip_markdown(trip: SavedTrip, today: date) -> str:
     nights = _nights(trip)
     out = [f"# {md_escape(trip.name)}", "", _summary(trip, nights)]
@@ -128,6 +138,9 @@ def trip_markdown(trip: SavedTrip, today: date) -> str:
             out += _stay_lines(s, nights)
     else:
         out.append("_None yet._")
+    if trip.sights:
+        out += ["", f"## 🌿 Nature ({len(trip.sights)})", ""]
+        out += [_sight_line(s) for s in trip.sights]
     if trip.notes.strip():
         out += ["", "## 📝 Notes", "", trip.notes.strip()]
     out += ["", "---", f"Exported from hick-toors on {today.isoformat()}. Prices and ratings as seen when saved."]

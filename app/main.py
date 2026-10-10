@@ -157,8 +157,9 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
     def add_saved_trip_item(trip_id: str, body: TripItemAdd):
         try:
             return found(trip_store.add_item(trip_id, body))
-        except TripFull:
-            raise HTTPException(status_code=409, detail="A trip holds at most 50 hikes and 50 stays")
+        except TripFull as full:
+            raise HTTPException(status_code=409, detail="A trip holds at most 100 nature sights"
+                                if full.kind == "sights" else "A trip holds at most 50 hikes and 50 stays")
         except TripTooLarge:
             raise HTTPException(status_code=413, detail=TRIP_TOO_LARGE)
 

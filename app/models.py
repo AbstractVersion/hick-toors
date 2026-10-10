@@ -324,6 +324,7 @@ class NatureSearch(BaseModel):
 
 
 MAX_TRIP_ITEMS = 50
+MAX_TRIP_SIGHTS = 100
 MAX_TRIP_BYTES = 256 * 1024  # serialized SavedTripIn fields of one trip
 TRIP_TOO_LARGE = "Trip is too large (max 256 KB)"
 
@@ -338,7 +339,7 @@ def _unique_by_id(items: list) -> list:
     return out
 
 
-def _check_item_numbers(item: "Hike | Stay", where: str) -> None:
+def _check_item_numbers(item: "Hike | Stay | Sight", where: str) -> None:
     # Hike/Stay accept anything float (scrapers build them); saved trips must be JSON-safe:
     # NaN/Infinity would be stored as null and break every later load.
     if not (isfinite(item.lat) and isfinite(item.lon) and -90 <= item.lat <= 90 and -180 <= item.lon <= 180):
@@ -378,13 +379,20 @@ class SavedTripIn(BaseModel):
     score: float | None = Field(default=None, ge=0, le=100)
     hikes: list[Hike] = Field(default_factory=list, max_length=MAX_TRIP_ITEMS)
     stays: list[Stay] = Field(default_factory=list, max_length=MAX_TRIP_ITEMS)
+    sights: list[Sight] = Field(default_factory=list, max_length=MAX_TRIP_SIGHTS)
 
     @field_validator("name", mode="before")
     @classmethod
     def _strip_name(cls, value):
         return value.strip() if isinstance(value, str) else value
 
-    _check_items = field_validator("hikes", "stays")(_finite_items)  # also dedupes by id
+    _check_items = field_validator("hikes", "stays", "sights")(_finite_items)  # also dedupes by id
+
+    @field_validator("sights")
+    @classmethod
+    def _drop_lines(cls, sights):
+        # Outlines are for the map layer only; keeping them out of trips keeps documents small.
+        return [s.model_copy(update={"lines": []}) for s in sights]
 
     @model_validator(mode="after")
     def _check_dates(self):
@@ -423,14 +431,17 @@ class SavedTripSummary(BaseModel):
 
 
 class TripItemAdd(BaseModel):
-    """Body of POST /api/saved-trips/{id}/items: exactly one hike or one stay."""
+    """Body of POST /api/saved-trips/{id}/items: exactly one hike, stay or sight."""
 
     hike: Hike | None = None
     stay: Stay | None = None
+    sight: Sight | None = None
 
     @model_validator(mode="after")
     def _exactly_one(self):
-        if (self.hike is None) == (self.stay is None):
-            raise ValueError("Give exactly one of hike or stay")
-        _check_item_numbers(self.hike or self.stay, "hike" if self.hike is not None else "stay")
+        given = [(name, v) for name, v in (("hike", self.hike), ("stay", self.stay), ("sight", self.sight))
+                 if v is not None]
+        if len(given) != 1:
+            raise ValueError("Give exactly one of hike, stay or sight")
+        _check_item_numbers(given[0][1], given[0][0])
         return self

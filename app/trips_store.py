@@ -7,16 +7,21 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.models import (MAX_TRIP_BYTES, MAX_TRIP_ITEMS, SavedTrip, SavedTripIn, SavedTripSummary, TripItemAdd,
+from app.models import (MAX_TRIP_BYTES, MAX_TRIP_ITEMS, MAX_TRIP_SIGHTS, SavedTrip, SavedTripIn, SavedTripSummary, TripItemAdd,
                         trip_size)
 
 MAX_ITEMS = MAX_TRIP_ITEMS
+MAX_SIGHTS = MAX_TRIP_SIGHTS
 MAX_TRIPS = 500
 _TRIP_FIELDS = set(SavedTripIn.model_fields)
 
 
 class TripFull(Exception):
-    """The trip already holds MAX_ITEMS hikes (or stays)."""
+    """The trip already holds the maximum of hikes, stays or sights (`kind` says which)."""
+
+    def __init__(self, kind: str = "hikes"):
+        super().__init__(kind)
+        self.kind = kind
 
 
 class TripTooLarge(Exception):
@@ -122,7 +127,13 @@ class TripStore:
             return db.execute("DELETE FROM trips WHERE id = ?", (trip_id,)).rowcount > 0
 
     def add_item(self, trip_id: str, item: TripItemAdd) -> SavedTrip | None:
-        kind, value = ("hikes", item.hike) if item.hike is not None else ("stays", item.stay)
+        if item.hike is not None:
+            kind, value = "hikes", item.hike
+        elif item.stay is not None:
+            kind, value = "stays", item.stay
+        else:
+            kind, value = "sights", item.sight.model_copy(update={"lines": []})
+        limit = MAX_SIGHTS if kind == "sights" else MAX_ITEMS
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")  # lock before reading: no lost updates, limit holds
             trip = self._load(db, trip_id)
@@ -131,8 +142,8 @@ class TripStore:
             items = getattr(trip, kind)
             if any(existing.id == value.id for existing in items):
                 return trip
-            if len(items) >= MAX_ITEMS:
-                raise TripFull()
+            if len(items) >= limit:
+                raise TripFull(kind)
             trip = trip.model_copy(update={kind: [*items, value], "updated_at": _now()})
             if trip_size(trip) > MAX_TRIP_BYTES:
                 raise TripTooLarge()

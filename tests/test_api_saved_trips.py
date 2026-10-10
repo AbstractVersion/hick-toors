@@ -59,7 +59,7 @@ def test_validation(tmp_path):
     assert r.status_code == 422 and "end must be on or after start" in r.text
     tid = c.post("/api/saved-trips", json={"name": "t"}).json()["id"]
     r = c.post(f"/api/saved-trips/{tid}/items", json={})
-    assert r.status_code == 422 and "Give exactly one of hike or stay" in r.text
+    assert r.status_code == 422 and "Give exactly one of hike, stay or sight" in r.text
 
 
 def test_add_items_dedupe_and_full(tmp_path):
@@ -156,3 +156,16 @@ def test_default_store_uses_settings_path(tmp_path):
     c = TestClient(create_app(engine=FakeEngine(), ask_runner=FakeAsk(), settings=settings))
     c.post("/api/saved-trips", json={"name": "t"})
     assert (tmp_path / "d" / "trips.db").exists()
+
+
+def test_sights_in_trip_and_full_message(tmp_path):
+    c, _ = make(tmp_path)
+    s = {"id": "osm:node/1", "name": "Falls", "kind": "waterfall", "lat": 38.0, "lon": 22.0,
+         "url": "https://www.openstreetmap.org/node/1", "lines": [[[1, 2], [3, 4]]]}
+    tid = c.post("/api/saved-trips", json={"name": "t"}).json()["id"]
+    r = c.post(f"/api/saved-trips/{tid}/items", json={"sight": s})
+    assert r.status_code == 200 and r.json()["sights"][0]["lines"] == []
+    full = c.post("/api/saved-trips", json={"name": "f", "sights": [{**s, "id": f"osm:node/{i}"} for i in range(100)]})
+    r = c.post(f"/api/saved-trips/{full.json()['id']}/items", json={"sight": {**s, "id": "osm:node/x"}})
+    assert r.status_code == 409 and r.json() == {"detail": "A trip holds at most 100 nature sights"}
+    assert c.post(f"/api/saved-trips/{tid}/items", json={}).status_code == 422
