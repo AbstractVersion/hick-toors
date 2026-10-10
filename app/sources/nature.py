@@ -224,9 +224,62 @@ def _wikipedia(value) -> str | None:
     return f"https://{m.group(1)}.wikipedia.org/wiki/{title}" if title else None
 
 
+LINE_KINDS = {"river", "lake", "forest", "protected_area"}  # merged by name: one river is many OSM ways
+
+
+def merge_named(sights: list[Sight]) -> list[Sight]:
+    """Join line-kind sights sharing kind + name into one, at the place of the first.
+
+    The id (and the other fields) come from a relation when the group has one, else from the first sight;
+    its lines go first, then the others' (capped); the position is the centre of the combined lines' bounds.
+    """
+    groups: dict[tuple[str, str], list[Sight]] = {}
+    order: list = []
+    for s in sights:
+        if s.kind in LINE_KINDS:
+            key = (s.kind, s.name)
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append(s)
+        else:
+            order.append(s)
+    out = []
+    for item in order:
+        if isinstance(item, Sight):
+            out.append(item)
+            continue
+        group = groups[item]
+        if len(group) == 1:
+            out.append(group[0])
+            continue
+        main = next((s for s in group if s.id.startswith("osm:relation/")), group[0])
+        rest = [s for s in group if s is not main]
+        lines = cap_lines(main.lines + [line for s in rest for line in s.lines])
+        update: dict = {"lines": lines}
+        pts = [p for line in lines for p in line]
+        if pts:
+            lats, lons = [p[0] for p in pts], [p[1] for p in pts]
+            update.update(lat=(min(lats) + max(lats)) / 2, lon=(min(lons) + max(lons)) / 2)
+        if main.wikipedia is None:
+            update["wikipedia"] = next((s.wikipedia for s in rest if s.wikipedia), None)
+        if main.elevation_m is None:
+            update["elevation_m"] = next((s.elevation_m for s in rest if s.elevation_m is not None), None)
+        out.append(main.model_copy(update=update))
+    return out
+
+
 def parse_overpass(data: dict) -> list[Sight]:
+    """Elements -> sights; ways that are members of a returned relation sight are dropped, then
+    same-named line kinds are merged (merge_named)."""
+    elements = [el for el in data.get("elements") or [] if isinstance(el, dict)]
+    in_relation = {m.get("ref") for el in elements
+                   if el.get("type") == "relation" and isinstance(el.get("tags"), dict) and _kind(el["tags"])
+                   for m in el.get("members") or [] if isinstance(m, dict) and m.get("type") == "way"}
     sights = []
-    for el in data.get("elements") or []:
+    for el in elements:
+        if el.get("type") == "way" and el.get("id") in in_relation:
+            continue
         if not isinstance(el, dict) or el.get("type") not in ("node", "way", "relation"):
             continue
         if not isinstance(el.get("id"), int) or not isinstance(el.get("tags"), dict):
@@ -245,7 +298,7 @@ def parse_overpass(data: dict) -> list[Sight]:
             id=f"osm:{el['type']}/{el['id']}", name=name[:MAX_NAME], kind=kind, lat=pos[0], lon=pos[1],
             elevation_m=_elevation(tags.get("ele")), url=f"{OSM_URL}/{el['type']}/{el['id']}",
             wikipedia=_wikipedia(tags.get("wikipedia")), lines=lines))
-    return sights
+    return merge_named(sights)
 
 
 def make_fetch(transport: httpx.AsyncBaseTransport | None = None) -> FetchText:

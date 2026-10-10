@@ -221,3 +221,51 @@ async def test_fetch_tile_both_endpoints_fail(answers):
 
 def test_default_fetch_is_built():
     assert NatureSource()._fetch is not None and nature.USER_AGENT.startswith("hick-toors/1.0")
+
+
+def river_way(id_, points, name="Λούσιος"):
+    return {"type": "way", "id": id_, "tags": {"waterway": "river", "name": name},
+            "bounds": {"minlat": 0, "minlon": 0, "maxlat": 0, "maxlon": 0}, "geometry": geom(points)}
+
+
+LOUSIOS = {"elements": [
+    node(1, {"natural": "spring"}),
+    river_way(101, [(37.50, 22.00), (37.55, 22.05)]),
+    river_way(102, [(37.55, 22.05), (37.60, 22.02)]),
+    river_way(103, [(37.60, 22.02), (37.70, 22.10)]),
+    river_way(104, [(37.0, 22.0), (37.1, 22.1)], name="Ladonas"),
+    {"type": "relation", "id": 900, "tags": {"waterway": "river", "name": "Λούσιος", "wikipedia": "el:Λούσιος"},
+     "bounds": {"minlat": 37.5, "minlon": 22.0, "maxlat": 37.6, "maxlon": 22.05},
+     "members": [{"type": "way", "ref": 101, "role": "main_stream",
+                  "geometry": geom([(37.50, 22.00), (37.55, 22.05)])},
+                 {"type": "way", "ref": 102, "role": "main_stream",
+                  "geometry": geom([(37.55, 22.05), (37.60, 22.02)])}]},
+]}
+
+
+def test_river_ways_in_a_relation_are_dropped_and_same_name_merged():
+    sights = parse_overpass(LOUSIOS)
+    assert [s.id for s in sights] == ["osm:node/1", "osm:relation/900", "osm:way/104"]
+    river = sights[1]
+    assert (river.kind, river.name, river.wikipedia) == ("river", "Λούσιος", "https://el.wikipedia.org/wiki/Λούσιος")
+    assert river.url == "https://www.openstreetmap.org/relation/900"
+    assert river.lines == [[[37.50, 22.00], [37.55, 22.05]], [[37.55, 22.05], [37.60, 22.02]],
+                           [[37.60, 22.02], [37.70, 22.10]]]
+    assert (river.lat, river.lon) == pytest.approx((37.6, 22.05))  # centre of the combined bounds
+
+
+def test_same_name_merge_only_for_line_kinds():
+    data = {"elements": [node(1, {"natural": "peak", "name": "Profitis Ilias"}),
+                         node(2, {"natural": "peak", "name": "Profitis Ilias"}, lat=37.7),
+                         {"type": "way", "id": 3, "tags": {"landuse": "forest", "name": "Fir"},
+                          "geometry": geom([(37.0, 22.0), (37.1, 22.0)])},
+                         {"type": "way", "id": 4, "tags": {"landuse": "forest", "name": "Fir"},
+                          "geometry": geom([(37.2, 22.0), (37.3, 22.0)])}]}
+    assert [s.id for s in parse_overpass(data)] == ["osm:node/1", "osm:node/2", "osm:way/3"]
+
+
+def test_merge_named_without_relation_keeps_first_id():
+    data = {"elements": [river_way(5, [(37.0, 22.0), (37.1, 22.1)]), river_way(6, [(37.2, 22.2), (37.3, 22.3)])]}
+    (river,) = parse_overpass(data)
+    assert river.id == "osm:way/5" and len(river.lines) == 2
+    assert (river.lat, river.lon) == pytest.approx((37.15, 22.15))

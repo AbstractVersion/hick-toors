@@ -17,7 +17,7 @@ from app.models import (
     Sight, Stay, StayLookup, StayLookupResult, StayQuery, StaySearch, StaySearchQuery, TripQuery, TripSearch,
 )
 from app.ranking import rank_combos
-from app.sources.nature import cap_lines, tiles_for
+from app.sources.nature import cap_lines, merge_named, tiles_for
 from app.sources.stays.airbnb import NO_ANSWER as AIRBNB_NO_ANSWER
 from app.sources.stays.airbnb import AirbnbParseError, ListingNotFound, room_id_from_url
 from app.sources.stays.base import ProviderUnavailable, StayProvider
@@ -412,7 +412,8 @@ class Engine:
                     merged[s.id] = first.model_copy(update={"lines": cap_lines(first.lines + s.lines)})
                 else:
                     merged[s.id] = s
-        sights = [s for s in merged.values() if _sight_in_box(s, bbox)]
+        # A river split over tiles comes back as several same-named sights: join them like within a tile.
+        sights = [s for s in merge_named(list(merged.values())) if _sight_in_box(s, bbox)]
         warnings = [NATURE_UNAVAILABLE] if any(r is None for r in results) else []
         return NatureSearch(sights=sights, warnings=warnings)
 

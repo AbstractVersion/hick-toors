@@ -78,6 +78,17 @@ async def test_engine_merges_same_sight_lines_and_caps(settings):
     assert len(river.lines) == 40 and river.lat == 37.6
 
 
+async def test_engine_merges_same_named_river_across_tiles(settings):
+    a = sight("osm:way/1", "river", lines=[[[37.6, 22.2], [37.7, 22.24]]])
+    b = sight("osm:relation/2", "river", lon=22.3, lines=[[[37.7, 22.26], [37.74, 22.3]]])
+    a.name = b.name = "Λούσιος"
+    nature = FakeNature({(37.5, 22.0): [a], (37.5, 22.25): [b]})
+    (river,) = (await make_engine(settings, nature).nature(BOX, ALL)).sights
+    assert river.id == "osm:relation/2" and len(river.lines) == 2
+    assert river.lines[0] == [[37.7, 22.26], [37.74, 22.3]]  # the relation's lines first
+    assert (river.lat, river.lon) == pytest.approx((37.67, 22.25))
+
+
 async def test_engine_partial_failure_warns_once_and_is_not_cached(settings):
     nature = FakeNature({(37.5, 22.0): [sight("osm:node/1")]}, fail={(37.5, 22.25)})
     engine = make_engine(settings, nature)
