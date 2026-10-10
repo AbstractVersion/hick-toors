@@ -4,13 +4,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.mcp_tools as tools
-from app.cache import DAY, HOUR, DiskCache
+from app.cache import DAY, DiskCache
 from app.config import Settings
 import app.engine as engine_module
-from app.engine import NATURE_TRUNCATED, NATURE_UNAVAILABLE, Engine
+from app.engine import NATURE_LIMIT, NATURE_TRUNCATED, NATURE_UNAVAILABLE, Engine, nature_box
 from app.main import create_app
 from app.models import BBox, NatureSearch, Sight
-from app.sources.nature import NatureUnavailable, Tile
+from app.sources.nature import DailyBudget, NatureLimitReached, NatureUnavailable, Tile
 from app.wiring import build_engine
 
 
@@ -20,7 +20,8 @@ def sight(id_, kind="waterfall", lat=37.6, lon=22.2, lines=None):
 
 
 class FakeNature:
-    def __init__(self, tiles=None, fail=(), truncated=(), meta=None):
+    def __init__(self, tiles=None, fail=(), truncated=(), meta=None, budget=None):
+        self.budget = budget
         self.tiles = tiles or {}
         self.fail = set(fail)
         self.truncated = set(truncated)
@@ -28,6 +29,8 @@ class FakeNature:
         self.calls = []
 
     async def fetch_tile(self, south, west):
+        if self.budget is not None and not self.budget.take():
+            raise NatureLimitReached("limit")
         self.calls.append((south, west))
         if (south, west) in self.fail:
             raise NatureUnavailable("busy")
@@ -189,6 +192,9 @@ def test_api_nature_groups_param(settings):
     ("south=-91&west=22.1&north=37.75&east=22.35", "Latitude must be within -90..90 and longitude within -180..180"),
     ("south=37.55&west=22.1&north=37.75&east=181", "Latitude must be within -90..90 and longitude within -180..180"),
     ("south=nan&west=22.1&north=37.75&east=22.35", "Latitude must be within -90..90 and longitude within -180..180"),
+    ("south=48.1&west=11.5&north=48.2&east=11.6", "Nature sights are available for Greece only"),  # Munich
+    ("south=42.31&west=22.1&north=42.4&east=22.2", "Nature sights are available for Greece only"),  # > 0.5° north
+    ("south=37.5&west=28.81&north=37.6&east=28.9", "Nature sights are available for Greece only"),  # > 0.5° east
 ])
 def test_api_nature_validation(settings, query, detail):
     engine = FakeEngine()
@@ -244,18 +250,19 @@ async def test_mcp_nature_sights_errors(mcp_engine, kwargs):
 # --- fix round -----------------------------------------------------------------------------------------
 
 
-async def test_engine_truncated_tile_warns_and_is_cached_one_hour(settings):
+async def test_engine_truncated_tile_warns_and_is_cached_seven_days(settings):
     clock = Clock()
     nature = FakeNature({(37.5, 22.0): [sight("osm:node/1")]}, truncated={(37.5, 22.0)})
     engine = make_engine(settings, nature, clock)
     result = await engine.nature(BOX, ALL)
     assert result.warnings == [NATURE_TRUNCATED]
-    assert NATURE_TRUNCATED == "Some nature sights were left out here – zoom in for more"
-    again = await engine.nature(BOX, ALL)  # cached, still warns
+    assert NATURE_TRUNCATED == "Some nature sights were left out here (too many in this area)"
+    clock.now += 7 * DAY - 1
+    again = await engine.nature(BOX, ALL)  # cached like any tile (the grid is fixed: refetching won't help)
     assert again.warnings == [NATURE_TRUNCATED] and len(nature.calls) == 2
-    clock.now += HOUR + 1
+    clock.now += 2
     await engine.nature(BOX, ALL)
-    assert nature.calls.count((37.5, 22.0)) == 2 and nature.calls.count((37.5, 22.25)) == 1
+    assert nature.calls.count((37.5, 22.0)) == 2 and nature.calls.count((37.5, 22.25)) == 2
 
 
 async def test_engine_cache_write_failure_still_answers(settings):
@@ -325,6 +332,63 @@ async def test_engine_merges_across_tiles_by_wikidata_and_prefers_english_name(s
     assert (river.id, river.name) == ("osm:relation/2", "Lousios")
 
 
-async def test_mcp_nature_sights_box_too_big_for_latitude(mcp_engine):
+async def test_mcp_nature_sights_outside_greece(mcp_engine):
     out = json.loads(await tools.nature_sights(80.0, 22.2, radius_km=30))
-    assert out == {"error": "radius_km too large for this latitude"} and mcp_engine.calls == []
+    assert out == {"error": "Nature sights are available for Greece only"} and mcp_engine.calls == []
+
+
+# --- abuse limits ------------------------------------------------------------------------------------------
+
+
+def test_nature_box_near_greece_is_allowed():
+    nature_box(41.9, 22.0, 42.0, 22.2)  # just north of the Greece box, within the 0.5° padding
+    nature_box(35.0, 18.9, 35.1, 19.0)  # just west
+
+
+async def test_engine_queue_cap_skips_new_tiles(settings, monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(engine_module, "NATURE_MAX_INFLIGHT", 2)
+    release = asyncio.Event()
+
+    class Slow(FakeNature):
+        async def fetch_tile(self, south, west):
+            self.calls.append((south, west))
+            await release.wait()
+            return Tile([], {})
+
+    nature = Slow()
+    engine = make_engine(settings, nature)
+    first = asyncio.ensure_future(engine.nature(BOX, ALL))
+    for _ in range(200):
+        if len(nature.calls) == 2:
+            break
+        await asyncio.sleep(0.005)
+    other = BBox(south=36.55, west=22.10, north=36.75, east=22.35)
+    busy = await engine.nature(other, ALL)
+    assert busy.warnings == [NATURE_UNAVAILABLE] and len(nature.calls) == 2  # no fetch started
+    release.set()
+    assert (await first).warnings == []
+    assert (await engine.nature(other, ALL)).warnings == [] and len(nature.calls) == 4
+
+
+async def test_engine_daily_limit_serves_cache_only(settings):
+    clock = Clock()
+    cache = DiskCache(settings.cache_dir, clock=clock)
+    nature = FakeNature({(37.5, 22.0): [sight("osm:node/1")]}, budget=DailyBudget(cache, limit=3, clock=clock))
+    engine = Engine(settings, None, [], None, None, cache, nature=nature)
+    assert (await engine.nature(BOX, ALL)).warnings == []  # 2 calls
+    other = BBox(south=36.55, west=22.10, north=36.75, east=22.35)
+    limited = await engine.nature(other, ALL)  # 1 call left: one tile fetched, one refused
+    assert limited.warnings == [NATURE_LIMIT] and len(nature.calls) == 3
+    assert NATURE_LIMIT == "Nature sights limit reached for today – showing cached areas only"
+    cached = await engine.nature(BOX, ALL)
+    assert cached.warnings == [] and [s.id for s in cached.sights] == ["osm:node/1"]
+    # A restart keeps the count: still limited, and no fetch is even started
+    cache2 = DiskCache(settings.cache_dir, clock=clock)
+    nature2 = FakeNature(budget=DailyBudget(cache2, limit=3, clock=clock))
+    engine2 = Engine(settings, None, [], None, None, cache2, nature=nature2)
+    far = BBox(south=35.55, west=22.10, north=35.75, east=22.35)
+    assert (await engine2.nature(far, ALL)).warnings == [NATURE_LIMIT] and nature2.calls == []
+    clock.now += DAY
+    assert (await engine2.nature(far, ALL)).warnings == [] and len(nature2.calls) == 2

@@ -351,3 +351,117 @@ def test_wikipedia_url_encodes_unsafe_characters():
                                                  "wikipedia": 'en:Olympus (mountain) [x]"<>\\|{}`\tΌλυμπος'})]})
     assert s.wikipedia == ("https://en.wikipedia.org/wiki/Olympus_%28mountain%29_%5Bx%5D%22%3C%3E%5C%7C%7B%7D%60%09"
                            "Όλυμπος")
+
+
+# --- abuse limits ----------------------------------------------------------------------------------------
+
+
+class Clock:
+    def __init__(self, now=1000.0):
+        self.now = now
+
+    def __call__(self):
+        return self.now
+
+
+def scripted(answers, calls):
+    answers = list(answers)
+
+    async def fetch(url, data):
+        calls.append(url)
+        a = answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return a
+
+    return fetch
+
+
+OK = json.dumps({"elements": []})
+DOWN = [RuntimeError("504"), RuntimeError("500")]
+
+
+async def test_backoff_after_both_endpoints_fail_doubles_and_resets():
+    clock, calls = Clock(), []
+    src = NatureSource(fetch=scripted(DOWN * 3 + [OK] + DOWN + [OK], calls), clock=clock)
+    with pytest.raises(NatureUnavailable):
+        await src.fetch_tile(37.5, 22.0)
+    assert len(calls) == 2
+    clock.now += 59
+    with pytest.raises(NatureUnavailable):  # backing off: no HTTP call
+        await src.fetch_tile(37.5, 22.0)
+    assert len(calls) == 2
+    clock.now += 2
+    with pytest.raises(NatureUnavailable):  # second failure in a row: 120 s
+        await src.fetch_tile(37.5, 22.0)
+    assert len(calls) == 4
+    clock.now += 119
+    with pytest.raises(NatureUnavailable):
+        await src.fetch_tile(37.5, 22.0)
+    assert len(calls) == 4
+    clock.now += 2
+    with pytest.raises(NatureUnavailable):  # third: 240 s
+        await src.fetch_tile(37.5, 22.0)
+    clock.now += 239
+    with pytest.raises(NatureUnavailable):
+        await src.fetch_tile(37.5, 22.0)
+    assert len(calls) == 6
+    clock.now += 2
+    await src.fetch_tile(37.5, 22.0)  # success resets the backoff
+    assert len(calls) == 7
+    with pytest.raises(NatureUnavailable):
+        await src.fetch_tile(37.5, 22.0)
+    clock.now += 61  # back to 60 s after a success
+    await src.fetch_tile(37.5, 22.0)
+    assert len(calls) == 10
+
+
+async def test_backoff_capped_at_ten_minutes():
+    clock, calls = Clock(), []
+    src = NatureSource(fetch=scripted(DOWN * 8, calls), clock=clock)
+    for _ in range(8):
+        with pytest.raises(NatureUnavailable):
+            await src.fetch_tile(37.5, 22.0)
+        clock.now += 601
+    assert len(calls) == 16  # never skipped: every wait was longer than the 600 s cap
+    clock.now -= 2  # 599 s after the last failure: still backing off
+    with pytest.raises(NatureUnavailable):
+        await src.fetch_tile(37.5, 22.0)
+    assert len(calls) == 16
+
+
+async def test_last_answering_endpoint_is_tried_first():
+    calls = []
+    src = NatureSource(fetch=scripted([RuntimeError("504"), OK, OK], calls))
+    await src.fetch_tile(37.5, 22.0)
+    await src.fetch_tile(37.5, 22.25)
+    assert calls == [ENDPOINTS[0], ENDPOINTS[1], ENDPOINTS[1]]
+
+
+async def test_daily_budget_counts_http_calls_and_survives_restart(tmp_path):
+    from app.cache import DAY, DiskCache
+    from app.sources.nature import DailyBudget, NatureLimitReached
+
+    clock, calls = Clock(), []
+    cache = DiskCache(tmp_path, clock=clock)
+    src = NatureSource(fetch=scripted([RuntimeError("504"), OK, OK], calls),
+                       budget=DailyBudget(cache, limit=3, clock=clock))
+    await src.fetch_tile(37.5, 22.0)  # two calls
+    await src.fetch_tile(37.5, 22.25)  # one call
+    assert src.budget.exhausted()
+    restarted = DailyBudget(DiskCache(tmp_path, clock=clock), limit=3, clock=clock)
+    assert restarted.exhausted() and restarted.take() is False
+    src2 = NatureSource(fetch=scripted([OK], calls), budget=restarted)
+    with pytest.raises(NatureLimitReached):
+        await src2.fetch_tile(37.0, 22.0)
+    assert len(calls) == 3
+    clock.now += DAY  # the next UTC day
+    assert not restarted.exhausted()
+    await src2.fetch_tile(37.0, 22.0)
+    assert len(calls) == 4
+
+
+def test_daily_budget_default_limit():
+    from app.sources.nature import DAILY_CALLS
+
+    assert DAILY_CALLS == 5000

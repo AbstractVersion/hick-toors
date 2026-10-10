@@ -5,7 +5,7 @@ from app.geocode import Geocoder
 from app.routing import Router
 from app.sources.stays.airbnb import AirbnbProvider
 from app.sources.stays.booking import BookingProvider
-from app.sources.nature import NatureSource
+from app.sources.nature import DailyBudget, NatureSource
 from app.sources.wikiloc import WikilocSource
 
 
@@ -21,5 +21,5 @@ def build_engine(settings: Settings | None = None) -> Engine:
         router=Router(cache, settings.ors_api_key),
         geocoder=Geocoder(cache, min_radius_km=settings.stay_radius_km),
         cache=cache,
-        nature=NatureSource(),
+        nature=NatureSource(budget=DailyBudget(cache)),
     )

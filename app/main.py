@@ -1,4 +1,6 @@
+import asyncio
 import sys
+from contextlib import asynccontextmanager, suppress
 from datetime import date
 from math import isfinite
 
@@ -9,6 +11,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.ask import AskRequest, AskResult, AskRunner
+from app.cache import DAY
 from app.config import BASE_DIR, Settings
 from app.engine import StayLookupFailed, lookup_airbnb_link, nature_box, nature_groups
 from app.filters import catalogue
@@ -43,11 +46,35 @@ def _json_safe(value):
     return value
 
 
+async def sweep_cache_daily(cache, interval: float = DAY) -> None:
+    """Sweep the disk cache now and then every `interval` seconds, in a thread; errors are only logged."""
+    while True:
+        try:
+            removed = await asyncio.to_thread(cache.sweep)
+            print(f"cache sweep removed {removed} files", file=sys.stderr)
+        except Exception as exc:
+            print(f"cache sweep failed: {exc!r}", file=sys.stderr)
+        await asyncio.sleep(interval)
+
+
 def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
                trip_store: TripStore | None = None) -> FastAPI:
     settings = settings or Settings()
     engine = engine or build_engine(settings)
-    app = FastAPI(title="hick-toors")
+    cache = getattr(engine, "cache", None)
+
+    @asynccontextmanager
+    async def lifespan(app):
+        task = asyncio.create_task(sweep_cache_daily(cache)) if hasattr(cache, "sweep") else None
+        try:
+            yield
+        finally:
+            if task:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+
+    app = FastAPI(title="hick-toors", lifespan=lifespan)
     app.state.engine = engine
     ask_runner = ask_runner or AskRunner(settings, engine.lookup)
     app.state.ask = ask_runner

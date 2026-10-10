@@ -5,8 +5,11 @@ import json
 import math
 import re
 import sys
+import threading
+import time
 import unicodedata
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
 import httpx
@@ -26,6 +29,9 @@ MAX_LINES = 40
 MAX_POINTS = 2000
 MAX_NAME = 120
 OSM_URL = "https://www.openstreetmap.org"
+BACKOFF_S = 60.0  # after both endpoints failed; doubles per failure in a row
+MAX_BACKOFF_S = 600.0
+DAILY_CALLS = 5000  # Overpass HTTP calls per UTC day (fair use is ~10k/day per user)
 
 FetchText = Callable[[str, dict], Awaitable[str]]  # fetch(url, form data) -> response body text
 
@@ -35,6 +41,45 @@ WIKIPEDIA_RE = re.compile(r"^([a-z]{2,3}):(.+)$")
 
 class NatureUnavailable(Exception):
     pass
+
+
+class NatureLimitReached(NatureUnavailable):
+    """The daily Overpass budget is used up."""
+
+
+class DailyBudget:
+    """At most `limit` Overpass HTTP calls per UTC day, counted in the disk cache so restarts don't reset it.
+
+    The web app and the MCP server share the cache directory and so the count (read-modify-write, so two
+    processes racing may undercount by a call or two – fine for a fair-use cap).
+    """
+
+    def __init__(self, cache, limit: int = DAILY_CALLS, clock: Callable[[], float] = time.time):
+        self.cache, self.limit, self._clock = cache, limit, clock
+        self._lock = threading.Lock()
+
+    def _key(self) -> str:
+        return "nature:budget:" + datetime.fromtimestamp(self._clock(), timezone.utc).date().isoformat()
+
+    def _used(self, key: str) -> int:
+        value = self.cache.get(key)
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+    def exhausted(self) -> bool:
+        return self._used(self._key()) >= self.limit
+
+    def take(self) -> bool:
+        """Count one call; False (nothing counted) when today's budget is used up."""
+        with self._lock:
+            key = self._key()
+            used = self._used(key)
+            if used >= self.limit:
+                return False
+            try:
+                self.cache.set(key, used + 1, 2 * 86400)
+            except OSError as exc:  # a full disk must not stop the app; the count just isn't kept
+                print(f"nature budget not saved: {exc!r}", file=sys.stderr)
+            return True
 
 
 def _idx(value: float, up: bool) -> int:
@@ -415,13 +460,38 @@ def make_fetch(transport: httpx.AsyncBaseTransport | None = None) -> FetchText:
 
 
 class NatureSource:
-    def __init__(self, fetch: FetchText | None = None):
+    """Overpass client with fair-use guards: a backoff after outages, the endpoint that last answered tried
+    first, and an optional daily budget of HTTP calls."""
+
+    def __init__(self, fetch: FetchText | None = None, clock: Callable[[], float] = time.monotonic,
+                 budget: DailyBudget | None = None):
         self._fetch = fetch or make_fetch()
+        self._clock = clock
+        self.budget = budget
+        self._failures = 0  # outages in a row
+        self._retry_at = 0.0  # no queries before this (clock time)
+        self._preferred = 0  # index into ENDPOINTS of the one that last answered
+
+    def _failed(self) -> None:
+        now = self._clock()
+        if now >= self._retry_at:  # concurrent failures within one backoff window count once
+            self._failures += 1
+            self._retry_at = now + min(BACKOFF_S * 2 ** (self._failures - 1), MAX_BACKOFF_S)
 
     async def fetch_tile(self, south: float, west: float) -> Tile:
-        """All sights of one tile; tries each endpoint in turn, NatureUnavailable when none answers."""
+        """All sights of one tile; tries each endpoint in turn (the last one that answered first).
+
+        NatureUnavailable when none answers or while backing off after an outage; NatureLimitReached when
+        the daily budget is used up.
+        """
+        if self._clock() < self._retry_at:
+            raise NatureUnavailable("Overpass backoff")
         query = tile_query(south, west)
-        for url in ENDPOINTS:
+        order = sorted(range(len(ENDPOINTS)), key=lambda i: i != self._preferred)
+        for i in order:
+            url = ENDPOINTS[i]
+            if self.budget is not None and not await asyncio.to_thread(self.budget.take):
+                raise NatureLimitReached("Overpass daily budget used up")
             try:
                 data = json.loads(await self._fetch(url, {"data": query}))
             except Exception as exc:
@@ -434,5 +504,7 @@ class NatureSource:
             if "error" in remark.lower():  # e.g. a timeout mid-query: partial results must not be cached
                 print(f"overpass {url}: {remark[:200]}", file=sys.stderr)
                 continue
+            self._preferred, self._failures, self._retry_at = i, 0, 0.0
             return await asyncio.to_thread(parse_tile, data)  # big tiles: keep the event loop free
+        self._failed()
         raise NatureUnavailable("Overpass did not answer")

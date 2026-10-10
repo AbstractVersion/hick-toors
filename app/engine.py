@@ -17,7 +17,8 @@ from app.models import (
     Sight, Stay, StayLookup, StayLookupResult, StayQuery, StaySearch, StaySearchQuery, TripQuery, TripSearch,
 )
 from app.ranking import rank_combos
-from app.sources.nature import Tile, cap_lines, default_meta, lines_centre, merge_named, tiles_for
+from app.sources.nature import (NatureLimitReached, Tile, cap_lines, default_meta, lines_centre, merge_named,
+                                tiles_for)
 from app.sources.stays.airbnb import NO_ANSWER as AIRBNB_NO_ANSWER
 from app.sources.stays.airbnb import AirbnbParseError, ListingNotFound, room_id_from_url
 from app.sources.stays.base import ProviderUnavailable, StayProvider
@@ -45,8 +46,13 @@ PRICE_NOT_FOUND = "Price not found for these dates – you can type it in"
 NO_DATES = "No dates set – price not looked up"
 NATURE_UNAVAILABLE = "Nature sights unavailable for part of the map – try again in a minute"
 ZOOM_IN_FOR_NATURE = "Zoom in to see nature sights"
-NATURE_TRUNCATED = "Some nature sights were left out here – zoom in for more"
+NATURE_TRUNCATED = "Some nature sights were left out here (too many in this area)"
+NATURE_LIMIT = "Nature sights limit reached for today – showing cached areas only"
+NATURE_GREECE_ONLY = "Nature sights are available for Greece only"
+NATURE_GREECE_PAD_DEG = 0.5  # border areas (islands, Prespa) still count
 NATURE_TILE_DEADLINE_S = 60.0  # per tile, both Overpass endpoints included
+NATURE_MAX_INFLIGHT = 32  # tile fetches queued or running; new uncached tiles beyond this are skipped
+_LIMITED = object()  # a tile not fetched because the daily Overpass budget is used up
 
 
 def _provider_key(provider) -> str:
@@ -122,6 +128,9 @@ def nature_box(south: float, west: float, north: float, east: float) -> BBox:
         raise ValueError(BAD_COORDS)
     if south >= north or west >= east:
         raise ValueError("south must be < north and west < east")
+    g, pad = GREECE_BBOX, NATURE_GREECE_PAD_DEG
+    if not (south < g.north + pad and north > g.south - pad and west < g.east + pad and east > g.west - pad):
+        raise ValueError(NATURE_GREECE_ONLY)
     box = BBox(south=south, west=west, north=north, east=east)
     try:
         tiles_for(box)
@@ -135,6 +144,32 @@ def _sight_in_box(s: Sight, box: BBox) -> bool:
         return box.south <= lat <= box.north and box.west <= lon <= box.east
 
     return inside(s.lat, s.lon) or any(inside(p[0], p[1]) for line in s.lines for p in line)
+
+
+def _merge_tiles(tiles: list[Tile], groups: list[str], bbox: BBox) -> list[Sight]:
+    """Sights of `groups` from all tiles inside bbox, one per feature (pure: run in a thread)."""
+    kinds = {k for g in groups for k in SIGHT_GROUPS[g]}
+    merged: dict[str, Sight] = {}
+    meta: dict[str, dict] = {}
+    for tile in tiles:
+        for s in tile.sights:
+            if s.kind not in kinds:
+                continue
+            m = tile.meta.get(s.id) or default_meta(s)
+            if s.id in merged:  # same element clipped into several tiles: join its lines
+                first, lines = merged[s.id], cap_lines(merged[s.id].lines + s.lines)
+                centre = lines_centre(lines)
+                update: dict = {"lines": lines}
+                if centre:
+                    update.update(lat=centre[0], lon=centre[1])
+                merged[s.id] = first.model_copy(update=update)
+                meta[s.id] = {"wd": meta[s.id]["wd"] or m["wd"], "name": meta[s.id]["name"],
+                              "en": meta[s.id]["en"] or m["en"]}
+            else:
+                merged[s.id], meta[s.id] = s, m
+    # A river split over tiles comes back as several sights of one feature: join them like within a tile.
+    joined, _ = merge_named(list(merged.values()), meta)
+    return [s for s in joined if _sight_in_box(s, bbox)]
 
 
 class StayLookupFailed(Exception):
@@ -388,29 +423,41 @@ class Engine:
             self._nature_inflight = {}
         return self._nature_sem[1]
 
-    async def _fetch_nature_tile(self, key: str, south: float, west: float) -> Tile | None:
+    async def _fetch_nature_tile(self, key: str, south: float, west: float):
         async with self._nature_semaphore():
             try:  # one deadline for the whole tile, both endpoints included
                 tile = await asyncio.wait_for(self.nature_source.fetch_tile(south, west), NATURE_TILE_DEADLINE_S)
+            except NatureLimitReached:
+                return _LIMITED
             except Exception as exc:  # NatureUnavailable, the deadline, anything unexpected
                 print(f"nature tile {key} failed: {exc!r}", file=sys.stderr)
                 return None
-        try:  # a tile that hit an Overpass cap is retried sooner (zooming in fixes it anyway)
-            self.cache.set(key, tile.to_cache(), HOUR if tile.truncated else 7 * DAY)
+        # A truncated tile is cached like any other: the tile grid is fixed, so zooming in or refetching
+        # asks Overpass the same query and hits the same cap.
+        try:
+            await asyncio.to_thread(lambda: self.cache.set(key, tile.to_cache(), 7 * DAY))
         except OSError as exc:
             print(f"nature tile {key} not cached: {exc!r}", file=sys.stderr)
         return tile
 
-    async def _nature_tile(self, south: float, west: float) -> Tile | None:
+    async def _nature_tile(self, south: float, west: float):
+        """The tile (cached or fetched), None when unavailable, or _LIMITED (daily budget used up)."""
         key = f"nature:v1:{south:.2f}_{west:.2f}"
-        cached = Tile.from_cache(self.cache.get(key))  # old-format / corrupt entries count as a miss
+        # old-format / corrupt entries count as a miss
+        cached = await asyncio.to_thread(lambda: Tile.from_cache(self.cache.get(key)))
         if cached is not None:
             return cached
         if self.nature_source is None:
             return None
         self._nature_semaphore()  # (re)binds the shared state to this loop
+        budget = getattr(self.nature_source, "budget", None)
+        if key not in self._nature_inflight and budget is not None and await asyncio.to_thread(budget.exhausted):
+            return _LIMITED  # cache only for the rest of the UTC day
+        # No await from here until the task is registered, so the queue cap holds across requests.
         task = self._nature_inflight.get(key)
         if task is None:  # concurrent requests for the same tile share one Overpass query
+            if len(self._nature_inflight) >= NATURE_MAX_INFLIGHT:
+                return None  # queue full: don't pile up more Overpass queries
             task = asyncio.ensure_future(self._fetch_nature_tile(key, south, west))
             self._nature_inflight[key] = task
             task.add_done_callback(
@@ -424,32 +471,14 @@ class Engine:
         A failed tile is not cached; it adds one warning and the other tiles still count.
         """
         results = await asyncio.gather(*(self._nature_tile(s, w) for s, w in tiles_for(bbox)))
-        kinds = {k for g in groups for k in SIGHT_GROUPS[g]}
-        merged: dict[str, Sight] = {}
-        meta: dict[str, dict] = {}
-        for tile in results:
-            for s in tile.sights if tile else []:
-                if s.kind not in kinds:
-                    continue
-                m = tile.meta.get(s.id) or default_meta(s)
-                if s.id in merged:  # same element clipped into several tiles: join its lines
-                    first, lines = merged[s.id], cap_lines(merged[s.id].lines + s.lines)
-                    centre = lines_centre(lines)
-                    update: dict = {"lines": lines}
-                    if centre:
-                        update.update(lat=centre[0], lon=centre[1])
-                    merged[s.id] = first.model_copy(update=update)
-                    meta[s.id] = {"wd": meta[s.id]["wd"] or m["wd"], "name": meta[s.id]["name"],
-                                  "en": meta[s.id]["en"] or m["en"]}
-                else:
-                    merged[s.id], meta[s.id] = s, m
-        # A river split over tiles comes back as several sights of one feature: join them like within a tile.
-        joined, _ = merge_named(list(merged.values()), meta)
-        sights = [s for s in joined if _sight_in_box(s, bbox)]
+        tiles = [t for t in results if isinstance(t, Tile)]
+        sights = await asyncio.to_thread(_merge_tiles, tiles, groups, bbox)  # big rivers: keep the loop free
         warnings = []
         if any(t is None for t in results):
             warnings.append(NATURE_UNAVAILABLE)
-        if any(t is not None and t.truncated for t in results):
+        if any(t is _LIMITED for t in results):
+            warnings.append(NATURE_LIMIT)
+        if any(t.truncated for t in tiles):
             warnings.append(NATURE_TRUNCATED)
         return NatureSearch(sights=sights, warnings=warnings)
 
