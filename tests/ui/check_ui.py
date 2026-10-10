@@ -679,8 +679,8 @@ def main() -> None:
         page.fill("#trip-notes", "pdf <b>notes</b>")
         with page.context.expect_page() as pdf_tab:
             page.click("#trip-pdf")
-        tab = pdf_tab.value
-        assert tab.url.endswith(f"/api/saved-trips/{trip_id}/print"), tab.url
+        tab = pdf_tab.value  # opened blank in the click (Safari pop-up rule), navigated after the save
+        tab.wait_for_url(re.compile(rf"/api/saved-trips/{re.escape(trip_id)}/print$"))
         assert any(u.endswith(f"/api/saved-trips/{trip_id}") for u in puts), puts
         page.remove_listener("request", on_request)
         page.context.unroute(print_re)
@@ -1027,6 +1027,9 @@ def main() -> None:
         expect(page.locator(".leaflet-marker-icon.pin.trip-sight")).to_have_count(1)
         nature_settle()
         assert page.evaluate("nature.layer.getLayers().length") > 0  # Show on map leaves the nature layer
+        # The trip's sight is pinned once (the distinct trip pin), not again by the nature layer.
+        expect(sight_pins.filter(has_text="💧")).to_have_count(0)
+        assert page.evaluate("nature.rendered.get('osm:node/1')?.pinned ?? null") is False  # drawn, no 2nd pin
         page.click("#nature-btn")  # off: layer, chips, attribution go; the trip's sight stays
         expect(page.locator("#nature-chips")).to_be_hidden()
         assert page.evaluate("nature.layer.getLayers().length") == 0

@@ -9,7 +9,7 @@ HIKE = Hike(id="wikiloc:1", name="Vikos Gorge", url="https://es.wikiloc.com/viko
             distance_km=12.0, elevation_gain_m=600, difficulty="Moderate", trailrank=70, near="Monodendri",
             drive_minutes=130, thumbnail="https://img.example/t.jpg")
 EVIL = Hike(id="wikiloc:2", name="Evil <b>", url="javascript:alert(1)", lat=1.5, lon=2.5,
-            thumbnail="javascript:x")
+            thumbnail="http://img.example/plain.jpg")
 STAY = Stay(id="airbnb:1", source="airbnb", name="Stone house", url="https://www.airbnb.com/rooms/1",
             lat=39.95, lon=20.75, total_price=190, currency="EUR", rating=4.8, badge="pets",
             photo="https://img.example/p.jpg")
@@ -35,10 +35,12 @@ def test_document_shell():
     assert "<title>Ζαγόρι weekend</title>" in html
     assert "@page { size: A4; margin: 16mm }" in html
     assert "@media print" in html
-    assert 'onclick="window.print()"' in html and "🖨️ Print / Save as PDF" in html
+    assert "onclick" not in html and "🖨️ Print / Save as PDF" in html
+    assert 'id="print-btn"' in html and 'addEventListener("click", () => window.print())' in html
     assert "Choose “Save as PDF” as the printer" in html
     assert "noprint" in html and "setTimeout(() => window.print(), 300)" in html
     assert "<link" not in html and "<script src" not in html
+    assert html.count("<script>") == 1
 
 
 def test_content_mirrors_markdown():
@@ -70,7 +72,7 @@ def test_images_only_for_http():
     html = full()
     assert '<img src="https://img.example/t.jpg"' in html and '<img src="https://img.example/p.jpg"' in html
     assert 'loading="eager"' in html
-    assert 'src="javascript' not in html
+    assert 'src="javascript' not in html and "http://img.example/plain.jpg" not in html
 
 
 def test_notes_escaped_and_preserved():
@@ -86,3 +88,28 @@ def test_empty_trip():
     assert "Nature (" not in html and "📝 Notes" not in html
     assert "None yet." in html
     assert "⭐" not in html
+
+
+def test_hikes_are_a_numbered_list():
+    html = full()
+    start = html.index("🥾 Hikes (2)")
+    section = html[start:html.index("🏡 Stays")]
+    assert '<ol class="items">' in section and "</ol>" in section and "<ul" not in section
+    assert 'content: counter(n) ". "' in html  # flex items hide list markers: number them like the Markdown
+    assert '<ul class="items">' in html[html.index("🏡 Stays"):]
+
+
+def test_csp_hashes_the_one_script():
+    import base64
+    import hashlib
+    import re
+
+    from app.trip_print import CSP
+
+    html = full()
+    (script,) = re.findall(r"<script>(.*?)</script>", html, re.S)
+    digest = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
+    directives = dict(d.strip().split(" ", 1) for d in CSP.split(";"))
+    assert directives["script-src"] == f"'sha256-{digest}'"
+    assert directives["base-uri"] == "'none'" and directives["form-action"] == "'none'"
+    assert directives["frame-ancestors"] == "'none'" and directives["default-src"] == "'none'"

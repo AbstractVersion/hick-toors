@@ -4,14 +4,14 @@ The page opens the browser's print dialog, where "Save as PDF" turns it into a P
 Facts and wording come from the Markdown export's helpers so both exports stay in step.
 """
 
+import base64
+import hashlib
 from datetime import date
 from html import escape
 
 from app.models import Hike, SavedTrip, Sight, Stay
 from app.trip_markdown import (FOOTER, hike_facts, map_url, safe_url, sight_emoji, sight_facts, stay_facts,
                                suggested_line, trip_nights, trip_summary)
-
-CSP = "default-src 'none'; img-src https: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
 
 _CSS = """
 @page { size: A4; margin: 16mm }
@@ -28,6 +28,8 @@ a { color: #1f6f3a }
                   background: #1f6f3a; color: #fff; cursor: pointer }
 .hint { color: #4a5c4f; font-size: 13px }
 .items { list-style: none; padding: 0; margin: 0 }
+ol.items { counter-reset: n }
+ol.items .name::before { counter-increment: n; content: counter(n) ". " }
 .item { display: flex; gap: 12px; padding: 8px 0; border-bottom: 1px dashed #dde5dd; break-inside: avoid }
 .item img { width: 120px; height: 80px; max-width: 120px; max-height: 80px; object-fit: cover;
             border-radius: 4px; flex: none }
@@ -44,9 +46,16 @@ footer { margin-top: 24px; padding-top: 8px; border-top: 1px solid #cfd8cf; font
 }
 """
 
-_SCRIPT = """window.addEventListener("load", () => {
+_SCRIPT = """document.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("print-btn").addEventListener("click", () => window.print());
+});
+window.addEventListener("load", () => {
   if (!new URLSearchParams(location.search).has("noprint")) setTimeout(() => window.print(), 300);
 });"""
+# The one script is allowed by its hash (no 'unsafe-inline'), so injected markup could never run script.
+_SCRIPT_HASH = base64.b64encode(hashlib.sha256(_SCRIPT.encode()).digest()).decode()
+CSP = ("default-src 'none'; img-src https: data:; style-src 'unsafe-inline'; "
+       f"script-src 'sha256-{_SCRIPT_HASH}'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 
 
 def _e(text) -> str:
@@ -64,7 +73,7 @@ def _map_link(lat: float, lon: float) -> str:
 
 
 def _img(url: str | None) -> str:
-    return f'<img src="{_e(url)}" alt="" loading="eager">' if safe_url(url) else ""
+    return f'<img src="{_e(url)}" alt="" loading="eager">' if url and url.startswith("https://") else ""
 
 
 def _item(emoji: str, name: str, url: str, facts: list[str], extra: list[str], image: str | None = None) -> str:
@@ -90,10 +99,10 @@ def _sight(s: Sight) -> str:
     return _item(f"{sight_emoji(s)} ", s.name, s.url, sight_facts(s), [*extra, _map_link(s.lat, s.lon)])
 
 
-def _section(title: str, items: list[str], empty: str | None = "None yet.") -> list[str]:
+def _section(title: str, items: list[str], empty: str | None = "None yet.", tag: str = "ul") -> list[str]:
     out = [f"<h2>{title}</h2>"]
     if items:
-        out += ['<ul class="items">', *items, "</ul>"]
+        out += [f'<{tag} class="items">', *items, f"</{tag}>"]
     elif empty:
         out.append(f'<p class="empty">{empty}</p>')
     return out
@@ -102,14 +111,14 @@ def _section(title: str, items: list[str], empty: str | None = "None yet.") -> l
 def trip_print_html(trip: SavedTrip, today: date) -> str:
     nights = trip_nights(trip)
     body = [
-        '<div class="toolbar"><button type="button" onclick="window.print()">🖨️ Print / Save as PDF</button>'
+        '<div class="toolbar"><button type="button" id="print-btn">🖨️ Print / Save as PDF</button>'
         '<span class="hint">Choose “Save as PDF” as the printer</span></div>',
         f"<h1>{_e(trip.name)}</h1>",
         f'<p class="meta">{_e(trip_summary(trip, nights))}</p>',
     ]
     if suggested := suggested_line(trip):
         body.append(f'<p class="meta">{_e(suggested)}</p>')
-    body += _section(f"🥾 Hikes ({len(trip.hikes)})", [_hike(h) for h in trip.hikes])
+    body += _section(f"🥾 Hikes ({len(trip.hikes)})", [_hike(h) for h in trip.hikes], tag="ol")
     body += _section(f"🏡 Stays ({len(trip.stays)})", [_stay(s, nights) for s in trip.stays])
     if trip.sights:
         body += _section(f"🌿 Nature ({len(trip.sights)})", [_sight(s) for s in trip.sights])

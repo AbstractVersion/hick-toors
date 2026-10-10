@@ -356,9 +356,27 @@ async function exportTrip() {
   window.location.href = tripPath(trips.current.id, "/export.md");
 }
 async function printTrip() {
-  // Same as export, but opens the printable page (its print dialog offers "Save as PDF").
-  if (!trips.current || trips.busy || !(await persistTrip())) return;
-  window.open(tripPath(trips.current.id, "/print"), "_blank", "noopener");
+  // Same as export, but opens the printable page (its print dialog offers "Save as PDF"). The tab is opened
+  // right in the click: Safari blocks a window.open that comes after an await (the save) as a pop-up.
+  if (!trips.current || trips.busy) return;
+  const tab = window.open("", "_blank");
+  if (tab) {
+    tab.opener = null;
+    try { tab.document.title = "Preparing PDF…"; } catch { /* not ours to touch */ }
+  }
+  if (!(await persistTrip())) {
+    tab?.close();
+    return;
+  }
+  const url = tripPath(trips.current.id, "/print");
+  if (tab) {
+    tab.location.replace(url);
+    return;
+  }
+  // No "noopener" here: with it window.open always returns null, so a blocked pop-up couldn't be told apart.
+  const late = window.open(url, "_blank");
+  if (late) late.opener = null;
+  else showTripsError("Allow pop-ups to open the PDF page");
 }
 function showTripOnMap() {
   const t = trips.current;

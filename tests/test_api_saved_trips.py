@@ -157,8 +157,17 @@ def test_print_page(tmp_path):
     r = c.get(f"/api/saved-trips/{tid}/print")
     assert r.status_code == 200
     assert r.headers["content-type"] == "text/html; charset=utf-8"
-    assert r.headers["content-security-policy"] == ("default-src 'none'; img-src https: data:; "
-                                                    "style-src 'unsafe-inline'; script-src 'unsafe-inline'")
+    import base64
+    import hashlib
+    import re
+
+    csp = r.headers["content-security-policy"]
+    (script,) = re.findall(r"<script>(.*?)</script>", r.text, re.S)
+    digest = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
+    script_src = next(d for d in csp.split(";") if d.strip().startswith("script-src"))
+    assert script_src.strip() == f"script-src 'sha256-{digest}'" and "unsafe-inline" not in script_src
+    assert "default-src 'none'" in csp and "base-uri 'none'" in csp and "form-action 'none'" in csp
+    assert "frame-ancestors 'none'" in csp
     assert r.headers["cache-control"] == "no-cache"
     assert "<title>Ζαγόρι weekend</title>" in r.text
     r = c.get("/api/saved-trips/nope/print")

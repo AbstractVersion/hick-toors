@@ -88,9 +88,21 @@ function addSightLayers(s) {
         .bindPopup(popup));
     }
   }
-  layers.push(sightMarker(s, "", popup));
+  // A sight already pinned as a trip sight keeps only that (distinct) pin; its lines are still drawn.
+  if (!nature.tripShown.has(s.id)) layers.push(sightMarker(s, "", popup));
   for (const layer of layers) nature.layer.addLayer(layer);
   return layers;
+}
+function renderedEntry(s) {
+  return { sight: plainSight(s), full: s, pinned: !nature.tripShown.has(s.id), layers: addSightLayers(s) };
+}
+// After the trip sights change: redraw nature sights whose "also a trip sight" state flipped.
+function refreshTripOverlap() {
+  for (const [id, entry] of nature.rendered) {
+    if (entry.pinned === !nature.tripShown.has(id)) continue;
+    for (const layer of entry.layers) nature.layer.removeLayer(layer);
+    nature.rendered.set(id, renderedEntry(entry.full));
+  }
 }
 // Incremental: sights already on the map keep their pin, lines and any open popup; gone ones are removed.
 function renderSights(sights) {
@@ -104,7 +116,7 @@ function renderSights(sights) {
     nature.rendered.delete(id);
   }
   for (const [id, s] of wanted) {
-    if (!nature.rendered.has(id)) nature.rendered.set(id, { sight: plainSight(s), layers: addSightLayers(s) });
+    if (!nature.rendered.has(id)) nature.rendered.set(id, renderedEntry(s));
   }
   syncSightLookup();
 }
@@ -229,6 +241,7 @@ function toggleGroup(group) {
 function clearTripSights() {
   nature.tripLayer.clearLayers();
   nature.tripShown.clear();
+  refreshTripOverlap();
   syncSightLookup();
 }
 // Pins a saved trip's sights; returns the markers so the caller can fit the map to them.
@@ -241,6 +254,7 @@ function showTripSights(sights) {
     const marker = sightMarker(s, "trip-sight").addTo(nature.tripLayer);
     markers.push(marker);
   }
+  refreshTripOverlap();
   syncSightLookup();
   return markers;
 }
