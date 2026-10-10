@@ -10,7 +10,6 @@ SEARCH_URL = "https://es.wikiloc.com/wikiloc/find.do"
 BASE_URL = "https://es.wikiloc.com"
 USER_AGENT = "wikiloc-app/1.0"
 PAGE_SIZE = 25
-HIKING_PICTO = 1
 GREECE_MARKERS = ("Greece", "Ελλάδα", "Grecia")
 SKILL = {1: "Easy", 2: "Moderate", 3: "Hard", 4: "Very Hard", 5: "Experts Only"}
 
@@ -39,14 +38,16 @@ def _in_greece(near: str | None) -> bool:
 
 
 def parse_search(data: dict) -> list[Hike]:
+    """Every Greek route of any activity; the engine filters activities (HikeFilters.activities)."""
     hikes = []
     for spa in data.get("spas") or []:
-        if spa.get("picto") != HIKING_PICTO or not _in_greece(spa.get("near")):
+        if not _in_greece(spa.get("near")):
             continue
         if spa.get("lat") is None or spa.get("lon") is None:
             continue
         slope = _num(spa.get("slope"))
         thumbs = spa.get("thumbs") or []
+        skill = spa.get("skill")
         hikes.append(
             Hike(
                 id=f"wikiloc:{spa['id']}",
@@ -56,10 +57,12 @@ def parse_search(data: dict) -> list[Hike]:
                 lon=spa["lon"],
                 distance_km=_num(spa.get("distance")),
                 elevation_gain_m=int(slope) if slope is not None else None,
-                difficulty=SKILL.get(spa.get("skill")),
+                difficulty=SKILL.get(skill),
                 trailrank=spa.get("trailrank"),
                 near=spa.get("near"),
                 thumbnail=thumbs[0].get("url") if thumbs else None,
+                activity=spa.get("picto") if isinstance(spa.get("picto"), int) else None,
+                skill=skill if skill in SKILL else None,
             )
         )
     return hikes
@@ -93,10 +96,13 @@ class WikilocSource:
         self._fetch = fetch or make_fetch()
         self._pages = pages
 
-    async def search(self, bbox: BBox, query: str = "") -> list[Hike]:
+    async def search(self, bbox: BBox, query: str = "", sort: str = "popular",
+                     pages: int | None = None) -> list[Hike]:
+        """Routes in bbox. sort="top_rated" asks Wikiloc for its TrailRank order (the only
+        server-side filter that works anonymously); pages overrides the configured page count."""
         hikes: list[Hike] = []
         seen: set[str] = set()
-        for page in range(self._pages):
+        for page in range(pages or self._pages):
             # Wikiloc pages with from/to offsets (max 25 per request); it ignores a `page` param.
             offset = page * PAGE_SIZE
             params = {
@@ -107,6 +113,8 @@ class WikilocSource:
                 "ne": f"{bbox.north},{bbox.east}",
                 "q": query,
             }
+            if sort == "top_rated":
+                params["sort"] = "trailrank"
             data = await self._fetch(SEARCH_URL, params)
             if not isinstance(data, dict):
                 if page == 0:

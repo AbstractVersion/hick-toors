@@ -5,6 +5,7 @@ from datetime import date
 from app.cache import DAY, HOUR, DiskCache
 from app.config import Settings
 from app.dog_rule import apply_dog_rule, badge_tier
+from app.filters import apply_hike_filters
 from app.geo import GREECE_BBOX, bbox_around, clamp_to_greece, haversine_km
 from app.models import (
     DriveLimit, Hike, HikeQuery, HikeSearch, LatLon, Stay, StayQuery, StaySearch,
@@ -53,7 +54,8 @@ class Engine:
         return (Hike if entry["kind"] == "hike" else Stay)(**entry["data"])
 
     async def _wikiloc_cached(self, box) -> list[Hike]:
-        key = f"hikes:{box.south:.3f},{box.west:.3f},{box.north:.3f},{box.east:.3f}"
+        # v2 key: entries now hold every activity (v1 entries were hiking-only, without `activity`).
+        key = f"hikes:v2:{box.south:.3f},{box.west:.3f},{box.north:.3f},{box.east:.3f}"
         cached = self.cache.get(key)
         if cached is not None:
             return [Hike(**h) for h in cached]
@@ -80,6 +82,7 @@ class Engine:
             hikes = await self._wikiloc_cached(box)
         except WikilocUnavailable as exc:
             return HikeSearch(warnings=[str(exc)], drive_limit_minutes=limit)
+        hikes = apply_hike_filters(hikes, q.filters)
         times, warning = await self.router.drive_times(self.home, [LatLon(lat=h.lat, lon=h.lon) for h in hikes])
         if warning:
             warnings.append(warning)

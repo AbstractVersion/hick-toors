@@ -16,13 +16,16 @@ def test_parse_search_maps_fields():
     assert hike.url == "https://es.wikiloc.com/rutas-senderismo/route-133095679"
     assert hike.distance_km == 11.81
     assert hike.elevation_gain_m == 1136
-    assert hike.difficulty == "Hard"
+    assert hike.difficulty == "Hard" and hike.skill == 3
+    assert hike.activity == 1
     assert hike.trailrank == 89
     assert (hike.lat, hike.lon) == (39.39, 22.99)
     assert hike.thumbnail == "https://s0.wklcdn.com/133095679_tn.jpg"
 
 
-def test_parse_search_keeps_only_greek_hiking_routes():
+def test_parse_search_keeps_greek_routes_of_every_activity():
+    # v2 contract change: activities are filtered in the engine (HikeFilters.activities), so
+    # parse_search keeps non-hiking pictos and records them in Hike.activity. Greece-only stays.
     data = {"spas": [
         wikiloc_spa(1, "Greek script", 39.3, 22.9, near="Miléai, Θεσσαλία (Ελλάδα)"),
         wikiloc_spa(2, "English", 39.3, 22.9, near="Portariá, Thessaly (Greece)"),
@@ -30,7 +33,14 @@ def test_parse_search_keeps_only_greek_hiking_routes():
         wikiloc_spa(4, "Diving", 39.3, 22.9, picto=41),
         wikiloc_spa(5, "Turkish coast", 39.3, 26.7, near="Ayvalık, Balıkesir (Türkiye)"),
     ]}
-    assert [h.id for h in parse_search(data)] == ["wikiloc:1", "wikiloc:2", "wikiloc:3"]
+    hikes = parse_search(data)
+    assert [h.id for h in hikes] == ["wikiloc:1", "wikiloc:2", "wikiloc:3", "wikiloc:4"]
+    assert [h.activity for h in hikes] == [1, 1, 1, 41]
+
+
+def test_parse_search_ignores_unknown_skill():
+    [hike] = parse_search({"spas": [wikiloc_spa(1, "Odd", 39.3, 22.9, skill=9)]})
+    assert hike.skill is None and hike.difficulty is None
 
 
 def test_parse_search_skips_routes_without_coordinates():
@@ -60,6 +70,34 @@ async def test_search_pages_by_offset_and_dedupes():
     assert [(c["from"], c["to"]) for c in calls] == [(0, 25), (25, 50)]
     assert all("page" not in c for c in calls)
     assert len(calls) == 2  # second page had < 25 results, so no third
+
+
+async def test_search_sort_param_only_for_top_rated():
+    calls = []
+
+    async def fetch(url, params):
+        calls.append(params)
+        return {"spas": []}
+
+    source = WikilocSource(fetch=fetch)
+    await source.search(BOX)
+    await source.search(BOX, sort="top_rated")
+    assert "sort" not in calls[0]
+    assert calls[1]["sort"] == "trailrank"
+
+
+async def test_search_pages_override():
+    calls = []
+
+    async def fetch(url, params):
+        calls.append(params["from"])
+        return {"spas": [wikiloc_spa(params["from"] + i, "r", 39.3, 22.9) for i in range(25)]}
+
+    source = WikilocSource(fetch=fetch, pages=2)
+    assert len(await source.search(BOX)) == 50
+    calls.clear()
+    assert len(await source.search(BOX, pages=4)) == 100
+    assert calls == [0, 25, 50, 75]
 
 
 async def test_search_raises_when_first_page_fails():

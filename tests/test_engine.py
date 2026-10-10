@@ -13,8 +13,10 @@ from app.sources.wikiloc import WikilocUnavailable
 FRI, SUN = date(2026, 10, 23), date(2026, 10, 25)
 
 
-def hike(id, trailrank, lat=39.4, lon=23.0):
-    return Hike(id=f"wikiloc:{id}", name=str(id), url="u", lat=lat, lon=lon, trailrank=trailrank)
+def hike(id, trailrank, lat=39.4, lon=23.0, activity=1, distance_km=None):
+    # activity=1 (Hiking): the engine now applies the default activity filter itself.
+    return Hike(id=f"wikiloc:{id}", name=str(id), url="u", lat=lat, lon=lon, trailrank=trailrank,
+                activity=activity, distance_km=distance_km)
 
 
 def stay(id, source="airbnb", pets=True, garden=None, lat=39.41, lon=23.01, rating=4.5, price=200.0):
@@ -177,3 +179,24 @@ async def test_plan_trip_ranks_combos(settings):
     assert len(result.combos) == 2
     assert result.combos[0].hike.id == "wikiloc:1"
     assert result.combos[0].score >= result.combos[1].score
+
+
+# ---- v2: filters ----
+
+async def test_default_filters_drop_non_hiking_routes(settings):
+    hikes = [hike(1, 50, lat=38.1), hike(2, 90, lat=38.1, activity=41)]
+    engine = make_engine(settings, wikiloc=FakeWikiloc(hikes), router=FakeRouter({38.1: 60}))
+    result = await engine.search_hikes(HikeQuery(start=FRI, end=SUN))
+    assert [h.id for h in result.hikes] == ["wikiloc:1"]
+
+
+async def test_v1_hike_cache_entries_are_not_reused(settings):
+    # v1 cached hiking-only routes without `activity`; reusing them would now filter them all out.
+    from app.models import BBox
+    box = BBox(south=39.3, west=22.9, north=39.5, east=23.2)
+    engine = make_engine(settings, wikiloc=FakeWikiloc([hike(2, 90, lat=39.4)]), router=FakeRouter({39.4: 10}),
+                         geocoder=FakeGeocoder(box))
+    engine.cache.set("hikes:39.300,22.900,39.500,23.200",
+                     [hike(7, 99, lat=39.4, activity=None).model_dump(mode="json")], 3600)
+    result = await engine.search_hikes(HikeQuery(start=FRI, end=FRI, mode="place", place="Pelion"))
+    assert [h.id for h in result.hikes] == ["wikiloc:2"]
