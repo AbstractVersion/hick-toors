@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -259,3 +259,74 @@ class StaySearch(BaseModel):
 class TripSearch(BaseModel):
     combos: list[Combo] = []
     warnings: list[str] = []
+
+
+MAX_TRIP_ITEMS = 50
+
+
+def _unique_by_id(items: list) -> list:
+    seen: set[str] = set()
+    out = []
+    for item in items:
+        if item.id not in seen:
+            seen.add(item.id)
+            out.append(item)
+    return out
+
+
+class SavedTripIn(BaseModel):
+    """Body of POST/PUT /api/saved-trips: a named bucket of hikes and stays (snapshots as seen)."""
+
+    name: str = Field(min_length=1, max_length=120)
+    start: date | None = None
+    end: date | None = None
+    guests: int = Field(default=2, ge=1, le=16)
+    dog: bool = True
+    notes: str = Field(default="", max_length=5000)
+    source: Literal["manual", "suggested"] = "manual"
+    score: float | None = Field(default=None, ge=0, le=100)
+    hikes: list[Hike] = Field(default_factory=list, max_length=MAX_TRIP_ITEMS)
+    stays: list[Stay] = Field(default_factory=list, max_length=MAX_TRIP_ITEMS)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _strip_name(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+    _dedupe_items = field_validator("hikes", "stays")(_unique_by_id)
+
+    @model_validator(mode="after")
+    def _check_dates(self):
+        if self.start and self.end and self.end < self.start:
+            raise ValueError("end must be on or after start")
+        return self
+
+
+class SavedTrip(SavedTripIn):
+    id: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class SavedTripSummary(BaseModel):
+    id: str
+    name: str
+    start: date | None = None
+    end: date | None = None
+    source: Literal["manual", "suggested"] = "manual"
+    hike_count: int
+    stay_count: int
+    updated_at: datetime
+
+
+class TripItemAdd(BaseModel):
+    """Body of POST /api/saved-trips/{id}/items: exactly one hike or one stay."""
+
+    hike: Hike | None = None
+    stay: Stay | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one(self):
+        if (self.hike is None) == (self.stay is None):
+            raise ValueError("Give exactly one of hike or stay")
+        return self

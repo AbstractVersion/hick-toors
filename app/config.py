@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     weight_proximity: float = 20
     weight_price: float = 15
     cache_dir: Path = BASE_DIR / ".cache"
+    trips_db: Path = BASE_DIR / "data" / "trips.db"  # TRIPS_DB: saved trips (SQLite), kept outside the cache
     claude_bin: str = "claude"
     ask_timeout_seconds: int = 120
 

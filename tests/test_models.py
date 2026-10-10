@@ -4,7 +4,8 @@ import pytest
 from pydantic import ValidationError
 
 from app.models import (
-    CircleArea, HikeFilters, HikeQuery, RectangleArea, StayFilters, StayQuery, StaySearchQuery, TripQuery,
+    CircleArea, Hike, HikeFilters, HikeQuery, RectangleArea, SavedTripIn, Stay, StayFilters, StayQuery,
+    StaySearchQuery, TripItemAdd, TripQuery,
 )
 
 
@@ -156,3 +157,57 @@ def test_hike_query_page_offset_bounds():
     for bad in (-1, 401):
         with pytest.raises(ValidationError):
             HikeQuery(**BASE, page_offset=bad)
+
+
+def _hike(i="wikiloc:1"):
+    return Hike(id=i, name="h", url="https://es.wikiloc.com/x", lat=39.0, lon=21.0)
+
+
+def _stay(i="airbnb:1"):
+    return Stay(id=i, source="airbnb", name="s", url="https://www.airbnb.com/rooms/1", lat=39.0, lon=21.0)
+
+
+def test_saved_trip_in_defaults_and_strip():
+    t = SavedTripIn(name="  Zagori  ")
+    assert (t.name, t.start, t.end, t.guests, t.dog, t.notes, t.source, t.score) == (
+        "Zagori", None, None, 2, True, "", "manual", None)
+    assert t.hikes == [] and t.stays == []
+
+
+@pytest.mark.parametrize("name", ["", "   ", "x" * 121])
+def test_saved_trip_in_rejects_bad_names(name):
+    with pytest.raises(ValidationError):
+        SavedTripIn(name=name)
+
+
+def test_saved_trip_in_rejects_end_before_start():
+    with pytest.raises(ValidationError, match="end must be on or after start"):
+        SavedTripIn(name="t", start="2026-10-25", end="2026-10-23")
+
+
+def test_saved_trip_in_limits():
+    with pytest.raises(ValidationError):
+        SavedTripIn(name="t", notes="x" * 5001)
+    with pytest.raises(ValidationError):
+        SavedTripIn(name="t", guests=0)
+    with pytest.raises(ValidationError):
+        SavedTripIn(name="t", score=101)
+    with pytest.raises(ValidationError):
+        SavedTripIn(name="t", hikes=[_hike(f"wikiloc:{i}") for i in range(51)])
+
+
+def test_saved_trip_in_dedupes_items_keeping_first():
+    first = _hike("wikiloc:1")
+    dup = first.model_copy(update={"name": "dup"})
+    t = SavedTripIn(name="t", hikes=[first, _hike("wikiloc:2"), dup], stays=[_stay(), _stay()])
+    assert [h.id for h in t.hikes] == ["wikiloc:1", "wikiloc:2"]
+    assert t.hikes[0].name == "h"
+    assert len(t.stays) == 1
+
+
+def test_trip_item_add_needs_exactly_one():
+    assert TripItemAdd(hike=_hike()).stay is None
+    with pytest.raises(ValidationError, match="Give exactly one of hike or stay"):
+        TripItemAdd()
+    with pytest.raises(ValidationError, match="Give exactly one of hike or stay"):
+        TripItemAdd(hike=_hike(), stay=_stay())

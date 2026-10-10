@@ -12,7 +12,9 @@ services:
         required: false
     volumes:
       - hick-cache:/app/.cache
+      - hick-data:/app/data   # saved trips (SQLite) – survives rebuilds
     restart: unless-stopped
 
 volumes:
   hick-cache:
+  hick-data:

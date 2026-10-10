@@ -31,8 +31,8 @@ RUN uv sync --frozen --no-dev --no-install-project --python 3.10.20
 COPY app ./app
 COPY static ./static
 
-# Search cache (hikes, stays, geocoding) lives here; compose mounts a volume on it.
-RUN mkdir -p /app/.cache && chown -R hick /app/.cache
+# Search cache (hikes, stays, geocoding) and saved trips (SQLite) live here; compose mounts volumes on them.
+RUN mkdir -p /app/.cache /app/data && chown -R hick /app/.cache /app/data
 USER hick
 
 EXPOSE 8000
