@@ -160,3 +160,9 @@ def test_index_has_filter_buttons_and_scripts(tmp_path):
     assert 'id="hike-filters-btn"' in html and 'id="stay-filters-btn"' in html
     assert html.index("/static/filters.js") < html.index("/static/dialog.js") < html.index("/static/app.js")
     assert c.get("/static/filters.js").status_code == 200 and c.get("/static/dialog.js").status_code == 200
+
+
+def test_index_has_draw_tools(tmp_path):
+    html = client(tmp_path).get("/").text
+    assert "leaflet-draw@1.0.4/dist/leaflet.draw.js" in html and "leaflet-draw@1.0.4/dist/leaflet.draw.css" in html
+    assert 'id="draw-btn"' in html and 'value="drawn"' in html

@@ -47,6 +47,15 @@ def main() -> None:
                 page.reload()
             expect(page.locator("#hike-filters-btn")).to_be_enabled(timeout=15000)
 
+        def search_and_capture() -> tuple[str, dict]:
+            before = len(requests)
+            page.click("#search")
+            for _ in range(50):
+                if len(requests) > before:
+                    return requests[-1]
+                page.wait_for_timeout(100)
+            raise SystemExit("FAIL search sent no request")
+
         load(clear=True)
         expect(page.locator("#hike-filter-count")).to_be_hidden()
         expect(page.locator("#stay-filter-count")).to_be_hidden()
@@ -126,6 +135,48 @@ def main() -> None:
         stay.locator('[data-act="apply"]').click()
         expect(page.locator("#stay-filter-count")).to_be_hidden()
         print("PASS reset to defaults")
+
+        # Drawn area mode with no shape: notice, no request.
+        sent = len(requests)
+        page.check('input[name="mode"][value="drawn"]')
+        page.click("#search")
+        expect(page.locator("#notices")).to_contain_text("Draw a rectangle or circle first")
+        assert len(requests) == sent, requests[sent:]
+        print("PASS drawn mode without a shape")
+
+        # Real mouse drag with the ✏️ button (exercises Leaflet.draw's rectangle handler).
+        page.check('input[name="mode"][value="near_home"]')
+        page.click("#draw-btn")
+        box = page.locator("#map").bounding_box()
+        x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+        page.mouse.move(x, y)
+        page.mouse.down()
+        page.mouse.move(x + 120, y + 80, steps=8)
+        page.mouse.up()
+        expect(page.locator('input[name="mode"][value="drawn"]')).to_be_checked()
+        assert page.evaluate("drawnItems.getLayers().length") == 1
+        page.click("#search")
+        expect(page.locator("#hike-list li")).to_have_count(1)
+        path, body = requests[-1]
+        assert path == "/api/hikes" and body["mode"] == "drawn" and body["area"]["shape"] == "rectangle", body
+        assert body["area"]["south"] < body["area"]["north"] and body["area"]["west"] < body["area"]["east"], body
+        print("PASS rectangle drawn with the mouse and searched")
+
+        # A new shape replaces the old one; Trip plan uses it.
+        page.evaluate("""map.fire(L.Draw.Event.CREATED,
+            {layer: L.circle([38.5, 22.6], {radius: 8000}), layerType: 'circle'})""")
+        assert page.evaluate("drawnItems.getLayers().length") == 1
+        page.check('input[name="mode"][value="trip"]')
+        path, body = search_and_capture()
+        assert path == "/api/trips" and body["area"] == {
+            "shape": "circle", "lat": 38.5, "lon": 22.6, "radius_m": 8000}, body
+        print("PASS circle replaces rectangle; Trip plan sends the area")
+
+        # Without a shape Trip plan falls back to the drive radius (no area sent).
+        page.evaluate("drawnItems.clearLayers()")
+        path, body = search_and_capture()
+        assert path == "/api/trips" and "area" not in body, body
+        print("PASS Trip plan without a shape")
 
         browser.close()
     if errors:

@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -19,10 +20,12 @@
     <label class="dog"><input type="checkbox" id="dog" checked> 🐕 Dog</label>
     <button type="button" id="hike-filters-btn" class="tool-btn" disabled>⚙️ Hike filters <span id="hike-filter-count" class="count" hidden></span></button>
     <button type="button" id="stay-filters-btn" class="tool-btn" disabled>⚙️ Stay filters <span id="stay-filter-count" class="count" hidden></span></button>
+    <button type="button" id="draw-btn" class="tool-btn">✏️ Draw area</button>
     <fieldset id="modes">
       <label><input type="radio" name="mode" value="near_home" checked> Near home</label>
       <label><input type="radio" name="mode" value="place"> Place</label>
       <label><input type="radio" name="mode" value="trip"> Trip plan</label>
+      <label><input type="radio" name="mode" value="drawn"> Drawn area</label>
     </fieldset>
     <input type="text" id="place" placeholder="e.g. Pelion, Zagori, Olympus" hidden>
     <button id="search">Search</button>
@@ -47,6 +50,7 @@
   </footer>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
   <script src="/static/filters.js"></script>
   <script src="/static/dialog.js"></script>
   <script src="/static/app.js"></script>

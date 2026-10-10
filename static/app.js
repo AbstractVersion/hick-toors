@@ -54,6 +54,44 @@ map.addLayer(stayLayer);
 overlay.addTo(map);
 let reachCircle = null;
 
+// ---- drawn search area (Leaflet.draw: rectangle + circle only, one shape at a time) ----
+const SHAPE_STYLE = { color: "#b5562f", weight: 2, fillOpacity: 0.08 };
+const drawnItems = new L.FeatureGroup().addTo(map);
+const drawControl = new L.Control.Draw({
+  draw: {
+    polyline: false, polygon: false, marker: false, circlemarker: false,
+    rectangle: { shapeOptions: SHAPE_STYLE, showArea: false },
+    circle: { shapeOptions: SHAPE_STYLE },
+  },
+  edit: { featureGroup: drawnItems },
+});
+map.addControl(drawControl);
+map.on(L.Draw.Event.CREATED, (event) => {
+  drawnItems.clearLayers();
+  drawnItems.addLayer(event.layer);
+  setMode("drawn");
+});
+function drawnArea() {
+  const layer = drawnItems.getLayers()[0];
+  if (!layer) return null;
+  if (layer instanceof L.Circle) {
+    const c = layer.getLatLng();
+    return { shape: "circle", lat: c.lat, lon: c.lng, radius_m: Math.round(layer.getRadius()) };
+  }
+  const b = layer.getBounds();
+  return { shape: "rectangle", south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast() };
+}
+function areaProblem(area) {
+  if (!area) return "Draw a rectangle or circle first";
+  if (area.shape === "circle" && (area.radius_m < 200 || area.radius_m > 300000)) {
+    return "Draw a circle with a radius between 200 m and 300 km";
+  }
+  if (area.shape === "rectangle" && (area.south >= area.north || area.west >= area.east)) {
+    return "Draw a bigger rectangle";
+  }
+  return null;
+}
+
 function safeUrl(u) { return /^https?:\/\//i.test(String(u ?? "")) ? u : "#"; }
 function pin(emoji, cls, label) {
   return L.divIcon({ className: `pin ${cls}`, iconSize: null,
@@ -107,6 +145,10 @@ const mode = () => document.querySelector("input[name=mode]:checked").value;
 const driveLimit = () => DRIVE_STEPS[Number($("drive").value)];
 const dates = () => ({ start: $("start").value, end: $("end").value });
 const guests = () => state.filters?.guests ?? state.config?.default_guests ?? 2;
+function setMode(value) {
+  document.querySelector(`input[name=mode][value="${value}"]`).checked = true;
+  $("place").hidden = value !== "place";
+}
 
 // ---- filter popups ----
 function updateFilterBadges() {
@@ -248,6 +290,12 @@ async function withBusy(button, fn) {
 async function searchHikes() {
   const body = { ...dates(), mode: mode(), drive_limit: driveLimit(), filters: state.filters?.hike };
   if (body.mode === "place") body.place = $("place").value;
+  if (body.mode === "drawn") {
+    const area = drawnArea();
+    const problem = areaProblem(area);
+    if (problem) { notices([problem]); return; }
+    body.area = area;
+  }
   const data = await api("/api/hikes", body);
   clearAll();
   notices(data.warnings);
@@ -300,6 +348,12 @@ function renderCombos(combos) {
 async function planTrip() {
   const body = { ...dates(), drive_limit: driveLimit(), dog: $("dog").checked, guests: guests(),
     hike_filters: state.filters?.hike, stay_filters: state.filters?.stay };
+  const area = drawnArea();  // a drawn shape replaces the drive-time radius for Trip plan
+  if (area) {
+    const problem = areaProblem(area);
+    if (problem) { notices([problem]); return; }
+    body.area = area;
+  }
   const data = await api("/api/trips", body);
   clearAll();
   notices(data.warnings);
@@ -349,6 +403,9 @@ async function init() {
   for (const radio of document.querySelectorAll("input[name=mode]")) {
     radio.addEventListener("change", () => { $("place").hidden = mode() !== "place"; });
   }
+  $("draw-btn").addEventListener("click", () => {
+    new L.Draw.Rectangle(map, drawControl.options.draw.rectangle).enable();
+  });
   $("search").addEventListener("click", () =>
     withBusy($("search"), () => (mode() === "trip" ? planTrip() : searchHikes())));
   $("ask-form").addEventListener("submit", ask);
