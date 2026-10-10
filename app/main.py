@@ -1,6 +1,6 @@
 import sys
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -37,6 +37,9 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None) -
 
     @app.get("/api/locate")
     async def locate(q: str = Query(min_length=1, max_length=200)):
+        q = q.strip()
+        if not q:
+            raise HTTPException(status_code=422, detail="q must not be blank")
         try:
             place = await engine.geocoder.locate(q)
         except Exception as exc:

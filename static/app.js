@@ -9,7 +9,7 @@ const BADGES = {
 };
 const $ = (id) => document.getElementById(id);
 const state = { config: null, hikes: new Map(), stays: new Map(), markers: new Map(), items: new Map(), comboView: false, staysRequest: 0,
-  stayWarnings: {}, bookingFailed: false, staySpec: null, lastHikeBody: null, nextPageOffset: null, hikeTotal: null, hikeGen: 0, hikeWarnings: [], catalogue: null, filters: null, dialogs: {} };
+  stayWarnings: {}, stayPending: 0, bookingFailed: false, staySpec: null, lastHikeBody: null, nextPageOffset: null, hikeTotal: null, hikeGen: 0, hikeWarnings: [], catalogue: null, filters: null, dialogs: {} };
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) =>
@@ -136,6 +136,11 @@ function startLoading(key) {
   loading.owners[key] = id;
   paintLoading(key);
   return id;
+}
+const STAY_LOADING_KEYS = ["stay:airbnb", "stay:booking", "stay:retry"];
+function releaseLoading(key) {
+  delete loading.owners[key];
+  paintLoading(key);
 }
 function stopLoading(key, id) {
   if (loading.owners[key] !== id) return;  // a newer request owns this spinner now
@@ -293,6 +298,7 @@ function clearStays() {
   $("stay-count").textContent = "";
   $("stay-note").textContent = "";
   state.stayWarnings = {};
+  state.stayPending = 0;
   state.bookingFailed = false;
   state.staySpec = null;
   $("retry-booking").hidden = true;
@@ -301,6 +307,7 @@ function clearAll() {
   state.comboView = false;
   state.hikeGen += 1;
   state.staysRequest += 1;  // a stay answer still on its way belongs to the old search
+  for (const key of STAY_LOADING_KEYS) releaseLoading(key);  // ...so its spinners go now, not when it lands
   state.lastHikeBody = null;
   state.nextPageOffset = null;
   state.hikeTotal = null;
@@ -378,7 +385,8 @@ async function searchHikes() {
   if (!data.hikes.length && !data.warnings.length) notices(["No hikes found – try more days or a bigger drive limit."]);
   fitAll();
   // A drawn search also brings the stays inside the shape (not awaited: Search stays usable meanwhile).
-  if (body.mode === "drawn") loadAreaStays(body.area);}
+  if (body.mode === "drawn") loadAreaStays(body.area);
+}
 function showHikeMeta(data) {
   $("hike-count").textContent = `(${state.hikes.size})`;
   state.nextPageOffset = data.next_page_offset ?? null;
@@ -406,8 +414,22 @@ async function loadMoreHikes() {
 // is merged into the same list as it arrives. Every request is guarded by state.staysRequest.
 const STAY_PROVIDERS = ["airbnb", "booking"];
 const BOOKING_DOWN = /^Booking\.com unavailable/;
+const NO_STAYS_RE = /^No stays (match|inside)/;
+const SKIPPED_RE = /skipped – it can't filter by/;
+const NO_SOURCE_TEXT = "No source supports this combination of filters";
+// Provider-specific "no stays" notices only make sense once every request has answered and the merged
+// list is still empty; then one combined notice is shown (or "no source" when both were skipped).
+function stayNotices() {
+  const all = STAY_PROVIDERS.flatMap((p) => state.stayWarnings[p] || []);
+  const rest = all.filter((w) => !NO_STAYS_RE.test(w));
+  if (state.stayPending > 0 || state.stays.size > 0) return rest;
+  const skipped = STAY_PROVIDERS.every((p) => (state.stayWarnings[p] || []).some((w) => SKIPPED_RE.test(w)));
+  if (skipped) return [...rest, NO_SOURCE_TEXT];
+  const empty = all.find((w) => NO_STAYS_RE.test(w));
+  return empty ? [...rest, empty] : rest;
+}
 function showStayNotices(spec) {
-  notices([...spec.baseWarnings(), ...Object.values(state.stayWarnings).flat()]);
+  notices([...spec.baseWarnings(), ...stayNotices()]);
 }
 function mergeStays(list) {
   list.filter((s) => !state.stays.has(s.id)).forEach(addStay);
@@ -415,6 +437,7 @@ function mergeStays(list) {
 }
 async function requestStays(provider, request, spec, key) {
   const spin = startLoading(key);
+  if (key === "stay:retry") state.stayPending += 1;
   try {
     const data = await api("/api/stays", { ...spec.body, providers: [provider] });
     if (request !== state.staysRequest) return;
@@ -432,6 +455,7 @@ async function requestStays(provider, request, spec, key) {
   } finally {
     stopLoading(key, spin);
     if (request === state.staysRequest) {
+      state.stayPending -= 1;
       showStayNotices(spec);
       if (provider === "booking") $("retry-booking").hidden = !state.bookingFailed;
     }
@@ -442,6 +466,7 @@ function startStays(spec) {
   clearStays();
   state.staySpec = spec;
   $("stay-note").textContent = spec.note;
+  state.stayPending = STAY_PROVIDERS.length;
   return Promise.all(STAY_PROVIDERS.map((p) => requestStays(p, request, spec, `stay:${p}`)));
 }
 async function retryBooking() {

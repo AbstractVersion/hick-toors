@@ -1,3 +1,5 @@
+import pytest
+
 from app.cache import DiskCache
 from app.geo import haversine_km
 from app.geocode import Geocoder
@@ -45,7 +47,7 @@ async def test_locate_returns_place_with_unwidened_bbox(tmp_path):
     assert (place.bbox.south, place.bbox.north, place.bbox.west, place.bbox.east) == (39.38, 39.40, 22.98, 23.00)
     p = calls[0]
     assert p["q"] == "Μακρινίτσα" and p["countrycodes"] == "gr" and p["limit"] == 1 and p["format"] == "json"
-    assert p["addressdetails"] == 0 and p["accept-language"] == "el,en"
+    assert p["addressdetails"] == 0 and p["accept-language"] == "el"
 
 
 async def test_locate_english_input_and_cache_hit(tmp_path):
@@ -59,6 +61,32 @@ async def test_locate_english_input_and_cache_hit(tmp_path):
     first = await geocoder.locate("Makrinitsa")
     again = await geocoder.locate("  MAKRINITSA ")
     assert again == first and len(calls) == 1 and calls[0]["q"] == "Makrinitsa"
+    assert calls[0]["accept-language"] == "en"
+
+
+@pytest.mark.parametrize("text,lang", [("Athens", "en"), ("Αθήνα", "el"), ("Mount Όλυμπος", "el"),
+                                       ("ἀθῆναι", "el"), ("Zagori 2", "en")])
+async def test_locate_language_follows_the_script(tmp_path, text, lang):
+    calls = []
+
+    async def fetch(url, params):
+        calls.append(params)
+        return [HIT]
+
+    await Geocoder(DiskCache(tmp_path), fetch=fetch).locate(text)
+    assert calls[0]["accept-language"] == lang
+
+
+async def test_locate_cache_key_includes_language(tmp_path):
+    cache = DiskCache(tmp_path)
+
+    async def fetch(url, params):
+        return [HIT]
+
+    geocoder = Geocoder(cache, fetch=fetch)
+    await geocoder.locate("Athens")
+    assert cache.get("locate:en:athens") is not None
+    assert cache.get("locate:el:athens") is None
 
 
 async def test_locate_cache_is_separate_from_geocode(tmp_path):

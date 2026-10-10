@@ -208,7 +208,7 @@ def geo_client(tmp_path, geocoder):
 
 def test_locate_found(tmp_path):
     geo = FakeGeocoder(PLACE)
-    body = geo_client(tmp_path, geo).get("/api/locate", params={"q": "Μακρινίτσα"}).json()
+    body = geo_client(tmp_path, geo).get("/api/locate", params={"q": "  Μακρινίτσα "}).json()
     assert body["place"]["name"] == "Makrinitsa, Volos" and body["place"]["bbox"]["north"] == 39.40
     assert body["place"]["lat"] == 39.39 and body["warnings"] == [] and geo.calls == ["Μακρινίτσα"]
 
@@ -228,6 +228,7 @@ def test_locate_validates_q(tmp_path):
     c = geo_client(tmp_path, FakeGeocoder(PLACE))
     assert c.get("/api/locate").status_code == 422
     assert c.get("/api/locate", params={"q": ""}).status_code == 422
+    assert c.get("/api/locate", params={"q": "   "}).status_code == 422
     assert c.get("/api/locate", params={"q": "x" * 201}).status_code == 422
     assert c.get("/api/locate", params={"q": "x" * 200}).status_code == 200
 

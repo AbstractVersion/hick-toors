@@ -83,7 +83,8 @@ async def search_stays(start: str, end: str, hike_id: str | None = None, lat: fl
     """
     try:
         q = StaySearchQuery(start=start, end=end, hike_id=hike_id, lat=lat, lon=lon, dog=dog,
-                            guests=guests, radius_km=radius_km, area=area, providers=providers, filters=stay_filters or {})
+                            guests=guests, radius_km=radius_km, area=area, providers=providers,
+                            filters=stay_filters or {})
     except ValidationError as exc:
         return _error(exc)
     return (await engine().search_stays(q)).model_dump_json()

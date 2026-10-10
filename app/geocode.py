@@ -1,3 +1,4 @@
+import re
 from typing import Any, Awaitable, Callable
 
 import httpx
@@ -10,6 +11,7 @@ from app.models import BBox
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 USER_AGENT = "hick-toors/0.1 (personal local app)"
 
+GREEK_RE = re.compile("[Ͱ-Ͽἀ-῿]")
 FetchJson = Callable[[str, dict], Awaitable[Any]]
 
 
@@ -50,13 +52,14 @@ class Geocoder:
 
     async def locate(self, text: str) -> Place | None:
         """Navigation lookup (Greek or English): the place itself with its exact, unwidened box."""
-        key = f"locate:{text.strip().casefold()}"
+        lang = "el" if GREEK_RE.search(text) else "en"  # labels come back in the language you typed
+        key = f"locate:{lang}:{text.strip().casefold()}"
         cached = self._cache.get(key)
         if cached:
             return Place(**cached)
         data = await self._fetch(NOMINATIM_URL, {
             "q": text.strip(), "format": "json", "limit": 1, "countrycodes": "gr", "addressdetails": 0,
-            "accept-language": "el,en"})
+            "accept-language": lang})
         if not data:
             return None
         hit = data[0]

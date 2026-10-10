@@ -432,6 +432,54 @@ def main() -> None:
         hold.discard("/api/stays")
         print("PASS failing Booking request clears the spinner")
 
+        # A new search while stays are loading drops their spinners at once; late answers change nothing.
+        expect(page.locator("#search")).to_be_enabled()
+        hold.add("/api/stays")
+        page.locator("#hike-list li").first.click()
+        wait_held(2)
+        expect(page.locator('[data-spin="stay:airbnb"]')).to_be_visible()
+        expect(page.locator('[data-spin="stay:booking"]')).to_be_visible()
+        expect(page.locator("#stay-section")).to_have_attribute("aria-busy", "true")
+        page.click("#search")
+        expect(page.locator('[data-spin="stay:airbnb"]')).to_be_hidden()
+        expect(page.locator('[data-spin="stay:booking"]')).to_be_hidden()
+        expect(page.locator('[data-spin="stay:retry"]')).to_be_hidden()
+        expect(page.locator("#stay-section")).to_have_attribute("aria-busy", "false")
+        while held:
+            release(0, payload={"stays": [STAY], "warnings": [], "center": None})
+        page.wait_for_timeout(300)
+        expect(page.locator("#stay-list li")).to_have_count(0)
+        expect(page.locator('[data-spin="stay:booking"]')).to_be_hidden()
+        hold.discard("/api/stays")
+        print("PASS a new search clears stay spinners at once; stale answers are ignored")
+
+        # Provider warnings are merged once both answers are in.
+        def stays_with(airbnb: dict, booking: dict) -> None:
+            expect(page.locator("#search")).to_be_enabled()
+            page.click("#search")
+            expect(page.locator("#hike-list li")).to_have_count(1)
+            hold.add("/api/stays")
+            page.locator("#hike-list li").first.click()
+            wait_held(2)
+            for provider, payload in (("airbnb", airbnb), ("booking", booking)):
+                release([h[2]["providers"][0] for h in held].index(provider),
+                        payload={"stays": [], "center": None, **payload})
+            hold.discard("/api/stays")
+
+        NO_MATCH = "No stays match your filters"
+        stays_with({"stays": [STAY], "warnings": []}, {"warnings": [NO_MATCH]})
+        expect(page.locator("#stay-list li")).to_have_count(1)
+        expect(page.locator(".notice")).to_have_count(0)  # Airbnb filled the list: no stale "no stays"
+        stays_with({"warnings": [NO_MATCH]}, {"warnings": [NO_MATCH]})
+        expect(page.locator(".notice")).to_have_count(1)  # both empty: one combined notice
+        expect(page.locator("#notices")).to_contain_text(NO_MATCH)
+        stays_with({"warnings": ["Airbnb skipped – it can't filter by Breakfast included"]},
+                   {"warnings": ["Booking.com skipped – it can't filter by Beds"]})
+        expect(page.locator("#notices")).to_contain_text("No source supports this combination of filters")
+        expect(page.locator("#notices")).to_contain_text("Airbnb skipped")
+        expect(page.locator("#notices")).to_contain_text("Booking.com skipped")
+        print("PASS provider warnings merge: stale no-stays dropped, combined notice, no-source notice")
+
         # ---- Go to place (navigation only) ----
         sent = len(requests)
         hold.add("/api/locate")
