@@ -324,6 +324,19 @@ function clearAll() {
   for (const id of ["hike-list", "combo-list"]) $(id).replaceChildren();
   for (const id of ["hike-count", "combo-count"]) $(id).textContent = "";
 }
+// "↗" link on a list item: opens the source page in a new tab without selecting the item.
+function openLink(url, label, title) {
+  if (safeUrl(url) === "#") return null;
+  const a = document.createElement("a");
+  a.className = "open-link";
+  a.href = url;
+  a.target = "_blank";
+  a.rel = "noopener";
+  a.title = title;
+  a.textContent = `↗ ${label}`;
+  a.addEventListener("click", (event) => event.stopPropagation());
+  return a;
+}
 function addHike(h) {
   state.hikes.set(h.id, h);
   const marker = L.marker([h.lat, h.lon], { icon: pin("🥾", "hike") }).bindPopup(hikePopup(h));
@@ -334,6 +347,8 @@ function addHike(h) {
     `${h.distance_km ?? "?"} km · +${h.elevation_gain_m ?? "?"} m · ${h.difficulty || "?"} · ${drive}`,
     null, () => { if (!state.comboView) selectHike(h.id); focusMarker(h.id); });
   li.appendChild(tripButton("hike", h.id));
+  const open = openLink(h.url, "Wikiloc", "Open this hike on Wikiloc in a new tab");
+  if (open) li.appendChild(open);
 }
 function addStay(s) {
   state.stays.set(s.id, s);
@@ -346,6 +361,9 @@ function addStay(s) {
     `${s.source === "airbnb" ? "Airbnb" : "Booking.com"} · ${money(s.total_price, s.currency)}${rating}${km}`,
     s.badge, () => focusMarker(s.id));
   li.appendChild(tripButton("stay", s.id));
+  const site = s.source === "airbnb" ? "Airbnb" : "Booking.com";
+  const open = openLink(s.url, site, `Open this stay on ${site} in a new tab`);
+  if (open) li.appendChild(open);
 }
 function fitAll() {
   const layers = [...hikeLayer.getLayers(), ...stayLayer.getLayers()];

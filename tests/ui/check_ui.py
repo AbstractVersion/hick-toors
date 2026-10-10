@@ -557,6 +557,21 @@ def main() -> None:
         expect(page.locator("#hike-list li.selected")).to_have_count(0)
         print("PASS ＋ Trip on a hike: menu, already-in notice, the hike is not selected")
 
+        # ↗ Wikiloc opens the hike in a new tab and does not select it (no stay search).
+        link = page.locator("#hike-list li", has_text="Test hike").locator("a.open-link")
+        expect(link).to_have_text("↗ Wikiloc")
+        expect(link).to_have_attribute("href", HIKE["url"])
+        expect(link).to_have_attribute("target", "_blank")
+        page.context.route(HIKE["url"], lambda route: route.fulfill(status=200, body="wikiloc"))  # stay offline
+        before = len(requests)
+        with page.context.expect_page() as new_tab:
+            link.click()
+        new_tab.value.close()
+        page.wait_for_timeout(300)
+        assert not [r for r in requests[before:] if r[0] == "/api/stays"], requests[before:]
+        expect(page.locator("#hike-list li.selected")).to_have_count(0)
+        print("PASS ↗ Wikiloc opens the hike in a new tab without selecting it")
+
         second_add = page.locator("#hike-list li", has_text="Second hike").locator(".add-trip")
         second_add.evaluate("(b) => { b.style.position = 'fixed'; b.style.bottom = '2px'; b.style.left = '40px'; }")
         second_add.click()
