@@ -829,6 +829,13 @@ def main() -> None:
         assert not nature_reqs, nature_reqs
         print("PASS 🌿 Nature on at low zoom: hint, chips, no request")
 
+        for zoom in (9, 10):  # a 1040 px wide map at zoom 9/10 spans far more than 16 tiles: no request
+            page.evaluate(f"map.setView([38.52, 22.62], {zoom}, {{animate: false}})")
+            nature_settle()
+            expect(page.locator("#nature-hint")).to_be_visible()
+            assert not nature_reqs, (zoom, nature_reqs)
+        print("PASS a view wider than 16 tiles: hint, no request")
+
         page.evaluate("map.setView([38.52, 22.62], 12, {animate: false})")
         q = wait_nature(1)
         expect(sight_pins).to_have_count(2)
@@ -841,17 +848,54 @@ def main() -> None:
         assert abs(s_ - (view["s"] - pad_lat)) < 1e-3 and abs(n_ - (view["n"] + pad_lat)) < 1e-3, (q, view)
         assert abs(w_ - (view["w"] - pad_lon)) < 1e-3 and abs(e_ - (view["e"] + pad_lon)) < 1e-3, (q, view)
         assert page.evaluate("nature.layer.getLayers().filter((l) => l instanceof L.Polyline).length") == 1
-        expect(page.locator('#map path[stroke="#3b7dd8"]')).to_have_count(1)
+        assert page.evaluate("""nature.layer.getLayers().filter((l) => l instanceof L.Polyline)
+            .every((l) => l.options.renderer === nature.canvas && l.options.color === '#3b7dd8')""")
         nature_settle()
         assert len(nature_reqs) == 1, nature_reqs  # moveend + zoomend debounced into one request
         expect(page.locator(".leaflet-control-attribution")).to_contain_text("Nature sights © OpenStreetMap")
-        print("PASS zoom ≥ 10: one request with all groups and the padded bbox; pins + river line drawn")
+        print("PASS zoom 12: one request with all groups and the padded bbox; pins + river line drawn")
 
         page.click('.nature-chip[data-group="views"]')
         expect(page.locator('.nature-chip[data-group="views"]')).to_have_attribute("aria-pressed", "false")
         q = wait_nature(2)
         assert q["groups"] == "water,landforms,protected", q
         print("PASS chip off: request without that group")
+
+        # The padded box would need 6 x 6 tiles, the bare view 4 x 4: the request uses the bare view.
+        before = len(nature_reqs)
+        page.evaluate("""map.getBounds = () => L.latLngBounds([[38.05, 22.05], [38.95, 22.95]]);
+            map.fire('moveend')""")
+        q = wait_nature(before + 1)
+        page.evaluate("delete map.getBounds")  # back to Leaflet's own
+        assert (q["south"], q["west"], q["north"], q["east"]) == ("38.05", "22.05", "38.95", "22.95"), q
+        expect(page.locator("#nature-hint")).to_be_hidden()
+        page.evaluate("map.setView([38.52, 22.62], 12, {animate: false})")
+        wait_nature(before + 2)
+        nature_settle()
+        print("PASS padded box over 16 tiles: the request uses the unpadded view")
+
+        # An open popup survives a refresh that returns the same sight (incremental render).
+        sight_pins.filter(has_text="💧").click()
+        expect(page.locator(".leaflet-popup")).to_contain_text("Test falls")
+        page.evaluate("window._falls = nature.rendered.get('osm:node/1').layers.at(-1)")
+        before = len(nature_reqs)
+        page.evaluate("map.panBy([5, 0], {animate: false})")
+        wait_nature(before + 1)
+        nature_settle()
+        expect(page.locator(".leaflet-popup")).to_contain_text("Test falls")
+        assert page.evaluate("nature.rendered.get('osm:node/1').layers.at(-1) === window._falls")
+        page.evaluate("map.closePopup()")
+        print("PASS an open sight popup survives a refresh (same marker kept)")
+
+        # Lines ignore the mouse while a draw tool is active.
+        page.click("#draw-rect-btn")
+        assert page.evaluate("nature.layer.getLayers().filter((l) => l instanceof L.Polyline)"
+                             ".every((l) => !l.options.interactive)")
+        page.keyboard.press("Escape")
+        assert page.evaluate("nature.layer.getLayers().filter((l) => l instanceof L.Polyline)"
+                             ".every((l) => l.options.interactive)")
+        nature_settle()
+        print("PASS nature lines are not interactive while drawing")
 
         before = len(nature_reqs)
         for _ in range(5):
