@@ -23,6 +23,7 @@ hikes, stays, prices or coordinates. Dates are YYYY-MM-DD.
 For questions about the user's saved trips, use list_saved_trips and get_saved_trip (read-only; you
 cannot change trips).
 When the user gives an Airbnb room link, use lookup_airbnb (with the trip dates) to get that listing.
+For natural sights (waterfalls, springs, gorges, viewpoints…) near a place, use nature_sights.
 Finish with a short friendly plan, then a final fenced JSON block exactly like:
 ```json
 {{"summary": "<2-5 sentence plan>", "hike_ids": ["wikiloc:..."], "stay_ids": ["airbnb:..."],

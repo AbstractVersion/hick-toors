@@ -10,11 +10,11 @@ from fastapi.staticfiles import StaticFiles
 
 from app.ask import AskRequest, AskResult, AskRunner
 from app.config import BASE_DIR, Settings
-from app.engine import StayLookupFailed, lookup_airbnb_link
+from app.engine import StayLookupFailed, lookup_airbnb_link, nature_box, nature_groups
 from app.filters import catalogue
-from app.models import (TRIP_TOO_LARGE, HikeQuery, HikeSearch, SavedTrip, SavedTripIn, SavedTripSummary,
-                        SavedTripUpdate, StayLookup, StayLookupResult, StaySearch, StaySearchQuery, TripItemAdd,
-                        TripQuery, TripSearch)
+from app.models import (TRIP_TOO_LARGE, HikeQuery, HikeSearch, NatureSearch, SavedTrip, SavedTripIn,
+                        SavedTripSummary, SavedTripUpdate, StayLookup, StayLookupResult, StaySearch, StaySearchQuery,
+                        TripItemAdd, TripQuery, TripSearch)
 from app.trip_markdown import content_disposition, trip_markdown
 from app.trips_store import TooManyTrips, TripConflict, TripFull, TripStore, TripTooLarge
 from app.wiring import build_engine
@@ -104,6 +104,15 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
     @app.post("/api/trips", response_model=TripSearch)
     async def trips(q: TripQuery):
         return await engine.plan_trip(q)
+
+    @app.get("/api/nature", response_model=NatureSearch)
+    async def nature(south: float, west: float, north: float, east: float, groups: str | None = None):
+        try:
+            box = nature_box(south, west, north, east)
+            chosen = nature_groups(groups.split(",") if groups else None)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        return await engine.nature(box, chosen)
 
     @app.post("/api/ask", response_model=AskResult)
     async def ask(req: AskRequest):

@@ -152,6 +152,36 @@ async def lookup_airbnb(url: str, start: str | None = None, end: str | None = No
 
 
 @mcp.tool()
+async def nature_sights(lat: float, lon: float, radius_km: float = 10, groups: list[str] | None = None) -> str:
+    """Natural sights from OpenStreetMap around a point (read-only): waterfalls, springs, hot springs,
+    lakes, rivers, peaks, gorges, caves, arches, rocks, viewpoints, beaches, protected areas, forests.
+
+    radius_km 1-30 (a square box around lat/lon). groups (optional, default all): any of "water"
+    (waterfall, spring, hot_spring, lake, river), "landforms" (peak, gorge, cave, arch, rock),
+    "views" (viewpoint, beach), "protected" (protected_area, forest).
+    Returns JSON {sights: [{id, name, kind, lat, lon, elevation_m, url, wikipedia, lines}], warnings},
+    or {"error": "..."}.
+    """
+    from math import isfinite
+
+    from app.engine import nature_box, nature_groups
+    from app.geo import bbox_around
+    from app.models import LatLon
+
+    if not (isfinite(radius_km) and 1 <= radius_km <= 30):
+        return json.dumps({"error": "radius_km must be between 1 and 30"})
+    if not (isfinite(lat) and isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180):
+        return json.dumps({"error": "lat must be within -90..90 and lon within -180..180"})
+    try:
+        chosen = nature_groups(groups)
+        b = bbox_around(LatLon(lat=lat, lon=lon), radius_km)
+        box = nature_box(b.south, b.west, b.north, b.east)
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+    return (await engine().nature(box, chosen)).model_dump_json()
+
+
+@mcp.tool()
 async def list_saved_trips() -> str:
     """List the user's saved trips (read-only), newest first.
 

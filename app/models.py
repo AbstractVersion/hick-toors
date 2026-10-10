@@ -283,6 +283,46 @@ class StayLookupResult(BaseModel):
     warnings: list[str] = []
 
 
+SightKind = Literal["waterfall", "spring", "hot_spring", "lake", "river", "peak", "gorge", "cave", "arch", "rock",
+                    "viewpoint", "beach", "protected_area", "forest"]
+SightGroup = Literal["water", "landforms", "views", "protected"]
+SIGHT_GROUPS: dict[str, list[str]] = {
+    "water": ["waterfall", "spring", "hot_spring", "lake", "river"],
+    "landforms": ["peak", "gorge", "cave", "arch", "rock"],
+    "views": ["viewpoint", "beach"],
+    "protected": ["protected_area", "forest"],
+}
+SIGHT_LABELS: dict[str, str] = {
+    "waterfall": "Waterfall", "spring": "Spring", "hot_spring": "Hot spring", "lake": "Lake", "river": "River",
+    "peak": "Peak", "gorge": "Gorge", "cave": "Cave", "arch": "Arch", "rock": "Rock", "viewpoint": "Viewpoint",
+    "beach": "Beach", "protected_area": "Protected area", "forest": "Forest",
+}
+SIGHT_EMOJI: dict[str, str] = {
+    "waterfall": "💧", "spring": "🚰", "hot_spring": "♨️", "lake": "🏞️", "river": "🌊", "peak": "⛰️", "gorge": "🏔️",
+    "cave": "🕳️", "arch": "🪨", "rock": "🪨", "viewpoint": "👁️", "beach": "🏖️", "protected_area": "🌲",
+    "forest": "🌳",
+}
+
+
+class Sight(BaseModel):
+    """A natural sight from OpenStreetMap (id "osm:<type>/<id>")."""
+
+    id: str
+    name: str
+    kind: SightKind
+    lat: float
+    lon: float
+    elevation_m: int | None = None
+    url: str
+    wikipedia: str | None = None
+    lines: list[list[list[float]]] = []  # rivers / area outlines: [[[lat, lon], …], …], clipped + simplified
+
+
+class NatureSearch(BaseModel):
+    sights: list[Sight] = []
+    warnings: list[str] = []
+
+
 MAX_TRIP_ITEMS = 50
 MAX_TRIP_BYTES = 256 * 1024  # serialized SavedTripIn fields of one trip
 TRIP_TOO_LARGE = "Trip is too large (max 256 KB)"

@@ -2,6 +2,7 @@ import asyncio
 import json
 import sys
 from datetime import date
+from math import isfinite
 
 from app.cache import DAY, HOUR, DiskCache
 from app.config import Settings
@@ -12,10 +13,11 @@ from app.filters import (
 )
 from app.geo import GREECE_BBOX, bbox_around, clamp_to_greece, ensure_min_size, haversine_km
 from app.models import (
-    BBox, CircleArea, DriveLimit, Hike, HikeFilters, HikeQuery, HikeSearch, LatLon, Stay, StayLookup,
-    StayLookupResult, StayQuery, StaySearch, StaySearchQuery, TripQuery, TripSearch,
+    SIGHT_GROUPS, BBox, CircleArea, DriveLimit, Hike, HikeFilters, HikeQuery, HikeSearch, LatLon, NatureSearch,
+    Sight, Stay, StayLookup, StayLookupResult, StayQuery, StaySearch, StaySearchQuery, TripQuery, TripSearch,
 )
 from app.ranking import rank_combos
+from app.sources.nature import cap_lines, tiles_for
 from app.sources.stays.airbnb import NO_ANSWER as AIRBNB_NO_ANSWER
 from app.sources.stays.airbnb import AirbnbParseError, ListingNotFound, room_id_from_url
 from app.sources.stays.base import ProviderUnavailable, StayProvider
@@ -41,6 +43,8 @@ BAD_AIRBNB_LINK = "Paste an Airbnb room link (airbnb.com/rooms/…)"
 LISTING_NOT_FOUND = "That Airbnb listing wasn't found (removed or private)"
 PRICE_NOT_FOUND = "Price not found for these dates – you can type it in"
 NO_DATES = "No dates set – price not looked up"
+NATURE_UNAVAILABLE = "Nature sights unavailable for part of the map – try again in a minute"
+ZOOM_IN_FOR_NATURE = "Zoom in to see nature sights"
 
 
 def _provider_key(provider) -> str:
@@ -97,6 +101,40 @@ def stay_in_area(s: Stay, area, center: LatLon, radius_km: float) -> bool:
     return area.south <= s.lat <= area.north and area.west <= s.lon <= area.east
 
 
+def nature_groups(names: list[str] | None) -> list[str]:
+    """Validated, de-duplicated group keys (all four when none given); ValueError "Unknown group: x"."""
+    groups = _dedupe([n.strip() for n in names or [] if n and n.strip()])
+    for g in groups:
+        if g not in SIGHT_GROUPS:
+            raise ValueError(f"Unknown group: {g}")
+    return groups or list(SIGHT_GROUPS)
+
+
+BAD_COORDS = "Latitude must be within -90..90 and longitude within -180..180"
+
+
+def nature_box(south: float, west: float, north: float, east: float) -> BBox:
+    """The /api/nature box, or ValueError with the message the user sees."""
+    if not (all(isfinite(v) for v in (south, west, north, east))
+            and -90 <= south <= 90 and -90 <= north <= 90 and -180 <= west <= 180 and -180 <= east <= 180):
+        raise ValueError(BAD_COORDS)
+    if south >= north or west >= east:
+        raise ValueError("south must be < north and west < east")
+    box = BBox(south=south, west=west, north=north, east=east)
+    try:
+        tiles_for(box)
+    except ValueError:
+        raise ValueError(ZOOM_IN_FOR_NATURE)
+    return box
+
+
+def _sight_in_box(s: Sight, box: BBox) -> bool:
+    def inside(lat, lon):
+        return box.south <= lat <= box.north and box.west <= lon <= box.east
+
+    return inside(s.lat, s.lon) or any(inside(p[0], p[1]) for line in s.lines for p in line)
+
+
 class StayLookupFailed(Exception):
     """A pasted-link lookup that failed: HTTP status for the API and a message for the user."""
 
@@ -121,13 +159,14 @@ async def lookup_airbnb_link(engine: "Engine", q: StayLookup) -> StayLookupResul
 
 class Engine:
     def __init__(self, settings: Settings, wikiloc, providers: list[StayProvider], router, geocoder,
-                 cache: DiskCache):
+                 cache: DiskCache, nature=None):
         self.settings = settings
         self.wikiloc = wikiloc
         self.providers = providers
         self.router = router
         self.geocoder = geocoder
         self.cache = cache
+        self.nature_source = nature  # NatureSource (None: nature sights unavailable)
 
     @property
     def home(self) -> LatLon:
@@ -336,6 +375,46 @@ class Engine:
         elif stay.total_price is None:
             warnings.append(PRICE_NOT_FOUND)
         return StayLookupResult(stay=stay, warnings=warnings)
+
+    async def nature(self, bbox: BBox, groups: list[str]) -> NatureSearch:
+        """Natural sights in bbox (any of `groups`), one cached Overpass query per 0.25° tile.
+
+        Raises ValueError when the box needs more than nature.MAX_TILES tiles (the API checks first).
+        A failed tile is not cached; it adds one warning and the other tiles still count.
+        """
+        semaphore = asyncio.Semaphore(2)
+
+        async def tile(south: float, west: float) -> list[Sight] | None:
+            key = f"nature:v1:{south:.2f}_{west:.2f}"
+            cached = self.cache.get(key)
+            if cached is not None:
+                return [Sight(**s) for s in cached]
+            if self.nature_source is None:
+                return None
+            async with semaphore:
+                try:
+                    sights = await self.nature_source.fetch_tile(south, west)
+                except Exception as exc:
+                    print(f"nature tile {key} failed: {exc!r}", file=sys.stderr)
+                    return None
+            self.cache.set(key, [s.model_dump(mode="json") for s in sights], 7 * DAY)
+            return sights
+
+        results = await asyncio.gather(*(tile(s, w) for s, w in tiles_for(bbox)))
+        kinds = {k for g in groups for k in SIGHT_GROUPS[g]}
+        merged: dict[str, Sight] = {}
+        for sights in results:
+            for s in sights or []:
+                if s.kind not in kinds:
+                    continue
+                if s.id in merged:  # same element clipped into several tiles: join its lines
+                    first = merged[s.id]
+                    merged[s.id] = first.model_copy(update={"lines": cap_lines(first.lines + s.lines)})
+                else:
+                    merged[s.id] = s
+        sights = [s for s in merged.values() if _sight_in_box(s, bbox)]
+        warnings = [NATURE_UNAVAILABLE] if any(r is None for r in results) else []
+        return NatureSearch(sights=sights, warnings=warnings)
 
     async def plan_trip(self, q: TripQuery) -> TripSearch:
         hikes = await self.search_hikes(HikeQuery(
