@@ -63,11 +63,12 @@ async def search_hikes(start: str, end: str, place: str | None = None,
 async def search_stays(start: str, end: str, hike_id: str | None = None, lat: float | None = None,
                        lon: float | None = None, dog: bool = True, guests: int = 2,
                        radius_km: float | None = None, stay_filters: dict | None = None,
-                       area: dict | None = None) -> str:
+                       area: dict | None = None, providers: list[str] | None = None) -> str:
     """Find stays (Airbnb, Booking.com) near a hike (hike_id from search_hikes), a lat/lon, or inside a
     drawn area (used only when neither hike_id nor lat/lon is given): area is
     {"shape": "circle", "lat", "lon", "radius_m" (200-300000)} or
     {"shape": "rectangle", "south", "west", "north", "east"}; only stays inside the shape are returned.
+    providers (optional): ["airbnb"], ["booking"] or both; default all sources.
 
     With dog=True only stays that allow pets, or have a garden (badge garden_unconfirmed =
     pets not confirmed), are returned.
@@ -82,7 +83,7 @@ async def search_stays(start: str, end: str, hike_id: str | None = None, lat: fl
     """
     try:
         q = StaySearchQuery(start=start, end=end, hike_id=hike_id, lat=lat, lon=lon, dog=dog,
-                            guests=guests, radius_km=radius_km, area=area, filters=stay_filters or {})
+                            guests=guests, radius_km=radius_km, area=area, providers=providers, filters=stay_filters or {})
     except ValidationError as exc:
         return _error(exc)
     return (await engine().search_stays(q)).model_dump_json()
@@ -91,14 +92,19 @@ async def search_stays(start: str, end: str, hike_id: str | None = None, lat: fl
 @mcp.tool()
 async def plan_trip(start: str, end: str, dog: bool = True, guests: int = 2,
                     max_drive_minutes: int | None = None, unlimited: bool = False,
-                    hike_filters: dict | None = None, stay_filters: dict | None = None) -> str:
-    """Rank hike + stay combos for a trip from home (score /100 with breakdown).
+                    hike_filters: dict | None = None, stay_filters: dict | None = None,
+                    place: str | None = None, area: dict | None = None) -> str:
+    """Rank hike + stay combos (score /100 with breakdown). By default hikes come from around home
+    (Athens); `place` (e.g. "Zagori") uses that area instead, `area` (same shape dict as search_stays:
+    circle or rectangle) uses a drawn area; `area` wins when both are given.
 
     hike_filters / stay_filters take the same keys as in search_hikes / search_stays.
     Returns JSON {combos: [{hike, stay, score, breakdown}], warnings}.
     """
     try:
         q = TripQuery(start=start, end=end, dog=dog, guests=guests,
+                      mode="drawn" if area else ("place" if place else "near_home"),
+                      place=None if area else place, area=area,
                       drive_limit=_limit(max_drive_minutes, unlimited),
                       hike_filters=hike_filters or {}, stay_filters=stay_filters or {})
     except ValidationError as exc:

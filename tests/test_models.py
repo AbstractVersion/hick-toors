@@ -23,6 +23,28 @@ def test_place_mode_requires_place():
         HikeQuery(start=date(2026, 10, 23), end=date(2026, 10, 25), mode="place")
 
 
+TRIP = dict(start=date(2026, 10, 23), end=date(2026, 10, 25))
+RECT = {"shape": "rectangle", "south": 38.3, "west": 22.3, "north": 38.7, "east": 22.9}
+
+
+def test_trip_query_modes():
+    assert TripQuery(**TRIP).mode == "near_home"
+    assert TripQuery(**TRIP, mode="place", place="Zagori").place == "Zagori"
+    assert TripQuery(**TRIP, mode="drawn", area=RECT).mode == "drawn"
+    with pytest.raises(ValidationError, match="place is required"):
+        TripQuery(**TRIP, mode="place")
+    with pytest.raises(ValidationError, match="place is required"):
+        TripQuery(**TRIP, mode="place", place="  ")
+    with pytest.raises(ValidationError, match="Draw a rectangle or circle first"):
+        TripQuery(**TRIP, mode="drawn")
+    with pytest.raises(ValidationError):
+        TripQuery(**TRIP, mode="trip")
+
+
+def test_trip_query_area_without_mode_means_drawn():
+    assert TripQuery(**TRIP, area=RECT).mode == "drawn"
+
+
 def test_drive_limit_accepts_minutes_and_keywords():
     base = dict(start=date(2026, 10, 23), end=date(2026, 10, 25))
     assert HikeQuery(**base, drive_limit=120).drive_limit == 120

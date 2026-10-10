@@ -1,4 +1,6 @@
-from fastapi import FastAPI
+import sys
+
+from fastapi import FastAPI, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -32,6 +34,17 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None) -
     @app.get("/api/filters")
     async def filters():
         return catalogue(wikiloc_login=bool(settings.wikiloc_cookie))
+
+    @app.get("/api/locate")
+    async def locate(q: str = Query(min_length=1, max_length=200)):
+        try:
+            place = await engine.geocoder.locate(q)
+        except Exception as exc:
+            print(f"locate failed: {exc}", file=sys.stderr)
+            return {"place": None, "warnings": ["Place search unavailable – try again later"]}
+        if place is None:
+            return {"place": None, "warnings": [f"Couldn't find '{q}' in Greece"]}
+        return {"place": place.model_dump(), "warnings": []}
 
     @app.post("/api/hikes", response_model=HikeSearch)
     async def hikes(q: HikeQuery):

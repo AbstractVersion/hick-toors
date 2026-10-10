@@ -197,6 +197,7 @@ class StaySearchQuery(TripDates):
     guests: int = Field(default=2, ge=1, le=16)
     dog: bool = True
     area: DrawnArea | None = None  # stays inside a drawn shape; hike_id > lat/lon > area
+    providers: list[Literal["airbnb", "booking"]] | None = Field(default=None, min_length=1)  # None = all
     filters: StayFilters = Field(default_factory=StayFilters)
 
     @model_validator(mode="after")
@@ -207,12 +208,24 @@ class StaySearchQuery(TripDates):
 
 
 class TripQuery(TripDates):
+    mode: Literal["near_home", "place", "drawn"] = "near_home"  # WHERE the hikes come from
+    place: str | None = None
     drive_limit: DriveLimit = "auto"
     guests: int = Field(default=2, ge=1, le=16)
     dog: bool = True
-    area: DrawnArea | None = None  # when set, combos come from hikes inside the drawn shape
+    area: DrawnArea | None = None  # drawn mode: combos come from hikes inside the shape
     hike_filters: HikeFilters = Field(default_factory=HikeFilters)
     stay_filters: StayFilters = Field(default_factory=StayFilters)
+
+    @model_validator(mode="after")
+    def _mode_inputs(self):
+        if "mode" not in self.model_fields_set and self.area is not None:
+            self.mode = "drawn"  # backward compatible: an area alone meant a drawn search
+        if self.mode == "place" and not (self.place and self.place.strip()):
+            raise ValueError("place is required in place mode")
+        if self.mode == "drawn" and self.area is None:
+            raise ValueError("Draw a rectangle or circle first")
+        return self
 
 
 class StayQuery(BaseModel):

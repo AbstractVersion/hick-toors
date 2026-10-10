@@ -37,6 +37,11 @@ LOOP_NEEDS_LOGIN = "Circular-only needs a Wikiloc login (WIKILOC_COOKIE)"
 LOGIN_EXPIRED = "Wikiloc login may have expired – using local filtering. Update WIKILOC_COOKIE in .env"
 
 
+def _provider_key(provider) -> str:
+    """'Booking.com' -> 'booking', 'Airbnb' -> 'airbnb' (the StaySearchQuery.providers values)."""
+    return provider.name.lower().split(".")[0]
+
+
 def _dedupe(items: list[str]) -> list[str]:
     return list(dict.fromkeys(items))
 
@@ -247,13 +252,14 @@ class Engine:
                        bbox=area_bbox(area) if area is not None else None)
         warnings: list[str] = []
         runnable = []
-        for p in self.providers:
+        selected = [p for p in self.providers if q.providers is None or _provider_key(p) in q.providers]
+        for p in selected:
             missing = unsupported_filters(p.name, q.filters, dog=q.dog)
             if missing:
                 warnings.append(skip_notice(p.name, missing))
             else:
                 runnable.append(p)
-        if self.providers and not runnable:
+        if selected and not runnable and q.providers is None:
             return StaySearch(warnings=warnings + [NO_SOURCE], center=center)
         results = await asyncio.gather(*(self._provider_search(p, sq) for p in runnable))
         warnings += [w for _, w in results if w]
@@ -276,8 +282,8 @@ class Engine:
 
     async def plan_trip(self, q: TripQuery) -> TripSearch:
         hikes = await self.search_hikes(HikeQuery(
-            start=q.start, end=q.end, drive_limit=q.drive_limit, mode="drawn" if q.area else "near_home",
-            area=q.area, filters=q.hike_filters))
+            start=q.start, end=q.end, drive_limit=q.drive_limit, mode=q.mode, place=q.place,
+            area=q.area if q.mode == "drawn" else None, filters=q.hike_filters))
         warnings = list(hikes.warnings)
         semaphore = asyncio.Semaphore(2)
 

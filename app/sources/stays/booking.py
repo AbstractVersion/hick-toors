@@ -1,5 +1,6 @@
 import asyncio
 import json
+import random
 import re
 import sys
 from typing import Any, Awaitable, Callable
@@ -133,12 +134,14 @@ async def default_fetch(url: str, params: dict) -> tuple[int, str]:
 class BookingProvider:
     name = "Booking.com"
 
-    def __init__(self, fetch: FetchStatus | None = None, retries: int = 4,
-                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep, area_pages: int = 2):
+    def __init__(self, fetch: FetchStatus | None = None, retries: int = 8,
+                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep, area_pages: int = 2,
+                 rand: Callable[[float, float], float] = random.uniform):
         self._fetch = fetch or default_fetch
         self._retries = retries
         self._sleep = sleep
         self._area_pages = area_pages
+        self._rand = rand
 
     async def _page(self, params: dict) -> list[Stay] | None:
         """One page with retries; None when every attempt was blocked or failed."""
@@ -152,7 +155,8 @@ class BookingProvider:
             except Exception as exc:
                 print(f"booking request failed: {exc}", file=sys.stderr)
             if attempt < self._retries - 1:
-                await self._sleep(2 * (attempt + 1))
+                # AWS WAF challenges ~70% of requests at random: retry with jittered exponential backoff.
+                await self._sleep(min(1.0 * 2 ** attempt, 8) * self._rand(0.6, 1.2))
         return None
 
     async def search(self, q: StayQuery) -> list[Stay]:
@@ -171,7 +175,10 @@ class BookingProvider:
         # Drawn areas: further pages via `offset` (Booking has no verified bbox param; it ignores radius).
         seen = {s.id for s in stays}
         received = len(stays)
-        for _ in range(1, self._area_pages if q.bbox is not None else 1):
+        # Page 2+ only pays off when page 1 already reached into the box.
+        useful = q.bbox is not None and any(
+            q.bbox.south <= s.lat <= q.bbox.north and q.bbox.west <= s.lon <= q.bbox.east for s in stays)
+        for _ in range(1, self._area_pages if useful else 1):
             more = await self._page({**params, "offset": received})
             if not more:
                 break

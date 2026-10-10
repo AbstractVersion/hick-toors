@@ -311,6 +311,34 @@ async def test_every_provider_skipped_gives_no_source_notice(settings):
                                "No source supports this combination of filters"]
 
 
+async def test_provider_selection_runs_only_chosen_providers(settings):
+    airbnb, booking = FakeProvider("Airbnb", [stay(1)]), FakeProvider("Booking.com", [stay(2, "booking")])
+    engine = make_engine(settings, providers=[airbnb, booking])
+    base = dict(start=FRI, end=SUN, lat=39.4, lon=23.0)
+    only_booking = await engine.search_stays(StaySearchQuery(**base, providers=["booking"]))
+    assert [s.id for s in only_booking.stays] == ["booking:2"] and airbnb.queries == []
+    only_airbnb = await engine.search_stays(StaySearchQuery(**base, providers=["airbnb"]))
+    assert [s.id for s in only_airbnb.stays] == ["airbnb:1"] and len(booking.queries) == 1
+    both = await engine.search_stays(StaySearchQuery(**base))
+    assert {s.id for s in both.stays} == {"airbnb:1", "booking:2"}
+
+
+async def test_selected_provider_failure_warns_and_skip_rules_still_apply(settings):
+    airbnb, booking = FakeProvider("Airbnb", [stay(1)]), FakeProvider("Booking.com", fail=True)
+    engine = make_engine(settings, providers=[airbnb, booking])
+    base = dict(start=FRI, end=SUN, lat=39.4, lon=23.0)
+    result = await engine.search_stays(StaySearchQuery(**base, providers=["booking"]))
+    assert result.stays == [] and result.warnings == ["Booking.com unavailable – showing other sources"]
+    skipped = await engine.search_stays(StaySearchQuery(**base, providers=["booking"],
+                                                        filters={"amenities": ["fireplace"]}))
+    assert skipped.warnings == ["Booking.com skipped – it can't filter by Fireplace"]
+
+
+def test_empty_providers_list_is_rejected():
+    with pytest.raises(ValueError):
+        StaySearchQuery(start=FRI, end=SUN, lat=39.4, lon=23.0, providers=[])
+
+
 async def test_price_post_check_is_per_night(settings):
     airbnb = FakeProvider("Airbnb", [stay(1, price=200.0), stay(2, price=300.0)])  # 2 nights: 100 / 150
     engine = make_engine(settings, providers=[airbnb])
@@ -348,6 +376,32 @@ async def test_plan_trip_with_area_and_filters(settings):
     assert [c.hike.id for c in result.combos] == ["wikiloc:1"]  # 500 min drive ignored inside a shape
     assert wikiloc.boxes[0].north == pytest.approx(39.0 + 10 / 111.32)
     assert wikiloc.calls[0]["pages"] == 30 and airbnb.queries[0].filters.price_max == 120
+
+
+async def test_plan_trip_drawn_mode_without_explicit_mode(settings):
+    wikiloc = FakeWikiloc([hike(1, 50, lat=39.03, lon=22.02)])
+    engine = make_engine(settings, wikiloc=wikiloc, providers=[FakeProvider("Airbnb", [stay(1, lat=39.031, lon=22.021)])],
+                         router=FakeRouter({39.03: 500}))
+    result = await engine.plan_trip(TripQuery(
+        start=FRI, end=SUN, mode="drawn", area={"shape": "rectangle", "south": 39.0, "west": 22.0,
+                                                "north": 39.1, "east": 22.1}))
+    assert [c.hike.id for c in result.combos] == ["wikiloc:1"]
+    assert len(wikiloc.boxes) == 1 and wikiloc.boxes[0].south <= 39.0 <= wikiloc.boxes[0].north
+
+
+async def test_plan_trip_place_mode_geocodes_and_ignores_drive_limit(settings):
+    box = BBox(south=39.0, west=22.0, north=39.2, east=22.2)
+    wikiloc = FakeWikiloc([hike(1, 50, lat=39.03, lon=22.02)])
+    engine = make_engine(settings, wikiloc=wikiloc, providers=[FakeProvider("Airbnb", [stay(1, lat=39.031, lon=22.021)])],
+                         router=FakeRouter({39.03: 500}), geocoder=FakeGeocoder(box))
+    result = await engine.plan_trip(TripQuery(start=FRI, end=SUN, mode="place", place="Zagori"))
+    assert wikiloc.boxes[0] == box and [c.hike.id for c in result.combos] == ["wikiloc:1"]  # 500 min kept
+
+
+async def test_plan_trip_place_not_found_warns(settings):
+    engine = make_engine(settings, geocoder=FakeGeocoder(None))
+    result = await engine.plan_trip(TripQuery(start=FRI, end=SUN, mode="place", place="Atlantis"))
+    assert result.combos == [] and "Couldn't find 'Atlantis' in Greece" in result.warnings
 
 
 # ---- v2: Wikiloc login mode ----

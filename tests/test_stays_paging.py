@@ -122,6 +122,29 @@ async def test_booking_area_search_pages_with_offset_and_dedupes():
     assert "offset" not in calls[0] and calls[1]["offset"] == 2  # step = results received so far
 
 
+async def test_booking_page_two_skipped_when_page_one_has_nothing_in_the_box():
+    calls = []
+
+    async def fetch(url, params):
+        calls.append(dict(params))
+        return 200, booking_search_html([booking_property(1, "Far", 39.4, 23.0)])  # outside BOX
+
+    stays = await BookingProvider(fetch=fetch, sleep=no_sleep, area_pages=3).search(AREA_Q)
+    assert len(calls) == 1 and [s.id for s in stays] == ["booking:1"]
+
+
+async def test_booking_page_two_fetched_when_page_one_has_a_stay_in_the_box():
+    calls = []
+
+    async def fetch(url, params):
+        calls.append(dict(params))
+        return 200, booking_search_html([booking_property(1, "Far", 39.4, 23.0),
+                                         booking_property(2, "In", 38.15, 23.7)])
+
+    await BookingProvider(fetch=fetch, sleep=no_sleep, area_pages=2).search(AREA_Q)
+    assert len(calls) == 2
+
+
 async def test_booking_non_area_search_is_one_page():
     calls = []
 

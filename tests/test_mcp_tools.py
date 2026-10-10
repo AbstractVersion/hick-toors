@@ -45,6 +45,21 @@ async def test_search_hikes_place_and_unlimited(engine):
     assert engine.queries[1].drive_limit == "unlimited"
 
 
+async def test_search_stays_accepts_providers(engine):
+    await tools.search_stays("2026-10-23", "2026-10-25", hike_id="wikiloc:1", providers=["booking"])
+    assert engine.queries[0].providers == ["booking"]
+    out = json.loads(await tools.search_stays("2026-10-23", "2026-10-25", hike_id="wikiloc:1", providers=["x"]))
+    assert "error" in out
+
+
+async def test_plan_trip_takes_area_or_place(engine):
+    area = {"shape": "circle", "lat": 38.5, "lon": 22.6, "radius_m": 8000}
+    await tools.plan_trip("2026-10-23", "2026-10-25", area=area)
+    await tools.plan_trip("2026-10-23", "2026-10-25", place="Zagori")
+    assert (engine.queries[0].mode, engine.queries[0].area.radius_m) == ("drawn", 8000)
+    assert (engine.queries[1].mode, engine.queries[1].place) == ("place", "Zagori")
+
+
 async def test_search_stays_and_plan_trip(engine):
     await tools.search_stays("2026-10-23", "2026-10-25", hike_id="wikiloc:1", dog=False)
     await tools.plan_trip("2026-10-23", "2026-10-25", guests=3)

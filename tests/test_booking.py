@@ -125,6 +125,41 @@ async def test_retries_after_challenge_then_succeeds():
     assert len(await BookingProvider(fetch=fetch, retries=3, sleep=no_sleep).search(Q)) == 1
 
 
+async def test_default_is_eight_attempts_with_jittered_exponential_backoff():
+    sleeps, calls = [], []
+
+    async def fetch(url, params):
+        calls.append(1)
+        return 202, ""
+
+    async def sleep(seconds):
+        sleeps.append(seconds)
+
+    provider = BookingProvider(fetch=fetch, sleep=sleep, rand=lambda low, high: 1.0)
+    with pytest.raises(ProviderUnavailable):
+        await provider.search(Q)
+    assert len(calls) == 8
+    assert sleeps == [1.0, 2.0, 4.0, 8.0, 8.0, 8.0, 8.0]  # no sleep after the last attempt
+
+
+async def test_backoff_applies_jitter_range():
+    seen, sleeps = [], []
+
+    async def fetch(url, params):
+        return 202, ""
+
+    async def sleep(seconds):
+        sleeps.append(seconds)
+
+    def rand(low, high):
+        seen.append((low, high))
+        return 0.5
+
+    with pytest.raises(ProviderUnavailable):
+        await BookingProvider(fetch=fetch, sleep=sleep, retries=3, rand=rand).search(Q)
+    assert set(seen) == {(0.6, 1.2)} and sleeps == [0.5, 1.0]
+
+
 async def test_gives_up_with_provider_unavailable():
     async def fetch(url, params):
         raise ConnectionError("reset")
