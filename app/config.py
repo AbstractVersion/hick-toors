@@ -18,10 +18,11 @@ class Settings(BaseSettings):
     stay_radius_km: float = 15.0
     default_guests: int = 2
     airbnb_detail_top_n: int = 10
-    hike_pages: int = 6  # 25 routes per Wikiloc request
-    hike_pages_filtered: int = 10  # anonymous + hike filters: fetch up to 250 routes, filter locally
+    hike_pages: int = 20  # 25 routes per Wikiloc request
+    hike_pages_filtered: int = 30  # anonymous + hike filters: fetch up to 750 routes, filter locally
+    wikiloc_concurrency: int = 4  # Wikiloc pages fetched in parallel
     wikiloc_cookie: str | None = Field(default=None, repr=False)  # WIKILOC_COOKIE: logged-in session cookie -> server-side filters
-    max_hikes: int = 100
+    max_hikes: int = 500
     trip_top_hikes: int = 5
     trip_stays_per_hike: int = 3
     trip_max_combos: int = 10

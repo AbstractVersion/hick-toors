@@ -17,17 +17,20 @@ from app.models import (
 )
 from app.ranking import rank_combos
 from app.sources.stays.base import ProviderUnavailable, StayProvider
-from app.sources.wikiloc import WikilocLoginExpired, WikilocUnavailable, server_filter_params
+from app.sources.wikiloc import WikilocLoginExpired, WikilocResult, WikilocUnavailable, server_filter_params
 from app.trip_window import max_drive_minutes, stay_window
 
 STRAIGHT_LINE_KM_PER_MIN = 1.5  # generous: nothing within the drive limit falls outside the box
 STAY_RADIUS_SLACK = 1.5  # providers search a square; drop results far outside the circle
 MIN_AREA_RADIUS_KM = 5.0  # tiny drawn shapes are widened to at least this radius
+MIN_STAY_AREA_RADIUS_KM = 1.0  # provider radius bounds for a drawn-area stay search
+MAX_STAY_AREA_RADIUS_KM = 100.0  # = StaySearchQuery.radius_km upper bound
 NO_HIKES_MATCH = "No hikes match your filters"
 NO_HIKES_DEFAULT = "No hiking routes here – other activities can be enabled in Hike filters"
 NO_HIKES_IN_AREA = "No hikes inside the drawn area – draw a bigger shape or change the hike filters"
 NO_HIKES_IN_DRIVE = "No hikes within your drive limit – try more days or a bigger drive limit"
 NO_STAYS_MATCH = "No stays match your filters"
+NO_STAYS_IN_AREA = "No stays inside the drawn area – draw a bigger shape or relax the stay filters"
 NO_SOURCE = "No source supports this combination of filters"
 OUTSIDE_GREECE = "The drawn area is outside Greece – draw it over Greece"
 LOOP_NEEDS_LOGIN = "Circular-only needs a Wikiloc login (WIKILOC_COOKIE)"
@@ -56,6 +59,24 @@ def in_area(h: Hike, area) -> bool:
         return True
     radius_km = max(area.radius_m / 1000, MIN_AREA_RADIUS_KM)
     return haversine_km(LatLon(lat=area.lat, lon=area.lon), LatLon(lat=h.lat, lon=h.lon)) <= radius_km
+
+
+def area_center_radius(area) -> tuple[LatLon, float]:
+    """Centre and provider search radius (km) for stays in a drawn shape: the circle's radius or the
+    rectangle's half-diagonal, clamped to what a stay search accepts."""
+    if isinstance(area, CircleArea):
+        center, radius = LatLon(lat=area.lat, lon=area.lon), area.radius_m / 1000
+    else:
+        center = LatLon(lat=(area.south + area.north) / 2, lon=(area.west + area.east) / 2)
+        radius = haversine_km(center, LatLon(lat=area.north, lon=area.east))
+    return center, min(max(radius, MIN_STAY_AREA_RADIUS_KM), MAX_STAY_AREA_RADIUS_KM)
+
+
+def stay_in_area(s: Stay, area, center: LatLon, radius_km: float) -> bool:
+    """Rectangle: inside the drawn box. Circle: within the (clamped) radius of the centre."""
+    if isinstance(area, CircleArea):
+        return haversine_km(center, LatLon(lat=s.lat, lon=s.lon)) <= radius_km
+    return area.south <= s.lat <= area.north and area.west <= s.lon <= area.east
 
 
 class Engine:
@@ -91,19 +112,24 @@ class Engine:
     def wikiloc_login(self) -> bool:
         return bool(getattr(self.wikiloc, "logged_in", False))
 
-    async def _wikiloc_cached(self, box, f: HikeFilters, pages: int, login: bool) -> list[Hike]:
-        # v2 key: entries now hold every activity (v1 entries were hiking-only, without `activity`).
-        # Anonymous fetches ignore post-fetch filters, so they share one raw fetch per sort + page
-        # count; logged-in fetches are server-filtered, so their key carries the server params.
+    async def _wikiloc_cached(self, box, f: HikeFilters, pages: int, login: bool,
+                              start_page: int = 0) -> WikilocResult:
+        # v3 key: entries hold every activity plus the Wikiloc total / paging state (v2 entries were
+        # bare lists, v1 hiking-only). Anonymous fetches ignore post-fetch filters, so they share one
+        # raw fetch per sort + page count + start page; logged-in fetches are server-filtered, so
+        # their key carries the server params.
         mode = "login:" + json.dumps(server_filter_params(f), sort_keys=True) if login else "anon"
-        key = f"hikes:v2:{mode}:{f.sort}:{pages}:{box.south:.3f},{box.west:.3f},{box.north:.3f},{box.east:.3f}"
+        key = (f"hikes:v3:{mode}:{f.sort}:{pages}:{start_page}:"
+               f"{box.south:.3f},{box.west:.3f},{box.north:.3f},{box.east:.3f}")
         cached = self.cache.get(key)
         if cached is not None:
-            return [Hike(**h) for h in cached]
-        hikes = await self.wikiloc.search(box, sort=f.sort, pages=pages, filters=f if login else None,
-                                          use_login=login)
-        self.cache.set(key, [h.model_dump(mode="json") for h in hikes], 7 * DAY)
-        return hikes
+            return WikilocResult([Hike(**h) for h in cached["hikes"]], cached["total"], cached["pages_fetched"],
+                                 cached["has_more"])
+        result = await self.wikiloc.search(box, sort=f.sort, pages=pages, filters=f if login else None,
+                                           use_login=login, start_page=start_page)
+        self.cache.set(key, {"hikes": [h.model_dump(mode="json") for h in result.hikes], "total": result.total,
+                             "pages_fetched": result.pages_fetched, "has_more": result.has_more}, 7 * DAY)
+        return result
 
     async def search_hikes(self, q: HikeQuery) -> HikeSearch:
         warnings: list[str] = []
@@ -132,20 +158,24 @@ class Engine:
             warnings.append(LOOP_NEEDS_LOGIN)
         try:
             try:
-                fetched = await self._wikiloc_cached(box, q.filters, self.settings.hike_pages if login else anon_pages,
-                                                     login)
+                result = await self._wikiloc_cached(box, q.filters, self.settings.hike_pages if login else anon_pages,
+                                                    login, q.page_offset)
             except WikilocLoginExpired:
-                fetched = await self._wikiloc_cached(box, q.filters, anon_pages, False)
-                if apply_hike_filters(fetched, q.filters):
+                result = await self._wikiloc_cached(box, q.filters, anon_pages, False, q.page_offset)
+                if apply_hike_filters(result.hikes, q.filters):
                     warnings.append(LOGIN_EXPIRED)
                 if q.filters.loop_only and LOOP_NEEDS_LOGIN not in warnings:
                     warnings.append(LOOP_NEEDS_LOGIN)  # the anonymous retry cannot filter by loop
         except WikilocUnavailable as exc:
             return HikeSearch(warnings=warnings + [str(exc)], drive_limit_minutes=limit)
+        fetched = result.hikes
+        total = result.total
+        next_offset = q.page_offset + result.pages_fetched if result.has_more else None
         hikes = apply_hike_filters(fetched, q.filters)
         if fetched and not hikes:
             no_match = NO_HIKES_MATCH if hike_filters_active(q.filters) else NO_HIKES_DEFAULT
-            return HikeSearch(warnings=warnings + [no_match], drive_limit_minutes=limit)
+            return HikeSearch(warnings=warnings + [no_match], drive_limit_minutes=limit,
+                              total_available=total, next_page_offset=next_offset)
         if q.mode == "drawn":
             before = len(hikes)
             hikes = [h for h in hikes if in_area(h, q.area)]
@@ -167,7 +197,8 @@ class Engine:
         kept.sort(key=lambda h: h.trailrank or 0, reverse=True)
         kept = kept[: self.settings.max_hikes]
         self._register(kept)
-        return HikeSearch(hikes=kept, warnings=warnings, drive_limit_minutes=limit)
+        return HikeSearch(hikes=kept, warnings=warnings, drive_limit_minutes=limit, total_available=total,
+                          next_page_offset=next_offset)
 
     async def _provider_search(self, provider: StayProvider, sq: StayQuery) -> tuple[list[Stay], str | None]:
         key = f"stays:{provider.name}:{sq.model_dump_json()}"
@@ -190,9 +221,15 @@ class Engine:
             if not isinstance(found, Hike):
                 return StaySearch(warnings=["Unknown hike – please search hikes again"])
             center = LatLon(lat=found.lat, lon=found.lon)
-        else:
+        elif q.lat is not None and q.lon is not None:
             center = LatLon(lat=q.lat, lon=q.lon)
-        radius = q.radius_km or self.settings.stay_radius_km
+        else:
+            center = None
+        area = q.area if center is None else None  # precedence: hike_id > lat/lon > area
+        if area is not None:
+            center, radius = area_center_radius(area)
+        else:
+            radius = q.radius_km or self.settings.stay_radius_km
         check_in, check_out = stay_window(q.start, q.end)
         sq = StayQuery(lat=center.lat, lon=center.lon, radius_km=radius, check_in=check_in,
                        check_out=check_out, guests=q.guests, dog=q.dog, filters=q.filters)
@@ -212,8 +249,11 @@ class Engine:
         for provider_stays, _ in results:
             for s in provider_stays:
                 km = haversine_km(center, LatLon(lat=s.lat, lon=s.lon))
-                if km <= radius * STAY_RADIUS_SLACK:
+                # Area searches keep what lies inside the shape; otherwise drop results far outside the circle.
+                if (stay_in_area(s, area, center, radius) if area is not None else km <= radius * STAY_RADIUS_SLACK):
                     stays.append(s.model_copy(update={"distance_km": round(km, 1)}))
+        if area is not None and not stays and any(provider_stays for provider_stays, _ in results):
+            warnings.append(NO_STAYS_IN_AREA)
         stays = stay_post_check(stays, q.filters, (check_out - check_in).days)
         stays = apply_dog_rule(stays, q.dog)
         stays.sort(key=lambda s: (badge_tier(s) if q.dog else 0, s.distance_km))

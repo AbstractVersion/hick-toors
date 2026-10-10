@@ -178,6 +178,7 @@ class HikeQuery(TripDates):
     drive_limit: DriveLimit = "auto"
     area: DrawnArea | None = None
     filters: HikeFilters = Field(default_factory=HikeFilters)
+    page_offset: int = Field(0, ge=0, le=400)  # Load more: Wikiloc pages (25 routes each) to skip
 
     @model_validator(mode="after")
     def _mode_inputs(self):
@@ -195,12 +196,13 @@ class StaySearchQuery(TripDates):
     radius_km: float | None = Field(default=None, gt=0, le=100)
     guests: int = Field(default=2, ge=1, le=16)
     dog: bool = True
+    area: DrawnArea | None = None  # stays inside a drawn shape; hike_id > lat/lon > area
     filters: StayFilters = Field(default_factory=StayFilters)
 
     @model_validator(mode="after")
     def _needs_center(self):
-        if not self.hike_id and (self.lat is None or self.lon is None):
-            raise ValueError("hike_id or lat/lon is required")
+        if not self.hike_id and self.area is None and (self.lat is None or self.lon is None):
+            raise ValueError("hike_id or lat/lon (or a drawn area) is required")
         return self
 
 
@@ -230,6 +232,8 @@ class HikeSearch(BaseModel):
     hikes: list[Hike] = []
     warnings: list[str] = []
     drive_limit_minutes: int | None = None
+    total_available: int | None = None  # Wikiloc's route count for the whole area (None = unknown)
+    next_page_offset: int | None = None  # page_offset for Load more; None = nothing more to load
 
 
 class StaySearch(BaseModel):

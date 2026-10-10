@@ -66,7 +66,7 @@ async def test_search_pages_by_offset_and_dedupes():
         calls.append(params)
         return pages[params["from"]]
 
-    hikes = await WikilocSource(fetch=fetch, pages=3).search(BOX)
+    hikes = (await WikilocSource(fetch=fetch, pages=3, concurrency=1).search(BOX)).hikes
     assert len(hikes) == 26
     assert calls[0]["sw"] == "39.3,22.9" and calls[0]["ne"] == "39.5,23.2"
     assert [(c["from"], c["to"]) for c in calls] == [(0, 25), (25, 50)]
@@ -81,7 +81,7 @@ async def test_search_sort_param_only_for_top_rated():
         calls.append(params)
         return {"spas": []}
 
-    source = WikilocSource(fetch=fetch)
+    source = WikilocSource(fetch=fetch, concurrency=1)
     await source.search(BOX)
     await source.search(BOX, sort="top_rated")
     assert "sort" not in calls[0]
@@ -96,9 +96,9 @@ async def test_search_pages_override():
         return {"spas": [wikiloc_spa(params["from"] + i, "r", 39.3, 22.9) for i in range(25)]}
 
     source = WikilocSource(fetch=fetch, pages=2)
-    assert len(await source.search(BOX)) == 50
+    assert len((await source.search(BOX)).hikes) == 50
     calls.clear()
-    assert len(await source.search(BOX, pages=4)) == 100
+    assert len((await source.search(BOX, pages=4)).hikes) == 100
     assert calls == [0, 25, 50, 75]
 
 
@@ -116,7 +116,7 @@ async def test_search_returns_partial_when_later_page_fails():
             return {"spas": [wikiloc_spa(i, f"r{i}", 39.3, 22.9) for i in range(25)]}
         return None
 
-    assert len(await WikilocSource(fetch=fetch, pages=2).search(BOX)) == 25
+    assert len((await WikilocSource(fetch=fetch, pages=2).search(BOX)).hikes) == 25
 
 
 async def test_make_fetch_retries_403_then_succeeds():
@@ -152,7 +152,7 @@ async def test_logged_in_search_sends_cookie_and_server_filters():
 
     source = WikilocSource(fetch=fetch, cookie="SESSION=abc")
     assert source.logged_in and "abc" not in repr(source)
-    hikes = await source.search(BOX, filters=HikeFilters(distance_min_km=10, loop_only=True))
+    hikes = (await source.search(BOX, filters=HikeFilters(distance_min_km=10, loop_only=True))).hikes
     params, headers = calls[0]
     assert headers == {"Cookie": "SESSION=abc"}
     assert (params["a"], params["lfr"], params["t"]) == ("1", "10", 1)
@@ -227,8 +227,8 @@ async def test_loop_only_empty_but_login_fine_returns_no_routes_without_expiry()
         calls.append(dict(params))
         return {"spas": []} if params.get("t") == 1 else {"spas": [wikiloc_spa(1, "r", 39.3, 22.9)]}
 
-    source = WikilocSource(fetch=fetch, cookie="SESSION=abc")
-    assert await source.search(BOX, filters=HikeFilters(loop_only=True)) == []
+    source = WikilocSource(fetch=fetch, cookie="SESSION=abc", concurrency=1)
+    assert (await source.search(BOX, filters=HikeFilters(loop_only=True))).hikes == []
     assert "t" in calls[0] and "t" not in calls[1]
 
 
@@ -248,7 +248,7 @@ async def test_loop_only_forward_to_login_raises_without_retry():
         return {"spas": [], "forwardToLogin": True}
 
     with pytest.raises(WikilocLoginExpired):
-        await WikilocSource(fetch=fetch, cookie="SESSION=abc").search(BOX, filters=HikeFilters(loop_only=True))
+        await WikilocSource(fetch=fetch, cookie="SESSION=abc", concurrency=1).search(BOX, filters=HikeFilters(loop_only=True))
     assert len(calls) == 1
 
 

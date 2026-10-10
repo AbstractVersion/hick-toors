@@ -8,7 +8,7 @@ from app.engine import Engine
 from app.models import BBox, Hike, HikeQuery, LatLon, Stay, StaySearchQuery, TripQuery
 from app.routing import RouteTime
 from app.sources.stays.base import ProviderUnavailable
-from app.sources.wikiloc import WikilocLoginExpired, WikilocUnavailable
+from app.sources.wikiloc import WikilocLoginExpired, WikilocResult, WikilocUnavailable
 
 FRI, SUN = date(2026, 10, 23), date(2026, 10, 25)
 
@@ -25,19 +25,22 @@ def stay(id, source="airbnb", pets=True, garden=None, lat=39.41, lon=23.01, rati
 
 
 class FakeWikiloc:
-    def __init__(self, hikes=None, fail=False, logged_in=False, expired=False):
+    def __init__(self, hikes=None, fail=False, logged_in=False, expired=False, total=None, has_more=False):
         self.hikes, self.fail, self.boxes, self.calls = hikes or [], fail, [], []
         self.logged_in, self.expired, self.modes = logged_in, expired, []
+        self.total, self.has_more, self.starts = total, has_more, []
 
-    async def search(self, bbox, query="", sort="popular", pages=None, filters=None, use_login=True):
+    async def search(self, bbox, query="", sort="popular", pages=None, filters=None, use_login=True,
+                     start_page=0):
         self.boxes.append(bbox)
         self.calls.append({"sort": sort, "pages": pages})
+        self.starts.append(start_page)
         self.modes.append({"filters": filters, "use_login": use_login})
         if self.expired and use_login and self.logged_in:
             raise WikilocLoginExpired()
         if self.fail:
             raise WikilocUnavailable("Hikes temporarily unavailable – Wikiloc is rate limiting, try again in a minute")
-        return list(self.hikes)
+        return WikilocResult(list(self.hikes), self.total, pages or 0, self.has_more)
 
 
 class FakeRouter:
@@ -214,8 +217,8 @@ async def test_filtered_search_fetches_more_pages_and_passes_sort(settings):
     await engine.search_hikes(HikeQuery(start=FRI, end=SUN))
     await engine.search_hikes(HikeQuery(start=FRI, end=SUN, filters={"sort": "top_rated"}))
     await engine.search_hikes(HikeQuery(start=FRI, end=SUN, filters={"min_trailrank": 10}))
-    assert wikiloc.calls == [{"sort": "popular", "pages": 6}, {"sort": "top_rated", "pages": 6},
-                             {"sort": "popular", "pages": 10}]
+    assert wikiloc.calls == [{"sort": "popular", "pages": 20}, {"sort": "top_rated", "pages": 20},
+                             {"sort": "popular", "pages": 30}]
 
 
 async def test_hike_cache_is_shared_by_post_fetch_filters(settings):
@@ -344,7 +347,7 @@ async def test_plan_trip_with_area_and_filters(settings):
         hike_filters={"min_trailrank": 10}, stay_filters={"price_max": 120}))
     assert [c.hike.id for c in result.combos] == ["wikiloc:1"]  # 500 min drive ignored inside a shape
     assert wikiloc.boxes[0].north == pytest.approx(39.0 + 10 / 111.32)
-    assert wikiloc.calls[0]["pages"] == 10 and airbnb.queries[0].filters.price_max == 120
+    assert wikiloc.calls[0]["pages"] == 30 and airbnb.queries[0].filters.price_max == 120
 
 
 # ---- v2: Wikiloc login mode ----
@@ -354,7 +357,7 @@ async def test_logged_in_search_sends_filters_with_normal_page_count(settings):
     engine = make_engine(settings, wikiloc=wikiloc, router=FakeRouter({38.1: 60}))
     result = await engine.search_hikes(HikeQuery(start=FRI, end=SUN, filters={"min_trailrank": 10,
                                                                               "loop_only": True}))
-    assert wikiloc.calls == [{"sort": "popular", "pages": 6}]
+    assert wikiloc.calls == [{"sort": "popular", "pages": 20}]
     assert wikiloc.modes[0]["use_login"] is True and wikiloc.modes[0]["filters"].loop_only is True
     assert [h.id for h in result.hikes] == ["wikiloc:1"] and result.warnings == []
 
@@ -365,7 +368,7 @@ async def test_anonymous_loop_only_is_ignored_with_notice(settings):
     result = await engine.search_hikes(HikeQuery(start=FRI, end=SUN, filters={"loop_only": True}))
     assert result.warnings == ["Circular-only needs a Wikiloc login (WIKILOC_COOKIE)"]
     assert [h.id for h in result.hikes] == ["wikiloc:1"]
-    assert wikiloc.modes == [{"filters": None, "use_login": False}] and wikiloc.calls[0]["pages"] == 6
+    assert wikiloc.modes == [{"filters": None, "use_login": False}] and wikiloc.calls[0]["pages"] == 20
 
 
 async def test_expired_login_falls_back_to_local_filtering_with_warning(settings):
@@ -373,7 +376,7 @@ async def test_expired_login_falls_back_to_local_filtering_with_warning(settings
     engine = make_engine(settings, wikiloc=wikiloc, router=FakeRouter({38.1: 60}))
     result = await engine.search_hikes(HikeQuery(start=FRI, end=SUN, filters={"min_trailrank": 10}))
     assert [m["use_login"] for m in wikiloc.modes] == [True, False]
-    assert wikiloc.calls[1]["pages"] == 10  # anonymous fallback fetches the filtered page count
+    assert wikiloc.calls[1]["pages"] == 30  # anonymous fallback fetches the filtered page count
     assert result.warnings == [
         "Wikiloc login may have expired – using local filtering. Update WIKILOC_COOKIE in .env"]
     assert [h.id for h in result.hikes] == ["wikiloc:1"]

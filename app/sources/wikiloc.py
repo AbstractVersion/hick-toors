@@ -1,5 +1,6 @@
 import asyncio
 import sys
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 import httpx
@@ -62,6 +63,28 @@ def _in_greece(near: str | None) -> bool:
     return not near or any(marker in near for marker in GREECE_MARKERS)
 
 
+@dataclass
+class WikilocResult:
+    hikes: list[Hike] = field(default_factory=list)
+    # Wikiloc's `count` from the first page of the call: total routes in the whole bbox for that
+    # query. Anonymously it covers every activity (filters are not applied server-side), so it can
+    # exceed what the local filters leave. None when Wikiloc did not report it.
+    total: int | None = None
+    pages_fetched: int = 0
+    has_more: bool = False  # the last batch was full, so more pages probably exist
+
+
+def _count(data: dict) -> int | None:
+    value = data.get("count")
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value)
+    return None
+
+
 def parse_search(data: dict) -> list[Hike]:
     """Every Greek route of any activity; the engine filters activities (HikeFilters.activities)."""
     hikes = []
@@ -122,9 +145,11 @@ def make_fetch(
 
 
 class WikilocSource:
-    def __init__(self, fetch: Fetch | None = None, pages: int = 2, cookie: str | None = None):
+    def __init__(self, fetch: Fetch | None = None, pages: int = 2, cookie: str | None = None,
+                 concurrency: int = 4):
         self._fetch = fetch or make_fetch()
         self._pages = pages
+        self._concurrency = max(1, concurrency)
         self._cookie = cookie or None  # Wikiloc session cookie (WIKILOC_COOKIE); never logged
 
     @property
@@ -136,19 +161,26 @@ class WikilocSource:
 
     async def search(self, bbox: BBox, query: str = "", sort: str = "popular",
                      pages: int | None = None, filters: HikeFilters | None = None,
-                     use_login: bool = True) -> list[Hike]:
+                     use_login: bool = True, start_page: int = 0) -> WikilocResult:
         """Routes in bbox. sort="top_rated" asks Wikiloc for its TrailRank order; pages overrides
-        the configured page count. With a cookie (and use_login) the cookie is sent, plus
-        `filters` as server params; raises WikilocLoginExpired when that comes back empty or
-        Wikiloc asks to log in, so the caller can retry anonymously."""
+        the configured page count; start_page skips that many pages (Load more). Pages are fetched
+        concurrently in batches of `concurrency`; after a batch in which any page was short (< 25)
+        the data has ended. With a cookie (and use_login) the cookie is sent, plus `filters` as
+        server params; raises WikilocLoginExpired when the first page of a fresh search (start_page
+        0) comes back empty or Wikiloc asks to log in, so the caller can retry anonymously."""
         login = use_login and self._cookie is not None
         headers = {"Cookie": self._cookie} if login else None
         server = server_filter_params(filters) if login and filters is not None else {}
+        wanted = pages or self._pages
         hikes: list[Hike] = []
         seen: set[str] = set()
-        for page in range(pages or self._pages):
+        total: int | None = None
+        fetched = 0
+        has_more = False
+
+        def params_for(page: int) -> dict:
             # Wikiloc pages with from/to offsets (max 25 per request); it ignores a `page` param.
-            offset = page * PAGE_SIZE
+            offset = (start_page + page) * PAGE_SIZE
             params = {
                 "event": "map",
                 "from": offset,
@@ -160,32 +192,51 @@ class WikilocSource:
             if sort == "top_rated":
                 params["sort"] = "trailrank"
             params.update(server)
-            data = await (self._fetch(SEARCH_URL, params, headers) if login else self._fetch(SEARCH_URL, params))
-            if not isinstance(data, dict):
-                if page == 0 and login:
-                    raise WikilocLoginExpired()  # engine retries anonymously instead of blaming rate limits
-                if page == 0:
-                    raise WikilocUnavailable(
-                        "Hikes temporarily unavailable – Wikiloc is rate limiting, try again in a minute"
-                    )
-                break
-            if page == 0 and login:
-                restricted = bool(data.get("forwardToLogin") or data.get("restricted"))
-                if restricted:
-                    raise WikilocLoginExpired()
-                if server and not data.get("spas"):
-                    if "t" in server:
-                        # No circular routes, or an expired login? Ask again without the loop filter.
-                        retry = await self._fetch(SEARCH_URL, {**{k: v for k, v in params.items() if k != "t"}},
-                                                  headers)
-                        if (isinstance(retry, dict) and retry.get("spas")
-                                and not (retry.get("forwardToLogin") or retry.get("restricted"))):
-                            return []  # login works: there simply are no circular routes here
-                    raise WikilocLoginExpired()
-            for hike in parse_search(data):
-                if hike.id not in seen:
-                    seen.add(hike.id)
-                    hikes.append(hike)
-            if len(data.get("spas") or []) < PAGE_SIZE:
-                break
-        return hikes
+            return params
+
+        async def get(params: dict):
+            return await (self._fetch(SEARCH_URL, params, headers) if login else self._fetch(SEARCH_URL, params))
+
+        for batch_start in range(0, wanted, self._concurrency):
+            batch = range(batch_start, min(batch_start + self._concurrency, wanted))
+            batch_params = [params_for(page) for page in batch]
+            responses = await asyncio.gather(*(get(p) for p in batch_params))
+            full = True
+            for page, params, data in zip(batch, batch_params, responses):
+                first = page == 0
+                if not isinstance(data, dict):
+                    if first and start_page == 0 and login:
+                        raise WikilocLoginExpired()  # engine retries anonymously instead of blaming rate limits
+                    if first:
+                        raise WikilocUnavailable(
+                            "Hikes temporarily unavailable – Wikiloc is rate limiting, try again in a minute"
+                        )
+                    # A later page failed: keep the pages before it (offsets stay contiguous) and
+                    # let Load more resume from here.
+                    return WikilocResult(hikes, total, fetched, True)
+                if first and start_page == 0 and login:
+                    restricted = bool(data.get("forwardToLogin") or data.get("restricted"))
+                    if restricted:
+                        raise WikilocLoginExpired()
+                    if server and not data.get("spas"):
+                        if "t" in server:
+                            # No circular routes, or an expired login? Ask again without the loop filter.
+                            retry = await self._fetch(SEARCH_URL, {k: v for k, v in params.items() if k != "t"},
+                                                      headers)
+                            if (isinstance(retry, dict) and retry.get("spas")
+                                    and not (retry.get("forwardToLogin") or retry.get("restricted"))):
+                                return WikilocResult([], _count(retry), 1, False)  # login works: no circular routes
+                        raise WikilocLoginExpired()
+                if first:
+                    total = _count(data)
+                fetched += 1
+                for hike in parse_search(data):
+                    if hike.id not in seen:
+                        seen.add(hike.id)
+                        hikes.append(hike)
+                if len(data.get("spas") or []) < PAGE_SIZE:
+                    full = False
+            if not full:
+                return WikilocResult(hikes, total, fetched, False)
+            has_more = True
+        return WikilocResult(hikes, total, fetched, has_more)

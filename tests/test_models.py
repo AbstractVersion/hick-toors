@@ -114,3 +114,23 @@ def test_stay_query_carries_filters_into_its_json():
     q = StayQuery(lat=39.4, lon=23.0, radius_km=15, check_in=date(2026, 10, 23),
                   check_out=date(2026, 10, 25), guests=2, dog=True, filters={"price_max": 120})
     assert '"price_max":120' in q.model_dump_json()
+
+
+def test_stay_search_accepts_a_drawn_area_as_the_only_centre():
+    area = {"shape": "circle", "lat": 38.5, "lon": 22.6, "radius_m": 5000}
+    q = StaySearchQuery(**BASE, area=area)
+    assert q.area.shape == "circle" and q.hike_id is None and q.lat is None
+    rect = {"shape": "rectangle", "south": 38.4, "west": 22.4, "north": 38.6, "east": 22.8}
+    assert StaySearchQuery(**BASE, area=rect).area.shape == "rectangle"
+    with pytest.raises(ValidationError):
+        StaySearchQuery(**BASE, area={"shape": "circle", "lat": 38.5, "lon": 22.6, "radius_m": 10})
+    with pytest.raises(ValidationError, match="hike_id or lat/lon"):
+        StaySearchQuery(**BASE)
+
+
+def test_hike_query_page_offset_bounds():
+    assert HikeQuery(**BASE).page_offset == 0
+    assert HikeQuery(**BASE, page_offset=400).page_offset == 400
+    for bad in (-1, 401):
+        with pytest.raises(ValidationError):
+            HikeQuery(**BASE, page_offset=bad)
