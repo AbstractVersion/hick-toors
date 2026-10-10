@@ -303,11 +303,10 @@ function clearStays() {
   state.staySpec = null;
   $("retry-booking").hidden = true;
 }
-function clearAll() {
+// Hikes, Trip picks and their lines go; stays (list, pins, requests on their way) stay.
+function clearHikes() {
   state.comboView = false;
   state.hikeGen += 1;
-  state.staysRequest += 1;  // a stay answer still on its way belongs to the old search
-  for (const key of STAY_LOADING_KEYS) releaseLoading(key);  // ...so its spinners go now, not when it lands
   state.lastHikeBody = null;
   state.nextPageOffset = null;
   state.hikeTotal = null;
@@ -316,13 +315,20 @@ function clearAll() {
   $("load-more").hidden = true;
   hikeLayer.clearLayers();
   overlay.clearLayers();
-  clearStays();
+  for (const id of state.hikes.keys()) { state.markers.delete(id); state.items.delete(id); }
+  for (const id of [...state.items.keys()]) if (id.startsWith("combo:")) state.items.delete(id);
   state.hikes.clear();
-  state.markers.clear();
-  state.items.clear();
   $("combo-section").hidden = true;
   for (const id of ["hike-list", "combo-list"]) $(id).replaceChildren();
   for (const id of ["hike-count", "combo-count"]) $(id).textContent = "";
+}
+function clearAll() {
+  state.staysRequest += 1;  // a stay answer still on its way belongs to the old search
+  for (const key of STAY_LOADING_KEYS) releaseLoading(key);  // ...so its spinners go now, not when it lands
+  clearHikes();
+  clearStays();
+  state.markers.clear();
+  state.items.clear();
 }
 // "↗" link on a list item: opens the source page in a new tab without selecting the item.
 function openLink(url, label, title) {
@@ -365,9 +371,11 @@ function addStay(s) {
   const open = openLink(s.url, site, `Open this stay on ${site} in a new tab`);
   if (open) li.appendChild(open);
 }
-function fitAll() {
-  const layers = [...hikeLayer.getLayers(), ...stayLayer.getLayers()];
+function fitLayers(layers) {
   if (layers.length) map.fitBounds(L.featureGroup(layers).getBounds().pad(0.15));
+}
+function fitAll() {
+  fitLayers([...hikeLayer.getLayers(), ...stayLayer.getLayers()]);
 }
 function drawReach(minutes) {
   if (reachCircle) { map.removeLayer(reachCircle); reachCircle = null; }
@@ -383,7 +391,9 @@ async function withBusy(button, fn) {
   button.disabled = true;
   try { await fn(); } catch (err) { notices([err.message]); } finally { button.disabled = false; }
 }
-async function searchHikes() {
+// 🔍 Search hikes (withStays false): replaces the hikes only – stays already on the map stay.
+// 🔍 Search all (withStays true): clears everything; a drawn area also loads the stays inside it.
+async function searchHikes(withStays = false) {
   const body = { ...dates(), mode: mode(), drive_limit: driveLimit(), filters: state.filters?.hike };
   if (body.mode === "place") body.place = $("place").value;
   if (body.mode === "drawn") {
@@ -395,7 +405,7 @@ async function searchHikes() {
   const spin = startLoading("hikes");
   let data;
   try { data = await api("/api/hikes", body); } finally { stopLoading("hikes", spin); }
-  clearAll();
+  if (withStays) clearAll(); else clearHikes();
   state.lastHikeBody = body;
   state.hikeWarnings = data.warnings || [];
   notices(data.warnings);
@@ -403,9 +413,9 @@ async function searchHikes() {
   showHikeMeta(data);
   drawReach(body.mode === "near_home" ? data.drive_limit_minutes : null);
   if (!data.hikes.length && !data.warnings.length) notices(["No hikes found – try more days or a bigger drive limit."]);
-  fitAll();
+  if (withStays) fitAll(); else fitLayers(hikeLayer.getLayers());
   // A drawn search also brings the stays inside the shape (not awaited: Search stays usable meanwhile).
-  if (body.mode === "drawn") loadAreaStays(body.area);
+  if (withStays && body.mode === "drawn") loadAreaStays(body.area);
 }
 function showHikeMeta(data) {
   $("hike-count").textContent = `(${state.hikes.size})`;
@@ -645,7 +655,8 @@ async function init() {
   }
   $("draw-rect-btn").addEventListener("click", () => startDrawing("rectangle"));
   $("draw-circle-btn").addEventListener("click", () => startDrawing("circle"));
-  $("search").addEventListener("click", () => withBusy($("search"), searchHikes));
+  $("search").addEventListener("click", () => withBusy($("search"), () => searchHikes(false)));
+  $("search-all").addEventListener("click", () => withBusy($("search-all"), () => searchHikes(true)));
   $("suggest-trips").addEventListener("click", () => withBusy($("suggest-trips"), planTrip));
   $("load-more").addEventListener("click", () => withBusy($("load-more"), loadMoreHikes));
   $("ask-form").addEventListener("submit", ask);

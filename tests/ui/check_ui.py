@@ -277,9 +277,9 @@ def main() -> None:
         assert body["area"]["south"] < body["area"]["north"] and body["area"]["west"] < body["area"]["east"], body
         print("PASS rectangle replaces circle, Esc cancels the hint")
 
-        # Part A: a drawn-area hike search also loads the stays inside the shape, no hike click needed.
-        expect(page.locator("#search")).to_be_enabled()
-        page.click("#search")
+        # Part A: 🔍 Search all in a drawn area also loads the stays inside the shape, no hike click needed.
+        expect(page.locator("#search-all")).to_be_enabled()
+        page.click("#search-all")
         expect(page.locator("#stay-list li")).to_have_count(1)
         expect(page.locator("#stay-note")).to_have_text("in drawn area")
         stay_body = last_request("/api/stays")[1]
@@ -290,6 +290,21 @@ def main() -> None:
         expect(page.locator("#stay-count")).to_have_text("(0)")
         expect(page.locator("#stay-note")).to_have_text("near Test hike")
         print("PASS drawn search loads stays inside the area; hike click replaces them")
+
+        # 🔍 Search hikes replaces only the hikes: stays already listed stay, no stay request is made.
+        page.click("#search-all")
+        expect(page.locator("#stay-list li")).to_have_count(1)
+        expect(page.locator("#search")).to_be_enabled()
+        stays_before = len([r for r in requests if r[0] == "/api/stays"])
+        page.click("#search")
+        expect(page.locator("#search")).to_be_enabled()
+        expect(page.locator("#hike-list li")).to_have_count(1)
+        expect(page.locator("#stay-list li")).to_have_count(1)
+        expect(page.locator("#stay-note")).to_have_text("in drawn area")
+        expect(page.locator(".leaflet-marker-icon.pin.airbnb, .marker-cluster")).not_to_have_count(0)
+        page.wait_for_timeout(300)
+        assert len([r for r in requests if r[0] == "/api/stays"]) == stays_before, "Search hikes fetched stays"
+        print("PASS 🔍 Search hikes keeps the stays on the map; 🔍 Search all reloads them")
 
         # Part B: total count header and Load more (append, dedupe, button hides at the end).
         paging["on"] = True
@@ -442,15 +457,15 @@ def main() -> None:
         hold.discard("/api/stays")
         print("PASS failing Booking request clears the spinner")
 
-        # A new search while stays are loading drops their spinners at once; late answers change nothing.
-        expect(page.locator("#search")).to_be_enabled()
+        # 🔍 Search all while stays are loading drops their spinners at once; late answers change nothing.
+        expect(page.locator("#search-all")).to_be_enabled()
         hold.add("/api/stays")
         page.locator("#hike-list li").first.click()
         wait_held(2)
         expect(page.locator('[data-spin="stay:airbnb"]')).to_be_visible()
         expect(page.locator('[data-spin="stay:booking"]')).to_be_visible()
         expect(page.locator("#stay-section")).to_have_attribute("aria-busy", "true")
-        page.click("#search")
+        page.click("#search-all")
         expect(page.locator('[data-spin="stay:airbnb"]')).to_be_hidden()
         expect(page.locator('[data-spin="stay:booking"]')).to_be_hidden()
         expect(page.locator('[data-spin="stay:retry"]')).to_be_hidden()
