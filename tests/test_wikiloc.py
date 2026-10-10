@@ -218,3 +218,45 @@ async def test_make_fetch_keeps_cookie_out_of_stderr_and_does_not_retry_bad_head
     assert await fetch("https://es.wikiloc.com/wikiloc/find.do", {}, {"Cookie": "a=SECRETX b=1"}) is None
     assert "SECRETX" not in capsys.readouterr().err
     assert attempts == []  # returned on the first attempt, no backoff sleep
+
+
+async def test_loop_only_empty_but_login_fine_returns_no_routes_without_expiry():
+    calls = []
+
+    async def fetch(url, params, headers=None):
+        calls.append(dict(params))
+        return {"spas": []} if params.get("t") == 1 else {"spas": [wikiloc_spa(1, "r", 39.3, 22.9)]}
+
+    source = WikilocSource(fetch=fetch, cookie="SESSION=abc")
+    assert await source.search(BOX, filters=HikeFilters(loop_only=True)) == []
+    assert "t" in calls[0] and "t" not in calls[1]
+
+
+async def test_loop_only_empty_and_retry_empty_raises_expired():
+    async def fetch(url, params, headers=None):
+        return {"spas": []}
+
+    with pytest.raises(WikilocLoginExpired):
+        await WikilocSource(fetch=fetch, cookie="SESSION=abc").search(BOX, filters=HikeFilters(loop_only=True))
+
+
+async def test_loop_only_forward_to_login_raises_without_retry():
+    calls = []
+
+    async def fetch(url, params, headers=None):
+        calls.append(params)
+        return {"spas": [], "forwardToLogin": True}
+
+    with pytest.raises(WikilocLoginExpired):
+        await WikilocSource(fetch=fetch, cookie="SESSION=abc").search(BOX, filters=HikeFilters(loop_only=True))
+    assert len(calls) == 1
+
+
+async def test_logged_in_http_failure_raises_expired_not_rate_limit():
+    async def fetch(url, params, headers=None):
+        return None
+
+    with pytest.raises(WikilocLoginExpired):
+        await WikilocSource(fetch=fetch, cookie="SESSION=abc").search(BOX, filters=HikeFilters())
+    with pytest.raises(WikilocUnavailable):
+        await WikilocSource(fetch=fetch, cookie="SESSION=abc").search(BOX, filters=HikeFilters(), use_login=False)

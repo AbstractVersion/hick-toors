@@ -66,11 +66,37 @@ const drawControl = new L.Control.Draw({
   edit: { featureGroup: drawnItems },
 });
 map.addControl(drawControl);
+let activeDraw = null;
+function stopDrawing() {
+  if (activeDraw) { activeDraw.disable(); activeDraw = null; }
+  $("draw-hint").hidden = true;
+  $("draw-rect-btn").classList.remove("active");
+  $("draw-circle-btn").classList.remove("active");
+}
+function startDrawing(shape) {
+  stopDrawing();
+  activeDraw = shape === "circle"
+    ? new L.Draw.Circle(map, drawControl.options.draw.circle)
+    : new L.Draw.Rectangle(map, drawControl.options.draw.rectangle);
+  activeDraw.enable();
+  $("draw-hint").textContent = `Press and drag on the map to draw a ${shape} – Esc to cancel`;
+  $("draw-hint").hidden = false;
+  $(shape === "circle" ? "draw-circle-btn" : "draw-rect-btn").classList.add("active");
+}
 map.on(L.Draw.Event.CREATED, (event) => {
   drawnItems.clearLayers();
   drawnItems.addLayer(event.layer);
+  stopDrawing();
   setMode("drawn");
 });
+map.on(L.Draw.Event.DRAWSTOP, stopDrawing);
+map.on(L.Draw.Event.DELETED, () => {
+  if (drawnItems.getLayers().length === 0 && mode() === "drawn") {
+    setMode("near_home");
+    notices(["Drawn area removed – back to Near home"]);
+  }
+});
+document.addEventListener("keydown", (event) => { if (event.key === "Escape") stopDrawing(); });
 function drawnArea() {
   const layer = drawnItems.getLayers()[0];
   if (!layer) return null;
@@ -135,7 +161,11 @@ async function api(path, body) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const msg = Array.isArray(data.detail)
-      ? data.detail.map((d) => String(d.msg).replace(/^Value error, /, "")).join("; ")
+      ? data.detail.map((d) => {
+        const loc = (d.loc || []).filter((part) => part !== "body").join(".");
+        const msg = String(d.msg).replace(/^Value error, /, "");
+        return loc ? `${loc} : ${msg}` : msg;
+      }).join("; ")
       : data.detail || `Request failed (${res.status})`;
     throw new Error(msg);
   }
@@ -403,9 +433,8 @@ async function init() {
   for (const radio of document.querySelectorAll("input[name=mode]")) {
     radio.addEventListener("change", () => { $("place").hidden = mode() !== "place"; });
   }
-  $("draw-btn").addEventListener("click", () => {
-    new L.Draw.Rectangle(map, drawControl.options.draw.rectangle).enable();
-  });
+  $("draw-rect-btn").addEventListener("click", () => startDrawing("rectangle"));
+  $("draw-circle-btn").addEventListener("click", () => startDrawing("circle"));
   $("search").addEventListener("click", () =>
     withBusy($("search"), () => (mode() === "trip" ? planTrip() : searchHikes())));
   $("ask-form").addEventListener("submit", ask);

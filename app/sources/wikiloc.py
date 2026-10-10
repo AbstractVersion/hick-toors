@@ -162,13 +162,26 @@ class WikilocSource:
             params.update(server)
             data = await (self._fetch(SEARCH_URL, params, headers) if login else self._fetch(SEARCH_URL, params))
             if not isinstance(data, dict):
+                if page == 0 and login:
+                    raise WikilocLoginExpired()  # engine retries anonymously instead of blaming rate limits
                 if page == 0:
                     raise WikilocUnavailable(
                         "Hikes temporarily unavailable – Wikiloc is rate limiting, try again in a minute"
                     )
                 break
-            if page == 0 and login and (data.get("forwardToLogin") or (server and not data.get("spas"))):
-                raise WikilocLoginExpired()
+            if page == 0 and login:
+                restricted = bool(data.get("forwardToLogin") or data.get("restricted"))
+                if restricted:
+                    raise WikilocLoginExpired()
+                if server and not data.get("spas"):
+                    if "t" in server:
+                        # No circular routes, or an expired login? Ask again without the loop filter.
+                        retry = await self._fetch(SEARCH_URL, {**{k: v for k, v in params.items() if k != "t"}},
+                                                  headers)
+                        if (isinstance(retry, dict) and retry.get("spas")
+                                and not (retry.get("forwardToLogin") or retry.get("restricted"))):
+                            return []  # login works: there simply are no circular routes here
+                    raise WikilocLoginExpired()
             for hike in parse_search(data):
                 if hike.id not in seen:
                     seen.add(hike.id)

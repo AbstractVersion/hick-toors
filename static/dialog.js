@@ -170,6 +170,12 @@ function createFilterDialog({ id, title, section, shared, getValues, getShared, 
       control(field.max_key).classList.add("invalid");
       problems.push(`${field.label}: minimum is above maximum`);
     }
+    for (const field of section.fields) {
+      if (field.type === "multi" && section.defaults[field.key].length > 0 && values[field.key].length === 0) {
+        form.querySelector(`[data-key="${field.key}"] .chips`).classList.add("invalid");
+        problems.push(`Pick at least one ${field.label}`);
+      }
+    }
     const guestsInput = control("shared_guests");
     if (guestsInput && !(Number.isInteger(Number(guestsInput.value)) && guestsInput.value !== ""
       && Number(guestsInput.value) >= 1)) {

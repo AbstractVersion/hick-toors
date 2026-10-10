@@ -20,7 +20,10 @@
     <label class="dog"><input type="checkbox" id="dog" checked> 🐕 Dog</label>
     <button type="button" id="hike-filters-btn" class="tool-btn" disabled>⚙️ Hike filters <span id="hike-filter-count" class="count" hidden></span></button>
     <button type="button" id="stay-filters-btn" class="tool-btn" disabled>⚙️ Stay filters <span id="stay-filter-count" class="count" hidden></span></button>
-    <button type="button" id="draw-btn" class="tool-btn">✏️ Draw area</button>
+    <span class="draw-group">✏️ Draw:
+      <button type="button" id="draw-rect-btn" class="tool-btn">▭ Rectangle</button>
+      <button type="button" id="draw-circle-btn" class="tool-btn">◯ Circle</button>
+    </span>
     <fieldset id="modes">
       <label><input type="radio" name="mode" value="near_home" checked> Near home</label>
       <label><input type="radio" name="mode" value="place"> Place</label>
@@ -37,7 +40,7 @@
       <section><h2>🏡 Stays <span id="stay-count"></span></h2><ul id="stay-list"></ul></section>
       <section><h2>⭐ Combos <span id="combo-count"></span></h2><ul id="combo-list"></ul></section>
     </aside>
-    <div id="map"></div>
+    <div id="map-wrap"><div id="map"></div><div id="draw-hint" hidden></div></div>
   </main>
   <footer id="ask">
     <form id="ask-form">

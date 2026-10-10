@@ -24,6 +24,9 @@ STRAIGHT_LINE_KM_PER_MIN = 1.5  # generous: nothing within the drive limit falls
 STAY_RADIUS_SLACK = 1.5  # providers search a square; drop results far outside the circle
 MIN_AREA_RADIUS_KM = 5.0  # tiny drawn shapes are widened to at least this radius
 NO_HIKES_MATCH = "No hikes match your filters"
+NO_HIKES_DEFAULT = "No hiking routes here – other activities can be enabled in Hike filters"
+NO_HIKES_IN_AREA = "No hikes inside the drawn area – draw a bigger shape or change the hike filters"
+NO_HIKES_IN_DRIVE = "No hikes within your drive limit – try more days or a bigger drive limit"
 NO_STAYS_MATCH = "No stays match your filters"
 NO_SOURCE = "No source supports this combination of filters"
 OUTSIDE_GREECE = "The drawn area is outside Greece – draw it over Greece"
@@ -141,9 +144,13 @@ class Engine:
             return HikeSearch(warnings=warnings + [str(exc)], drive_limit_minutes=limit)
         hikes = apply_hike_filters(fetched, q.filters)
         if fetched and not hikes:
-            return HikeSearch(warnings=warnings + [NO_HIKES_MATCH], drive_limit_minutes=limit)
+            no_match = NO_HIKES_MATCH if hike_filters_active(q.filters) else NO_HIKES_DEFAULT
+            return HikeSearch(warnings=warnings + [no_match], drive_limit_minutes=limit)
         if q.mode == "drawn":
+            before = len(hikes)
             hikes = [h for h in hikes if in_area(h, q.area)]
+            if before and not hikes:
+                warnings.append(NO_HIKES_IN_AREA)
         times, warning = await self.router.drive_times(self.home, [LatLon(lat=h.lat, lon=h.lon) for h in hikes])
         if warning:
             warnings.append(warning)
@@ -155,6 +162,8 @@ class Engine:
                 if not t.reachable or t.minutes is None or t.minutes > limit:
                     continue
             kept.append(h)
+        if hikes and not kept and q.mode == "near_home" and limit is not None:
+            warnings.append(NO_HIKES_IN_DRIVE)
         kept.sort(key=lambda h: h.trailrank or 0, reverse=True)
         kept = kept[: self.settings.max_hikes]
         self._register(kept)

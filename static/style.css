@@ -20,7 +20,11 @@ main { flex: 1; display: flex; min-height: 0; }
 #sidebar li .meta { color: #5d6b63; font-size: 12px; }
 .badge { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 10px; background: #e3efe7; margin-top: 2px; }
 .badge.garden_unconfirmed { background: #fff0cf; }
+#map-wrap { flex: 1; position: relative; display: flex; }
 #map { flex: 1; }
+#draw-hint { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 1000; padding: 6px 14px; border-radius: 16px; background: #1d2b24; color: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.3); pointer-events: none; }
+.draw-group { display: inline-flex; gap: 6px; align-items: center; }
+.tool-btn.active { background: #2f6f4e; color: #fff; border-color: #2f6f4e; }
 .pin { background: none; border: 0; }
 .pin span { font-size: 22px; filter: drop-shadow(0 1px 1px rgba(0,0,0,.4)); }
 .pin b { display: block; margin-top: -4px; padding: 0 4px; border-radius: 4px; font-size: 11px; color: #fff; white-space: nowrap; }
@@ -47,7 +51,7 @@ main { flex: 1; display: flex; min-height: 0; }
 .filters-dialog .range-row { display: flex; gap: 6px; align-items: center; }
 .filters-dialog input[type=number] { width: 90px; padding: 3px 6px; border: 1px solid #c8d0c6; border-radius: 6px; }
 .filters-dialog select { padding: 3px 6px; border: 1px solid #c8d0c6; border-radius: 6px; }
-.filters-dialog .invalid { outline: 2px solid #c0392b; }
+.filters-dialog .invalid, .filters-dialog .chips.invalid { outline: 2px solid #c0392b; }
 .filters-dialog .form-error { margin: 0; min-height: 18px; color: #c0392b; }
 .filters-dialog .dialog-buttons { display: flex; justify-content: flex-end; gap: 8px; }
 .filters-dialog .dialog-buttons button { padding: 6px 14px; border: 1px solid #c8d0c6; border-radius: 6px; background: #fff; cursor: pointer; }

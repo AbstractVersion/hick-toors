@@ -165,4 +165,4 @@ def test_index_has_filter_buttons_and_scripts(tmp_path):
 def test_index_has_draw_tools(tmp_path):
     html = client(tmp_path).get("/").text
     assert "leaflet-draw@1.0.4/dist/leaflet.draw.js" in html and "leaflet-draw@1.0.4/dist/leaflet.draw.css" in html
-    assert 'id="draw-btn"' in html and 'value="drawn"' in html
+    assert 'id="draw-rect-btn"' in html and 'id="draw-circle-btn"' in html and 'id="draw-hint"' in html and 'value="drawn"' in html

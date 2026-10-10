@@ -144,23 +144,74 @@ def main() -> None:
         assert len(requests) == sent, requests[sent:]
         print("PASS drawn mode without a shape")
 
-        # Real mouse drag with the ✏️ button (exercises Leaflet.draw's rectangle handler).
+        # Empty activities selection: Apply is blocked with a readable message.
+        page.click("#hike-filters-btn")
+        for box_ in dialog.locator('input[name="activities"]:checked').all():
+            box_.uncheck()
+        expect(dialog.locator('[data-act="apply"]')).to_be_disabled()
+        expect(dialog.locator(".form-error")).to_contain_text("Pick at least one")
+        dialog.locator('[data-act="cancel"]').click()
+        print("PASS empty activities blocks Apply")
+
+        # API 422 detail keeps the field name.
+        page.unroute("**/api/hikes")
+        page.route("**/api/hikes", lambda route: route.fulfill(status=422, content_type="application/json",
+            body=json.dumps({"detail": [{"loc": ["body", "filters", "activities"],
+                                         "msg": "Value error, bad list"}]})))
         page.check('input[name="mode"][value="near_home"]')
-        page.click("#draw-btn")
-        box = page.locator("#map").bounding_box()
-        x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
-        page.mouse.move(x, y)
-        page.mouse.down()
-        page.mouse.move(x + 120, y + 80, steps=8)
-        page.mouse.up()
+        page.click("#search")
+        expect(page.locator("#notices")).to_contain_text("filters.activities : bad list")
+        page.unroute("**/api/hikes")
+        page.route("**/api/hikes", answer)
+        print("PASS 422 message keeps the field")
+
+        # Real mouse drags with the Draw buttons (Leaflet.draw handlers).
+        def drag(dx: int, dy: int) -> None:
+            mbox = page.locator("#map").bounding_box()
+            x, y = mbox["x"] + mbox["width"] / 2, mbox["y"] + mbox["height"] / 2
+            page.mouse.move(x, y)
+            page.mouse.down()
+            page.mouse.move(x + dx, y + dy, steps=8)
+            page.mouse.up()
+
+        page.check('input[name="mode"][value="near_home"]')
+        page.click("#draw-circle-btn")
+        expect(page.locator("#draw-hint")).to_be_visible()
+        expect(page.locator("#draw-hint")).to_contain_text("circle")
+        expect(page.locator("#draw-circle-btn")).to_have_class("tool-btn active")
+        drag(90, 0)
         expect(page.locator('input[name="mode"][value="drawn"]')).to_be_checked()
+        expect(page.locator("#draw-hint")).to_be_hidden()
         assert page.evaluate("drawnItems.getLayers().length") == 1
+        assert page.evaluate("drawnItems.getLayers()[0] instanceof L.Circle") is True
+        page.click("#search")
+        expect(page.locator("#hike-list li")).to_have_count(1)
+        path, body = requests[-1]
+        assert path == "/api/hikes" and body["mode"] == "drawn" and body["area"]["shape"] == "circle", body
+        print("PASS circle drawn with the mouse and searched")
+
+        page.click("#draw-rect-btn")
+        expect(page.locator("#draw-hint")).to_contain_text("rectangle")
+        page.keyboard.press("Escape")
+        expect(page.locator("#draw-hint")).to_be_hidden()
+        page.click("#draw-rect-btn")
+        drag(120, 80)
+        expect(page.locator("#draw-hint")).to_be_hidden()
+        assert page.evaluate("drawnItems.getLayers().length") == 1
+        assert page.evaluate("drawnItems.getLayers()[0] instanceof L.Circle") is False
         page.click("#search")
         expect(page.locator("#hike-list li")).to_have_count(1)
         path, body = requests[-1]
         assert path == "/api/hikes" and body["mode"] == "drawn" and body["area"]["shape"] == "rectangle", body
         assert body["area"]["south"] < body["area"]["north"] and body["area"]["west"] < body["area"]["east"], body
-        print("PASS rectangle drawn with the mouse and searched")
+        print("PASS rectangle replaces circle, Esc cancels the hint")
+
+        # Deleting the shape in Leaflet.draw's toolbar returns to Near home.
+        expect(page.locator("#search")).to_be_enabled()  # earlier search finished
+        page.evaluate("drawnItems.clearLayers(); map.fire(L.Draw.Event.DELETED, {layers: L.layerGroup()})")
+        expect(page.locator('input[name="mode"][value="near_home"]')).to_be_checked()
+        expect(page.locator("#notices")).to_contain_text("Drawn area removed")
+        print("PASS deleting the shape returns to Near home")
 
         # A new shape replaces the old one; Trip plan uses it.
         page.evaluate("""map.fire(L.Draw.Event.CREATED,

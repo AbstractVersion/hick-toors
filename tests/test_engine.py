@@ -406,3 +406,26 @@ async def test_expired_login_with_loop_only_adds_loop_notice(settings):
     result = await engine.search_hikes(HikeQuery(start=FRI, end=SUN, filters={"min_trailrank": 10,
                                                                               "loop_only": True}))
     assert result.warnings == [LOGIN_EXPIRED_TEXT, "Circular-only needs a Wikiloc login (WIKILOC_COOKIE)"]
+
+
+async def test_default_filters_dropping_everything_point_to_hike_filters(settings):
+    engine = make_engine(settings, wikiloc=FakeWikiloc([hike(1, 50, lat=38.1, activity=43)]),
+                         router=FakeRouter({38.1: 60}))
+    result = await engine.search_hikes(HikeQuery(start=FRI, end=SUN))
+    assert result.warnings == ["No hiking routes here – other activities can be enabled in Hike filters"]
+
+
+async def test_drawn_area_trim_leaving_nothing_warns(settings):
+    engine = make_engine(settings, wikiloc=FakeWikiloc([hike(1, 50, lat=38.1, lon=23.0)]),
+                         router=FakeRouter({38.1: 60}))
+    area = {"shape": "circle", "lat": 38.0, "lon": 23.0, "radius_m": 6000}  # hike is ~11 km away
+    result = await engine.search_hikes(HikeQuery(start=FRI, end=SUN, mode="drawn", area=area))
+    assert result.hikes == []
+    assert result.warnings == ["No hikes inside the drawn area – draw a bigger shape or change the hike filters"]
+
+
+async def test_drive_limit_trim_leaving_nothing_warns(settings):
+    engine = make_engine(settings, wikiloc=FakeWikiloc([hike(1, 50, lat=38.1)]), router=FakeRouter({38.1: 300}))
+    result = await engine.search_hikes(HikeQuery(start=FRI, end=SUN, drive_limit=45))
+    assert result.hikes == []
+    assert result.warnings == ["No hikes within your drive limit – try more days or a bigger drive limit"]
