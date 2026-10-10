@@ -99,7 +99,11 @@
         <span class="spinner" id="trip-airbnb-spin" role="status" aria-label="Looking up the Airbnb listing" hidden></span>
       </div>
       <div id="trip-airbnb-info" class="list-note" role="status" hidden></div>
-      <h3>🌿 Nature</h3><ul id="trip-sights" class="trip-items"></ul>
+      <div class="section-head"><h3>🌿 Nature</h3>
+        <button type="button" id="trip-find-sights" class="tool-btn" title="Add every named nature sight within 5 km of the trip's hikes and stays">🌿 Find nearby sights</button>
+        <span class="spinner" id="trip-sights-spin" role="status" aria-label="Looking for nearby nature sights" hidden></span></div>
+      <div id="trip-sights-info" class="list-note" role="status" hidden></div>
+      <ul id="trip-sights" class="trip-items"></ul>
       <label class="wide">📝 Notes <textarea id="trip-notes" maxlength="5000" rows="4"></textarea></label>
       <div class="dlg-actions">
         <button type="submit" id="trip-save" class="primary">Save changes</button>

@@ -175,6 +175,7 @@ async function openTrip(id) {
   $("trip-notes").value = t.notes || "";
   $("trip-airbnb-url").value = "";
   showAirbnbInfo([]);
+  showSightsInfo([]);
   resetDelete();
   renderTripItems();
   $("trips-list-view").hidden = true;
@@ -265,10 +266,12 @@ function lookupFields() {
   return { start: start || null, end: end || null,
     guests: Math.min(16, Math.max(1, Math.round(Number($("trip-guests").value)) || 1)), dog: $("trip-dog").checked };
 }
-// Save / Export / PDF / ＋ Add are disabled while a save or a lookup runs.
+// Save / Export / PDF / ＋ Add / Find nearby sights are disabled while a save, a lookup or a sights search runs.
 function setBusy(delta) {
   trips.busy += delta;
-  for (const id of ["trip-save", "trip-export", "trip-pdf", "trip-airbnb-add"]) $(id).disabled = trips.busy > 0;
+  for (const id of ["trip-save", "trip-export", "trip-pdf", "trip-airbnb-add", "trip-find-sights"]) {
+    $(id).disabled = trips.busy > 0;
+  }
 }
 const editorOpen = (id) => trips.current?.id === id && !$("trip-editor").hidden && $("trips-dialog").open;
 async function addAirbnbLink() {
@@ -299,6 +302,36 @@ async function addAirbnbLink() {
     showTripsError(err.message);
   } finally {
     $("trip-airbnb-spin").hidden = true;
+    setBusy(-1);
+  }
+}
+// 🌿 Find nearby sights: save what is on screen, then let the server add every named sight near the trip.
+const NEARBY_KM = 5;
+function showSightsInfo(messages) {
+  const text = (messages || []).join(" · ");
+  $("trip-sights-info").textContent = text;
+  $("trip-sights-info").hidden = !text;
+}
+async function findNearbySights() {
+  if (!trips.current || trips.busy) return;
+  const tripId = trips.current.id;
+  showTripsError("");
+  showSightsInfo([]);
+  $("trip-sights-spin").hidden = false;
+  setBusy(1);
+  try {
+    if (!(await persistTrip()) || !editorOpen(tripId)) return;
+    const res = await api(tripPath(tripId, "/nearby-sights"), { radius_km: NEARBY_KM });
+    if (!editorOpen(tripId)) return;  // the editor moved to another trip or closed meanwhile
+    trips.current = res.trip;
+    renderTripItems();
+    showSightsInfo([res.added > 0 ? `Added ${plural(res.added, "nature sight")} within ${NEARBY_KM} km`
+      : `No new named sights within ${NEARBY_KM} km`, ...(res.warnings || [])]);
+    await refreshTrips();
+  } catch (err) {
+    if (editorOpen(tripId)) showTripsError(err.message);
+  } finally {
+    $("trip-sights-spin").hidden = true;
     setBusy(-1);
   }
 }
@@ -425,6 +458,7 @@ $("trip-export").addEventListener("click", exportTrip);
 $("trip-pdf").addEventListener("click", printTrip);
 $("trip-delete").addEventListener("click", deleteTrip);
 $("trip-airbnb-add").addEventListener("click", addAirbnbLink);
+$("trip-find-sights").addEventListener("click", findNearbySights);
 $("trip-airbnb-url").addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;
   event.preventDefault();  // Enter here adds the link; it must not submit (save) the editor form

@@ -809,6 +809,80 @@ def main() -> None:
         page.click("#trip-back")
         print("PASS typed total price saved with Save changes (EUR)")
 
+        # 🌿 Find nearby sights: saves first (PUT), then POSTs nearby-sights (answered here with canned JSON built
+        # from the stored trip, so no Overpass request); buttons are disabled while it runs.
+        nearby_re = re.compile(r"/api/saved-trips/[^/?]+/nearby-sights$")
+        nearby_held: list = []
+        sent: list[tuple[str, str]] = []
+        def on_sent(req) -> None:
+            if "/api/saved-trips/" in req.url:
+                sent.append((req.method, req.url))
+
+        page.route(nearby_re, lambda route: nearby_held.append(route))
+        page.on("request", on_sent)
+        busy_ids = ("#trip-save", "#trip-export", "#trip-pdf", "#trip-airbnb-add", "#trip-find-sights")
+
+        def nearby_click() -> None:
+            nearby_held.clear()
+            page.click("#trip-find-sights")
+            for _ in range(60):
+                if nearby_held:
+                    return
+                page.wait_for_timeout(100)
+            raise SystemExit("FAIL no nearby-sights request")
+
+        def nearby_answer(payload, status: int = 200) -> None:
+            nearby_held.pop().fulfill(status=status, content_type="application/json", body=json.dumps(payload))
+
+        rows.first.click()
+        sights_ul = page.locator("#trip-sights li:not(.list-note)")
+        expect(sights_ul).to_have_count(0)
+        page.fill("#trip-notes", "before sights")  # unsaved edit: must be saved before the search
+        sent.clear()
+        nearby_click()
+        expect(page.locator("#trip-sights-spin")).to_be_visible()
+        for busy in busy_ids:
+            expect(page.locator(busy)).to_be_disabled()
+        trip_url = f"{BASE}/api/saved-trips/{trip_id}"
+        assert sent.index(("PUT", trip_url)) < sent.index(("POST", f"{trip_url}/nearby-sights")), sent
+        assert nearby_held[0].request.post_data_json == {"radius_km": 5}, nearby_held[0].request.post_data
+        stored = page.evaluate(get_trip, trip_id)
+        assert stored["notes"] == "before sights", stored
+        spread = "Trip is spread out – searched near the first places only"
+        nearby_answer({"trip": {**stored, "sights": [WATERFALL, {**RIVER, "lines": []}]}, "added": 2, "found": 3,
+                       "warnings": [spread]})
+        expect(sights_ul).to_have_count(2)
+        expect(sights_ul.nth(0)).to_contain_text("💧 Test falls")
+        expect(sights_ul.nth(1)).to_contain_text("Test river")
+        expect(page.locator("#trip-sights-info")).to_have_text(f"Added 2 nature sights within 5 km · {spread}")
+        expect(page.locator("#trip-sights-spin")).to_be_hidden()
+        for busy in busy_ids:
+            expect(page.locator(busy)).to_be_enabled()
+        print("PASS 🌿 Find nearby sights saves first, disables buttons, lists the added sights with the info line")
+
+        nearby_click()
+        expect(page.locator("#trip-sights-info")).to_be_hidden()
+        nearby_answer({"trip": page.evaluate(get_trip, trip_id), "added": 0, "found": 0, "warnings": []})
+        expect(page.locator("#trip-sights-info")).to_have_text("No new named sights within 5 km")
+        expect(sights_ul).to_have_count(2)  # saved by this click's PUT, so the stored trip now holds them
+        nearby_click()
+        nearby_answer({"detail": "Add a hike or stay first"}, status=422)
+        expect(page.locator("#trips-error")).to_have_text("Add a hike or stay first")
+        expect(page.locator("#trip-find-sights")).to_be_enabled()
+        nearby_click()  # stale: the editor closes before the answer
+        page.click("#trip-back")
+        nearby_answer({"trip": {**page.evaluate(get_trip, trip_id), "name": "Stale answer"}, "added": 1, "found": 1,
+                       "warnings": []})
+        page.wait_for_timeout(300)
+        expect(page.locator("#trip-editor")).to_be_hidden()
+        rows.first.click()
+        expect(page.locator("#trip-name")).not_to_have_value("Stale answer")
+        expect(page.locator("#trip-sights-info")).to_be_hidden()
+        page.click("#trip-back")
+        page.remove_listener("request", on_sent)
+        page.unroute(nearby_re)
+        print("PASS 🌿 Find nearby sights: nothing new, API error and a stale answer are handled")
+
         rows.first.click()
         page.click("#trip-delete")
         expect(page.locator("#trip-delete")).to_have_text("Confirm delete")
