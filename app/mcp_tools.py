@@ -5,6 +5,7 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import ValidationError
 
 from app.models import HikeQuery, StaySearchQuery, TripQuery
+from app.trip_markdown import trip_markdown
 
 mcp = FastMCP("hicktoors")
 _engine = None
@@ -143,8 +144,6 @@ async def get_saved_trip(trip_id: str) -> str:
     Wikiloc links and stats, stays with links/prices/pet badges, and notes. Read-only.
     Unknown id -> JSON {"error": "Trip not found"}.
     """
-    from app.trip_markdown import trip_markdown
-
     trip = trip_store().get(trip_id)
     if trip is None:
         return json.dumps({"error": "Trip not found"})

@@ -20,6 +20,8 @@ SYSTEM_PROMPT = """You are the trip planner inside hick-toors, a local site for 
 plus a place to stay, usually travelling with a dog. Home is {home}.
 Use the hicktoors tools (search_hikes, search_stays, plan_trip) to find real options; never invent
 hikes, stays, prices or coordinates. Dates are YYYY-MM-DD.
+For questions about the user's saved trips, use list_saved_trips and get_saved_trip (read-only; you
+cannot change trips).
 Finish with a short friendly plan, then a final fenced JSON block exactly like:
 ```json
 {{"summary": "<2-5 sentence plan>", "hike_ids": ["wikiloc:..."], "stay_ids": ["airbnb:..."],

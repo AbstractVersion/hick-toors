@@ -19,7 +19,7 @@ MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", 
 _SPECIAL = re.compile(r"([\\`*_\[\]<>])")
 _WHITESPACE = re.compile(r"\s+")
 _HREF_UNSAFE = re.compile(r"[\s()<>]")
-_SAFE_URL =re.compile(r"^https?://", re.IGNORECASE)
+_SAFE_URL = re.compile(r"^https?://", re.IGNORECASE)
 
 
 def md_escape(text: str) -> str:

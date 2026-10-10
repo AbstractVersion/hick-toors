@@ -4,7 +4,8 @@ from datetime import date
 import pytest
 
 import app.mcp_tools as tools
-from app.models import Hike, HikeSearch, StaySearch, TripSearch
+from app.models import Hike, HikeSearch, SavedTripIn, StaySearch, TripSearch
+from app.trips_store import TripStore
 
 
 class FakeEngine:
@@ -106,10 +107,6 @@ async def test_invalid_filters_return_error_json(engine):
     out = json.loads(await tools.search_hikes("2026-10-23", "2026-10-25", hike_filters={"min_rank": 5}))
     assert out["error"] == "filters.min_rank: Extra inputs are not permitted"
     assert engine.queries == []
-
-
-from app.models import SavedTripIn  # noqa: E402
-from app.trips_store import TripStore  # noqa: E402
 
 
 @pytest.fixture
