@@ -22,6 +22,22 @@ async def fetch_json(url: str, params: dict) -> Any:
         return response.json()
 
 
+GEO_CLASSES = {"boundary", "place", "natural", "mountain_pass", "waterway"}
+GEO_TYPES = {"region", "state", "municipality", "county", "city", "town", "village", "hamlet", "locality",
+             "peak", "mountain_range", "island", "archipelago", "valley", "gorge", "lake", "beach",
+             "administrative"}
+
+
+def _pick_best(candidates: list[dict]) -> dict:
+    """Prefer real places over POIs: geographic class, then sensible type, then Nominatim importance."""
+    def rank(item: tuple[int, dict]):
+        i, c = item
+        geo = c.get("class") in GEO_CLASSES
+        typed = c.get("addresstype") in GEO_TYPES or c.get("type") in GEO_TYPES
+        return (geo, typed if geo else False, float(c.get("importance") or 0) if geo else 0.0, -i)
+    return max(enumerate(candidates), key=rank)[1]
+
+
 class Place(BaseModel):
     name: str
     lat: float
@@ -53,16 +69,16 @@ class Geocoder:
     async def locate(self, text: str) -> Place | None:
         """Navigation lookup (Greek or English): the place itself with its exact, unwidened box."""
         lang = "el" if GREEK_RE.search(text) else "en"  # labels come back in the language you typed
-        key = f"locate:{lang}:{text.strip().casefold()}"
+        key = f"locate2:{lang}:{text.strip().casefold()}"
         cached = self._cache.get(key)
         if cached:
             return Place(**cached)
         data = await self._fetch(NOMINATIM_URL, {
-            "q": text.strip(), "format": "json", "limit": 1, "countrycodes": "gr", "addressdetails": 0,
+            "q": text.strip(), "format": "json", "limit": 10, "countrycodes": "gr", "addressdetails": 0,
             "accept-language": lang})
         if not data:
             return None
-        hit = data[0]
+        hit = _pick_best(data)
         south, north, west, east = (float(v) for v in hit["boundingbox"])
         label = ", ".join(p.strip() for p in str(hit.get("display_name", text)).split(",")[:2])
         place = Place(name=label, lat=float(hit["lat"]), lon=float(hit["lon"]),

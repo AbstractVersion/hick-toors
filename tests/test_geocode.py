@@ -46,7 +46,7 @@ async def test_locate_returns_place_with_unwidened_bbox(tmp_path):
     assert (place.lat, place.lon) == (39.3925, 22.9926)
     assert (place.bbox.south, place.bbox.north, place.bbox.west, place.bbox.east) == (39.38, 39.40, 22.98, 23.00)
     p = calls[0]
-    assert p["q"] == "Μακρινίτσα" and p["countrycodes"] == "gr" and p["limit"] == 1 and p["format"] == "json"
+    assert p["q"] == "Μακρινίτσα" and p["countrycodes"] == "gr" and p["limit"] == 10 and p["format"] == "json"
     assert p["addressdetails"] == 0 and p["accept-language"] == "el"
 
 
@@ -85,8 +85,8 @@ async def test_locate_cache_key_includes_language(tmp_path):
 
     geocoder = Geocoder(cache, fetch=fetch)
     await geocoder.locate("Athens")
-    assert cache.get("locate:en:athens") is not None
-    assert cache.get("locate:el:athens") is None
+    assert cache.get("locate2:en:athens") is not None
+    assert cache.get("locate2:el:athens") is None
 
 
 async def test_locate_cache_is_separate_from_geocode(tmp_path):
@@ -109,3 +109,46 @@ async def test_locate_not_found_is_none_and_not_cached(tmp_path):
     geocoder = Geocoder(DiskCache(tmp_path), fetch=fetch)
     assert await geocoder.locate("Atlantis") is None
     assert await geocoder.locate("Atlantis") is None and len(calls) == 2
+
+
+def _cand(name, cls, typ, importance=None, lat="39.0", lon="21.0"):
+    c = {"display_name": f"{name}, Ελλάδα", "lat": lat, "lon": lon, "class": cls, "type": typ,
+         "boundingbox": ["38.9", "39.1", "20.9", "21.1"]}
+    if importance is not None:
+        c["importance"] = importance
+    return c
+
+
+async def _locate(tmp_path, data, text="Ζαγόρι"):
+    async def fetch(url, params):
+        return data
+
+    return await Geocoder(DiskCache(tmp_path), fetch=fetch).locate(text)
+
+
+async def test_locate_prefers_geographic_over_first_poi(tmp_path):
+    data = [_cand("Φυσικό Νερό Ζαγόρι", "craft", "bottling", 0.9),
+            _cand("Ζαγόρι", "boundary", "administrative", 0.4)]
+    assert (await _locate(tmp_path, data)).name == "Ζαγόρι, Ελλάδα"
+
+
+async def test_locate_highest_importance_among_geographic(tmp_path):
+    data = [_cand("Low", "place", "village", 0.2), _cand("High", "boundary", "administrative", 0.7),
+            _cand("Mid", "natural", "peak", 0.5), _cand("Nameless", "place", "hamlet")]
+    assert (await _locate(tmp_path, data)).name == "High, Ελλάδα"
+
+
+async def test_locate_only_pois_returns_first_poi(tmp_path):
+    data = [_cand("Shop", "shop", "kiosk", 0.1), _cand("Hotel", "tourism", "hotel", 0.9)]
+    assert (await _locate(tmp_path, data)).name == "Shop, Ελλάδα"
+
+
+async def test_locate_sends_limit_10(tmp_path):
+    seen = []
+
+    async def fetch(url, params):
+        seen.append(params)
+        return [HIT]
+
+    await Geocoder(DiskCache(tmp_path), fetch=fetch).locate("x")
+    assert seen[0]["limit"] == 10
