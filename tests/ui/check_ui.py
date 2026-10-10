@@ -668,7 +668,7 @@ def main() -> None:
         expect(page.locator("#trip-airbnb-spin")).to_be_hidden()
         price = linked.locator(".price-edit input")
         expect(price).to_be_visible()
-        expect(page.locator("#trip-stays li", has_text="Area house").locator(".price-edit")).to_have_count(0)
+        expect(page.locator("#trip-stays li", has_text="Area house").locator(".price-edit input")).to_have_value("180")
         expect(page.locator("#trip-save")).to_have_text("Save changes")  # Enter did not submit the form
         for _ in range(30):  # persisted right away, together with the unsaved end date
             stored = page.evaluate(get_trip, trip_id)
@@ -688,12 +688,39 @@ def main() -> None:
         page.click("#trip-airbnb-add")
         wait_held(1)
         expect(page.locator("#trip-airbnb-spin")).to_be_visible()
+        for busy in ("#trip-save", "#trip-export", "#trip-airbnb-add"):  # nothing races the lookup
+            expect(page.locator(busy)).to_be_disabled()
         release(payload={"detail": "Paste an Airbnb room link (airbnb.com/rooms/…)"}, status=422)
         hold.discard("/api/stays/lookup")
         expect(page.locator("#trips-error")).to_have_text("Paste an Airbnb room link (airbnb.com/rooms/…)")
         expect(page.locator("#trip-airbnb-spin")).to_be_hidden()
         expect(stays_ul).to_have_count(2)
-        print("PASS Airbnb link: duplicate says Already in this trip; API error shown, spinner while waiting")
+        for busy in ("#trip-save", "#trip-export", "#trip-airbnb-add"):
+            expect(page.locator(busy)).to_be_enabled()
+        print("PASS Airbnb link: duplicate says Already in this trip; API error shown; buttons disabled while waiting")
+
+        # The editor is closed while Airbnb answers: the stay is not added to any trip.
+        hold.add("/api/stays/lookup")
+        page.fill("#trip-airbnb-url", "42")
+        page.click("#trip-airbnb-add")
+        wait_held(1)
+        page.click("#trip-back")
+        release(payload={"stay": {**LINKED_STAY, "id": "airbnb:42", "name": "Late house"}, "warnings": []})
+        hold.discard("/api/stays/lookup")
+        page.wait_for_timeout(300)
+        assert len(page.evaluate(get_trip, trip_id)["stays"]) == 2
+        rows.first.click()
+        expect(stays_ul).to_have_count(2)
+        expect(page.locator("#trip-stays li", has_text="Late house")).to_have_count(0)
+        print("PASS a lookup answering after the editor closed adds nothing")
+
+        price.fill("-5")
+        expect(price).to_have_class(re.compile(r"\binvalid\b"))
+        page.click("#trip-save")
+        page.wait_for_timeout(300)
+        expect(page.locator("#trip-save")).to_have_text("Save changes")  # invalid price blocks the save
+        assert page.evaluate(get_trip, trip_id)["stays"][1]["total_price"] is None
+        print("PASS a negative price is marked invalid and not saved")
 
         price.fill("350")
         page.click("#trip-save")

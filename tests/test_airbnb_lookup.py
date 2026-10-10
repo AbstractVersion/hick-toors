@@ -164,6 +164,30 @@ async def test_lookup_http_errors_raise_provider_unavailable(error):
         await AirbnbProvider(fetch=Fetch(room_error=error)).lookup(ID, None, None, 2, True)
 
 
+@pytest.mark.parametrize("url", ["١٢٣", "https://www.airbnb.com/rooms/١٢٣", "https://www.airbnb.com/rooms/plus/١٢٣"])
+def test_room_id_is_ascii_digits_only(url):
+    assert room_id_from_url(url) is None
+
+
+def test_parse_room_caps_name_and_drops_overlong_photo():
+    html = airbnb_room_html(name="N" * 500).replace("https://a0.muscache.com/im/pictures/room-1.jpeg",
+                                                     "https://x/" + "p" * 2100)
+    stay = parse_room(html, "1")
+    assert stay.name == "N" * 200
+    assert stay.photo is None or len(stay.photo) <= 2000
+    long_og = ('<meta property="og:image" content="https://x/' + "q" * 2100 + '"/>'
+               '<script type="application/ld+json">{"latitude": 37.7, "longitude": 22.2}</script>')
+    assert parse_room(long_og, "1").photo is None
+
+
+def test_parse_room_unescapes_name_and_skips_too_deep_blocks():
+    deep = "[" * 100000 + "]" * 100000
+    html = (f'<script type="application/ld+json">{deep}</script>'
+            '<script type="application/ld+json">{"name": "Tom &amp; Jerry&#39;s", "latitude": 1, "longitude": 2}'
+            '</script>')
+    assert parse_room(html, "1").name == "Tom & Jerry's"
+
+
 async def test_lookup_unparsable_page_raises_parse_error():
     with pytest.raises(AirbnbParseError):
         await AirbnbProvider(fetch=Fetch(room="<html>captcha</html>")).lookup(ID, None, None, 2, True)

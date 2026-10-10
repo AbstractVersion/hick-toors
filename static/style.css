@@ -104,6 +104,7 @@ main { flex: 1; display: flex; min-height: 0; }
 #trip-airbnb-url { flex: 1; min-width: 0; padding: 5px 7px; border: 1px solid #c8d0c6; border-radius: 6px; font: inherit; }
 .trip-items .price-edit { white-space: nowrap; font-size: 12px; color: #5d6b63; }
 .trip-items .price-edit input { width: 6em; margin-left: 2px; }
+.trip-items .price-edit input.invalid { border: 1px solid #a8322d; background: #fdecea; }
 .dlg-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .dlg-actions .primary { padding: 6px 14px; border: 0; border-radius: 6px; background: #2f6f4e; color: #fff; cursor: pointer; }
 .tool-btn.danger { color: #a8322d; border-color: #e3b5b2; }

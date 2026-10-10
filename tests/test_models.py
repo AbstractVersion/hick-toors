@@ -238,6 +238,16 @@ def test_saved_trip_in_rejects_non_finite_stay_numbers(update, message):
         SavedTripIn(name="t", stays=[_stay(), bad])
 
 
+def test_saved_trip_rejects_negative_stay_price():
+    bad = _stay("airbnb:2").model_copy(update={"total_price": -5.0})
+    with pytest.raises(ValidationError, match="stays.1: total_price must not be negative"):
+        SavedTripIn(name="t", stays=[_stay(), bad])
+    with pytest.raises(ValidationError, match="stay: total_price must not be negative"):
+        TripItemAdd(stay=bad)
+    assert SavedTripIn(name="t", stays=[_stay().model_copy(update={"total_price": 0.0})]).stays[0].total_price == 0
+    assert Stay(id="s", source="airbnb", name="s", url="u", lat=0, lon=0, total_price=-1).total_price == -1
+
+
 def test_hike_and_stay_themselves_still_accept_nan():
     assert Hike(id="h", name="h", url="u", lat=float("nan"), lon=0.0).lon == 0.0
 

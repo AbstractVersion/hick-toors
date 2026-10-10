@@ -37,10 +37,12 @@ BEACHFRONT_TAG = "Tag:789"
 
 LD_JSON_RE = re.compile(r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>', re.S | re.I)
 OG_RE = re.compile(r'<meta[^>]*property="og:(title|image)"[^>]*content="([^"]*)"', re.I)
-ROOM_PATH_RE = re.compile(r"/rooms/(?:plus/)?(\d{1,25})/?")
+ROOM_PATH_RE = re.compile(r"/rooms/(?:plus/)?([0-9]{1,25})/?")
 ROOM_HOST_RE = re.compile(r"(?:www\.|m\.)?airbnb\.(?:[a-z]{2,3}|co\.[a-z]{2}|com\.[a-z]{2})")
-ROOM_ID_RE = re.compile(r"\d{1,25}")
+ROOM_ID_RE = re.compile(r"[0-9]{1,25}")  # ASCII only: \d also matches e.g. Arabic-Indic digits
 LOOKUP_BOX_KM = 1.5  # price lookup: search a small box around the listing and pick it out by id
+MAX_NAME = 200
+MAX_PHOTO_URL = 2000
 NO_ANSWER = "Airbnb didn't answer – try again in a minute"
 
 FetchText = Callable[[str, dict], Awaitable[str]]
@@ -94,7 +96,7 @@ def parse_room(html: str, room_id: str) -> Stay:
     for block in LD_JSON_RE.findall(html):
         try:
             objects += _ld_objects(json.loads(block))
-        except ValueError:
+        except (ValueError, RecursionError):  # bad or absurdly nested JSON: skip that block
             continue
     place = next((o for o in objects if _float(o.get("latitude")) is not None
                   and _float(o.get("longitude")) is not None), None)
@@ -102,26 +104,22 @@ def parse_room(html: str, room_id: str) -> Stay:
         raise AirbnbParseError("room page has no coordinates")
     og = {key.lower(): unescape(value) for key, value in OG_RE.findall(html)}
     ordered = [place] + [o for o in objects if o is not place]
-    name = next((o["name"] for o in ordered if isinstance(o.get("name"), str) and o["name"].strip()), None)
-    photo = None
-    for o in ordered:
-        image = o.get("image")
-        image = image[0] if isinstance(image, list) and image else image
-        if isinstance(image, str) and image:
-            photo = image
-            break
+    names = [unescape(o["name"]).strip() for o in ordered if isinstance(o.get("name"), str)]
+    name = next((n for n in names if n), None) or og.get("title", "").strip() or "Airbnb stay"
+    images = [o["image"][0] if isinstance(o.get("image"), list) and o["image"] else o.get("image") for o in ordered]
+    photos = [i for i in images + [og.get("image")] if isinstance(i, str) and 0 < len(i) <= MAX_PHOTO_URL]
     ratings = [_float(o["aggregateRating"].get("ratingValue")) for o in ordered
                if isinstance(o.get("aggregateRating"), dict)]
     rating = next((r for r in ratings if r is not None), None)
     return Stay(
         id=f"airbnb:{room_id}",
         source="airbnb",
-        name=(name or og.get("title") or "Airbnb stay").strip(),
+        name=name[:MAX_NAME],
         url=ROOM_URL.format(id=room_id),
         lat=_float(place["latitude"]),
         lon=_float(place["longitude"]),
         rating=rating if rating is not None and 0 <= rating <= 5 else None,
-        photo=photo or og.get("image"),
+        photo=photos[0] if photos else None,  # over-long URLs are dropped, not cut
     )
 
 

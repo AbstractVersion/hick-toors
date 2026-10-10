@@ -307,6 +307,8 @@ def _check_item_numbers(item: "Hike | Stay", where: str) -> None:
         value = getattr(item, name)
         if isinstance(value, float) and not isfinite(value):
             raise ValueError(f"{where}: {name} must be a finite number")
+    if isinstance(item, Stay) and item.total_price is not None and item.total_price < 0:
+        raise ValueError(f"{where}: total_price must not be negative")  # prices can be typed in by hand
 
 
 def _finite_items(items: list, info: ValidationInfo) -> list:
