@@ -226,6 +226,7 @@ class StayQuery(BaseModel):
     guests: int
     dog: bool
     filters: StayFilters = Field(default_factory=StayFilters)
+    bbox: BBox | None = None  # exact search box for drawn-area searches (None = hike/point searches)
 
 
 class HikeSearch(BaseModel):

@@ -72,6 +72,13 @@ def area_center_radius(area) -> tuple[LatLon, float]:
     return center, min(max(radius, MIN_STAY_AREA_RADIUS_KM), MAX_STAY_AREA_RADIUS_KM)
 
 
+def area_bbox(area) -> BBox:
+    """The exact box providers should search for a drawn shape (a circle's bounding box)."""
+    if isinstance(area, CircleArea):
+        return bbox_around(LatLon(lat=area.lat, lon=area.lon), area.radius_m / 1000)
+    return BBox(south=area.south, west=area.west, north=area.north, east=area.east)
+
+
 def stay_in_area(s: Stay, area, center: LatLon, radius_km: float) -> bool:
     """Rectangle: inside the drawn box. Circle: within the (clamped) radius of the centre."""
     if isinstance(area, CircleArea):
@@ -236,7 +243,8 @@ class Engine:
             radius = q.radius_km or self.settings.stay_radius_km
         check_in, check_out = stay_window(q.start, q.end)
         sq = StayQuery(lat=center.lat, lon=center.lon, radius_km=radius, check_in=check_in,
-                       check_out=check_out, guests=q.guests, dog=q.dog, filters=q.filters)
+                       check_out=check_out, guests=q.guests, dog=q.dog, filters=q.filters,
+                       bbox=area_bbox(area) if area is not None else None)
         warnings: list[str] = []
         runnable = []
         for p in self.providers:

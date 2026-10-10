@@ -53,6 +53,33 @@ def _walk_results(node: Any) -> list[dict]:
     return found
 
 
+def _find_cursors(node: Any) -> list[str]:
+    if isinstance(node, dict):
+        if isinstance(node.get("pageCursors"), list):
+            return [c for c in node["pageCursors"] if isinstance(c, str)]
+        for value in node.values():
+            found = _find_cursors(value)
+            if found:
+                return found
+    elif isinstance(node, list):
+        for value in node:
+            found = _find_cursors(value)
+            if found:
+                return found
+    return []
+
+
+def parse_cursors(html: str) -> list[str]:
+    """Page cursors of a search page (first = page 1); pass one as the `cursor` param for that page."""
+    match = STATE_RE.search(html)
+    if not match:
+        return []
+    try:
+        return _find_cursors(json.loads(match.group(1)))
+    except ValueError:
+        return []
+
+
 def _listing_id(encoded: str) -> str:
     padded = encoded + "=" * (-len(encoded) % 4)
     try:
@@ -168,13 +195,15 @@ async def fetch_text(url: str, params: dict) -> str:
 class AirbnbProvider:
     name = "Airbnb"
 
-    def __init__(self, fetch: FetchText | None = None, detail_top_n: int = 10, concurrency: int = 3):
+    def __init__(self, fetch: FetchText | None = None, detail_top_n: int = 10, concurrency: int = 3,
+                 area_pages: int = 3):
         self._fetch = fetch or fetch_text
         self._top_n = detail_top_n
         self._concurrency = concurrency
+        self._area_pages = area_pages
 
     def _search_params(self, q: StayQuery) -> dict:
-        box = bbox_around(LatLon(lat=q.lat, lon=q.lon), q.radius_km)
+        box = q.bbox or bbox_around(LatLon(lat=q.lat, lon=q.lon), q.radius_km)
         return {
             "ne_lat": box.north, "ne_lng": box.east, "sw_lat": box.south, "sw_lng": box.west,
             "search_by_map": "true", "search_type": "user_map_move",
@@ -183,11 +212,27 @@ class AirbnbProvider:
             **filter_params(q.filters),
         }
 
-    async def _search(self, params: dict) -> list[Stay]:
+    async def _page(self, params: dict) -> tuple[list[Stay], list[str]]:
         try:
-            return parse_search(await self._fetch(SEARCH_URL, params))
+            html = await self._fetch(SEARCH_URL, params)
+            return parse_search(html), parse_cursors(html)
         except (httpx.HTTPError, AirbnbParseError, ValueError) as exc:
             raise ProviderUnavailable("Airbnb unavailable – showing other sources") from exc
+
+    async def _search(self, params: dict, pages: int = 1) -> list[Stay]:
+        """Page 1 must succeed; later pages (the response's own cursors) are best-effort."""
+        stays, cursors = await self._page(params)
+        seen = {s.id for s in stays}
+        for cursor in cursors[1:pages]:
+            try:
+                more, _ = await self._page({**params, "cursor": cursor})
+            except ProviderUnavailable as exc:
+                print(f"airbnb: later page failed, keeping earlier pages: {exc}", file=sys.stderr)
+                break
+            fresh = [s for s in more if s.id not in seen]
+            seen.update(s.id for s in fresh)
+            stays += fresh
+        return stays
 
     async def _enrich(self, stays: list[Stay]) -> None:
         semaphore = asyncio.Semaphore(self._concurrency)
@@ -208,15 +253,16 @@ class AirbnbProvider:
 
     async def search(self, q: StayQuery) -> list[Stay]:
         base = self._search_params(q)
+        pages = self._area_pages if q.bbox is not None else 1
         if not q.dog:
-            stays = await self._search(base)
+            stays = await self._search(base, pages)
         else:
-            pet_stays = await self._search({**base, "pets": 1})
+            pet_stays = await self._search({**base, "pets": 1}, pages)
             for stay in pet_stays:
                 stay.pets_allowed = True
             pet_ids = {s.id for s in pet_stays}
             try:
-                others = [s for s in await self._search(base) if s.id not in pet_ids]
+                others = [s for s in await self._search(base, pages) if s.id not in pet_ids]
             except ProviderUnavailable as exc:
                 print(f"airbnb: no-pets search failed, keeping pet results: {exc}", file=sys.stderr)
                 others = []

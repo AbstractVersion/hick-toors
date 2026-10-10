@@ -52,9 +52,12 @@ def airbnb_result(listing_id, title, lat, lon, label="€202 total",
     }
 
 
-def airbnb_search_html(results):
+def airbnb_search_html(results, cursors=None):
+    page = {"searchResults": results}
+    if cursors is not None:
+        page["paginationInfo"] = {"pageCursors": cursors}
     state = {"niobeClientData": [["StaysSearch:{}", {"data": {"presentation": {
-        "staysSearch": {"results": {"searchResults": results}}}}}]]}
+        "staysSearch": {"results": page}}}}]]}
     return ('<html><body><script id="data-deferred-state-0" type="application/json">'
             f"{json.dumps(state)}</script></body></html>")
 

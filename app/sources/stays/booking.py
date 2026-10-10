@@ -134,10 +134,26 @@ class BookingProvider:
     name = "Booking.com"
 
     def __init__(self, fetch: FetchStatus | None = None, retries: int = 4,
-                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep):
+                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep, area_pages: int = 2):
         self._fetch = fetch or default_fetch
         self._retries = retries
         self._sleep = sleep
+        self._area_pages = area_pages
+
+    async def _page(self, params: dict) -> list[Stay] | None:
+        """One page with retries; None when every attempt was blocked or failed."""
+        for attempt in range(self._retries):
+            try:
+                status, html = await self._fetch(SEARCH_URL, params)
+                if status == 200:
+                    return parse_search(html)
+            except BookingBlocked:
+                pass
+            except Exception as exc:
+                print(f"booking request failed: {exc}", file=sys.stderr)
+            if attempt < self._retries - 1:
+                await self._sleep(2 * (attempt + 1))
+        return None
 
     async def search(self, q: StayQuery) -> list[Stay]:
         params = {
@@ -149,21 +165,20 @@ class BookingProvider:
         tokens = nflt_tokens(q.filters, q.dog)
         if tokens:
             params["nflt"] = ";".join(tokens)
-        stays = None
-        for attempt in range(self._retries):
-            try:
-                status, html = await self._fetch(SEARCH_URL, params)
-                if status == 200:
-                    stays = parse_search(html)
-                    break
-            except BookingBlocked:
-                pass
-            except Exception as exc:
-                print(f"booking request failed: {exc}", file=sys.stderr)
-            if attempt < self._retries - 1:
-                await self._sleep(2 * (attempt + 1))
+        stays = await self._page(params)
         if stays is None:
             raise ProviderUnavailable("Booking.com unavailable (blocked by the site) – showing other sources")
+        # Drawn areas: further pages via `offset` (Booking has no verified bbox param; it ignores radius).
+        seen = {s.id for s in stays}
+        received = len(stays)
+        for _ in range(1, self._area_pages if q.bbox is not None else 1):
+            more = await self._page({**params, "offset": received})
+            if not more:
+                break
+            received += len(more)
+            fresh = [s for s in more if s.id not in seen]
+            seen.update(s.id for s in fresh)
+            stays += fresh
         link = urlencode({"checkin": q.check_in.isoformat(), "checkout": q.check_out.isoformat(),
                           "group_adults": q.guests})
         for stay in stays:

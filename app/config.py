@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     stay_radius_km: float = 15.0
     default_guests: int = 2
     airbnb_detail_top_n: int = 10
+    airbnb_pages: int = 3  # result pages per Airbnb search in drawn areas (hike-centred searches: 1)
+    booking_pages: int = 2  # result pages for Booking in drawn areas (hike-centred searches: 1)
     hike_pages: int = 20  # 25 routes per Wikiloc request
     hike_pages_filtered: int = 30  # anonymous + hike filters: fetch up to 750 routes, filter locally
     wikiloc_concurrency: int = 4  # Wikiloc pages fetched in parallel
