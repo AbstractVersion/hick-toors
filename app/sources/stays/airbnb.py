@@ -10,7 +10,7 @@ from urllib.parse import urlencode
 import httpx
 
 from app.geo import bbox_around
-from app.models import LatLon, Stay, StayQuery
+from app.models import LatLon, Stay, StayFilters, StayQuery
 from app.sources.stays.base import ProviderUnavailable
 
 SEARCH_URL = "https://www.airbnb.com/s/homes"
@@ -26,6 +26,11 @@ GARDEN_RE = re.compile(r"garden|backyard|\byard\b", re.I)
 PRICE_RE = re.compile(r"([€$£])\s?([\d.,]+)")
 RATING_RE = re.compile(r"^\s*([\d.]+) out of 5")
 CURRENCIES = {"€": "EUR", "$": "USD", "£": "GBP"}
+# Verified search params (probed 2026-10-10); villa has no own type on Airbnb, so it maps to House.
+PROPERTY_TYPE_IDS = {"house": 1, "guesthouse": 2, "apartment": 3, "hotel": 4, "villa": 1}
+AMENITY_IDS = {"wifi": 4, "ac": 5, "pool": 7, "kitchen": 8, "parking": 9, "hot_tub": 25, "fireplace": 27,
+               "heating": 30, "washer": 33, "workspace": 47, "ev_charger": 97, "bbq": 99}
+BEACHFRONT_TAG = "Tag:789"
 
 FetchText = Callable[[str, dict], Awaitable[str]]
 
@@ -108,6 +113,37 @@ def parse_search(html: str) -> list[Stay]:
     return stays
 
 
+def filter_params(f: StayFilters) -> dict:
+    """StayFilters -> Airbnb search params (all AND together). List values become repeated keys.
+
+    min_rating, breakfast and min_stars have no Airbnb param: rating is post-checked by the
+    engine, and the other two make the engine skip Airbnb.
+    """
+    params: dict = {}
+    if f.price_min is not None:
+        params["price_min"] = f.price_min
+    if f.price_max is not None:
+        params["price_max"] = f.price_max
+    if f.entire_place:
+        params["room_types[]"] = ["Entire home/apt"]
+    if f.property_types:
+        params["l2_property_type_ids[]"] = sorted({PROPERTY_TYPE_IDS[t] for t in f.property_types})
+    for key in ("min_bedrooms", "min_beds", "min_bathrooms"):
+        if getattr(f, key) is not None:
+            params[key] = getattr(f, key)
+    if f.amenities:
+        params["amenities[]"] = sorted(AMENITY_IDS[a] for a in f.amenities)
+    if f.guest_favorite:
+        params["guest_favorite"] = "true"
+    if f.instant_book:
+        params["ib"] = "true"
+    if f.free_cancellation:
+        params["flexible_cancellation"] = "true"
+    if f.beachfront:
+        params["kg_and_tags[]"] = [BEACHFRONT_TAG]
+    return params
+
+
 def parse_details(html: str) -> tuple[bool | None, bool]:
     """(pets_allowed, has_garden) from a listing page's amenity/house-rule titles."""
     titles = [t.strip() for t in TITLE_RE.findall(html)]
@@ -144,6 +180,7 @@ class AirbnbProvider:
             "search_by_map": "true", "search_type": "user_map_move",
             "checkin": q.check_in.isoformat(), "checkout": q.check_out.isoformat(),
             "adults": q.guests, "currency": "EUR",
+            **filter_params(q.filters),
         }
 
     async def _search(self, params: dict) -> list[Stay]:

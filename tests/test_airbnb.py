@@ -1,10 +1,13 @@
 from datetime import date
 from urllib.parse import parse_qs, urlparse
 
+import httpx
 import pytest
 
-from app.models import StayQuery
-from app.sources.stays.airbnb import AirbnbParseError, AirbnbProvider, parse_details, parse_search
+from app.models import StayFilters, StayQuery
+from app.sources.stays.airbnb import (
+    AirbnbParseError, AirbnbProvider, filter_params, parse_details, parse_search,
+)
 from app.sources.stays.base import ProviderUnavailable
 from tests.builders import airbnb_listing_html, airbnb_result, airbnb_search_html
 
@@ -119,6 +122,43 @@ async def test_blocked_search_raises_provider_unavailable():
 
     with pytest.raises(ProviderUnavailable, match="Airbnb unavailable"):
         await AirbnbProvider(fetch=fetch).search(Q)
+
+
+def test_filter_params_maps_every_supported_filter():
+    f = StayFilters(price_min=60, price_max=120, min_rating=4.5, entire_place=True,
+                    property_types=["villa", "apartment", "house"], min_bedrooms=2, min_beds=3,
+                    min_bathrooms=1, amenities=["parking", "wifi", "fireplace"], free_cancellation=True,
+                    instant_book=True, guest_favorite=True, beachfront=True)
+    assert filter_params(f) == {
+        "price_min": 60, "price_max": 120,
+        "room_types[]": ["Entire home/apt"],
+        "l2_property_type_ids[]": [1, 3],
+        "min_bedrooms": 2, "min_beds": 3, "min_bathrooms": 1,
+        "amenities[]": [4, 9, 27],
+        "guest_favorite": "true", "ib": "true", "flexible_cancellation": "true",
+        "kg_and_tags[]": ["Tag:789"],
+    }
+
+
+def test_default_filters_add_no_params():
+    assert filter_params(StayFilters()) == {}
+
+
+def test_list_params_encode_as_repeated_keys():
+    params = filter_params(StayFilters(amenities=["wifi", "kitchen"]))
+    url = httpx.Request("GET", "https://www.airbnb.com/s/homes", params=params).url
+    assert parse_qs(url.query.decode())["amenities[]"] == ["4", "8"]
+
+
+async def test_filters_reach_both_dog_searches():
+    fetch = FakeFetch(
+        search_with_pets=airbnb_search_html([airbnb_result(1, "Pet house", 39.4, 23.0)]),
+        search_without=airbnb_search_html([]),
+        details={1: airbnb_listing_html(["Pets allowed"])},
+    )
+    await AirbnbProvider(fetch=fetch).search(Q.model_copy(update={"filters": StayFilters(price_max=120)}))
+    searches = [params for url, params in fetch.calls if url.endswith("/s/homes")]
+    assert len(searches) == 2 and all(p["price_max"] == 120 for p in searches)
 
 
 async def test_dog_search_keeps_pet_results_when_no_pets_search_fails():
