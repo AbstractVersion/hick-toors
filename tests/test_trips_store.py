@@ -200,3 +200,50 @@ def test_list_counts_sights(store):
     store.create(SavedTripIn(name="H", hikes=[hike(1)]))
     counts = {s.name: s.sight_count for s in store.list_trips()}
     assert counts == {"N": 2, "H": 0}
+
+
+# --- add_sights (🌿 Find nearby sights) ---------------------------------------------------------------
+
+
+def test_add_sights_appends_in_order_dedupes_and_drops_lines(store):
+    trip = store.create(SavedTripIn(name="T", sights=[sight(1)]))
+    line = [[[38.0, 22.0], [38.1, 22.1]]]
+    trip2, added, stopped = store.add_sights(trip.id, [sight(3, lines=line), sight(1), sight(2), sight(3)])
+    assert [s.id for s in trip2.sights] == ["osm:node/1", "osm:node/3", "osm:node/2"]
+    assert added == 2 and stopped is None
+    assert all(s.lines == [] for s in trip2.sights)
+    assert store.get(trip.id) == trip2 and trip2.updated_at > trip.updated_at
+
+
+def test_add_sights_nothing_new_keeps_updated_at(store):
+    trip = store.create(SavedTripIn(name="T", sights=[sight(1)]))
+    same, added, stopped = store.add_sights(trip.id, [sight(1)])
+    assert added == 0 and stopped is None and same.updated_at == trip.updated_at
+    empty, added, _ = store.add_sights(trip.id, [])
+    assert added == 0 and store.get(trip.id).updated_at == trip.updated_at
+
+
+def test_add_sights_stops_at_100(store):
+    trip = store.create(SavedTripIn(name="T", sights=[sight(i) for i in range(98)]))
+    full, added, stopped = store.add_sights(trip.id, [sight(i) for i in range(95, 105)])
+    assert added == 2 and stopped == "sights" and len(full.sights) == 100
+    assert [s.id for s in full.sights[-2:]] == ["osm:node/98", "osm:node/99"]
+    again, added, stopped = store.add_sights(trip.id, [sight(200)])
+    assert added == 0 and stopped == "sights" and again.updated_at == full.updated_at
+    _, added, stopped = store.add_sights(trip.id, [sight(5)])  # only already-present ones: nothing stopped
+    assert added == 0 and stopped is None
+
+
+def test_add_sights_respects_size_cap(store):
+    trip = store.create(SavedTripIn(name="T"))
+    big = [sight(i, wikipedia="x" * 4000) for i in range(100)]  # ~4 KB each: 100 would exceed 256 KB
+    grown, added, stopped = store.add_sights(trip.id, big)
+    assert 0 < added < 100 and stopped == "size"
+    assert len(grown.model_dump_json()) <= MAX_TRIP_BYTES + 200
+    from app.models import trip_size
+    assert trip_size(grown) <= MAX_TRIP_BYTES
+    assert [s.id for s in grown.sights] == [s.id for s in big[:added]]
+
+
+def test_add_sights_missing_trip(store):
+    assert store.add_sights("missing", [sight(1)]) is None

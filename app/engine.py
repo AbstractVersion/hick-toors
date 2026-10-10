@@ -11,14 +11,15 @@ from app.filters import (
     apply_hike_filters, hike_filters_active, skip_notice, stay_filters_active, stay_post_check,
     unsupported_filters,
 )
-from app.geo import GREECE_BBOX, bbox_around, clamp_to_greece, ensure_min_size, haversine_km
+from app.geo import GREECE_BBOX, bbox_around, clamp_to_greece, ensure_min_size, haversine_km, segment_distance_km
 from app.models import (
-    SIGHT_GROUPS, BBox, CircleArea, DriveLimit, Hike, HikeFilters, HikeQuery, HikeSearch, LatLon, NatureSearch,
-    Sight, Stay, StayLookup, StayLookupResult, StayQuery, StaySearch, StaySearchQuery, TripQuery, TripSearch,
+    SIGHT_GROUPS, SIGHT_LABELS, BBox, CircleArea, DriveLimit, Hike, HikeFilters, HikeQuery, HikeSearch, LatLon,
+    NatureSearch, Sight, Stay, StayLookup, StayLookupResult, StayQuery, StaySearch, StaySearchQuery, TripQuery,
+    TripSearch,
 )
 from app.ranking import rank_combos
-from app.sources.nature import (NatureLimitReached, Tile, cap_lines, default_meta, lines_centre, merge_named,
-                                tiles_for)
+from app.sources.nature import (MAX_TILES, NatureLimitReached, Tile, cap_lines, default_meta, lines_centre,
+                                merge_named, tiles_for)
 from app.sources.stays.airbnb import NO_ANSWER as AIRBNB_NO_ANSWER
 from app.sources.stays.airbnb import AirbnbParseError, ListingNotFound, room_id_from_url
 from app.sources.stays.base import ProviderUnavailable, StayProvider
@@ -52,6 +53,8 @@ NATURE_GREECE_ONLY = "Nature sights are available for Greece only"
 NATURE_GREECE_PAD_DEG = 0.5  # border areas (islands, Prespa) still count
 NATURE_TILE_DEADLINE_S = 60.0  # per tile, both Overpass endpoints included
 NATURE_MAX_INFLIGHT = 32  # tile fetches queued or running; new uncached tiles beyond this are skipped
+NEARBY_MAX_TILES = 48  # 🌿 Find nearby sights: distinct tiles per trip
+NEARBY_SPREAD = "Trip is spread out – searched near the first places only"
 _LIMITED = object()  # a tile not fetched because the daily Overpass budget is used up
 
 
@@ -146,8 +149,8 @@ def _sight_in_box(s: Sight, box: BBox) -> bool:
     return inside(s.lat, s.lon) or any(inside(p[0], p[1]) for line in s.lines for p in line)
 
 
-def _merge_tiles(tiles: list[Tile], groups: list[str], bbox: BBox) -> list[Sight]:
-    """Sights of `groups` from all tiles inside bbox, one per feature (pure: run in a thread)."""
+def _merge_tiles(tiles: list[Tile], groups: list[str], keep) -> list[Sight]:
+    """Sights of `groups` from all tiles for which keep(sight) holds, one per feature (pure: run in a thread)."""
     kinds = {k for g in groups for k in SIGHT_GROUPS[g]}
     merged: dict[str, Sight] = {}
     meta: dict[str, dict] = {}
@@ -169,7 +172,37 @@ def _merge_tiles(tiles: list[Tile], groups: list[str], bbox: BBox) -> list[Sight
                 merged[s.id], meta[s.id] = s, m
     # A river split over tiles comes back as several sights of one feature: join them like within a tile.
     joined, _ = merge_named(list(merged.values()), meta)
-    return [s for s in joined if _sight_in_box(s, bbox)]
+    return [s for s in joined if keep(s)]
+
+
+def sight_distance_km(s: Sight, points: list[LatLon], radius_km: float) -> float:
+    """Distance from the sight (its position or the nearest point of its lines) to the nearest point.
+
+    Points whose radius box can't reach the sight's extent are skipped; inf when none is within reach.
+    """
+    lats = [s.lat] + [q[0] for line in s.lines for q in line]
+    lons = [s.lon] + [q[1] for line in s.lines for q in line]
+    s0, s1, w0, w1 = min(lats), max(lats), min(lons), max(lons)
+    best = float("inf")
+    for p in points:
+        box = bbox_around(p, radius_km)
+        if box.south > s1 or box.north < s0 or box.west > w1 or box.east < w0:
+            continue
+        best = min(best, haversine_km(p, LatLon(lat=s.lat, lon=s.lon)))
+        for line in s.lines:
+            if len(line) == 1:
+                best = min(best, haversine_km(p, LatLon(lat=line[0][0], lon=line[0][1])))
+            for a, b in zip(line, line[1:]):
+                best = min(best, segment_distance_km(p, LatLon(lat=a[0], lon=a[1]), LatLon(lat=b[0], lon=b[1])))
+    return best
+
+
+def _nearby(tiles: list[Tile], points: list[LatLon], radius_km: float) -> list[Sight]:
+    """Named sights of the tiles within radius_km of a point, nearest first (pure: run in a thread)."""
+    merged = _merge_tiles(tiles, list(SIGHT_GROUPS), lambda s: True)
+    named = [s for s in merged if s.name != SIGHT_LABELS.get(s.kind)]  # unnamed ones carry the kind label
+    scored = [(sight_distance_km(s, points, radius_km), s) for s in named]
+    return [s for d, s in sorted((ds for ds in scored if ds[0] <= radius_km), key=lambda ds: ds[0])]
 
 
 class StayLookupFailed(Exception):
@@ -470,9 +503,17 @@ class Engine:
         Raises ValueError when the box needs more than nature.MAX_TILES tiles (the API checks first).
         A failed tile is not cached; it adds one warning and the other tiles still count.
         """
-        results = await asyncio.gather(*(self._nature_tile(s, w) for s, w in tiles_for(bbox)))
+        tiles, warnings = await self._nature_tiles(tiles_for(bbox))
+        # big rivers: keep the loop free
+        sights = await asyncio.to_thread(_merge_tiles, tiles, groups, lambda s: _sight_in_box(s, bbox))
+        return NatureSearch(sights=sights, warnings=warnings)
+
+    async def _nature_tiles(self, corners: list[tuple[float, float]]) -> tuple[list[Tile], list[str]]:
+        """The tiles at these south-west corners plus their warnings, MAX_TILES at a time (the queue cap)."""
+        results = []
+        for i in range(0, len(corners), MAX_TILES):
+            results += await asyncio.gather(*(self._nature_tile(s, w) for s, w in corners[i:i + MAX_TILES]))
         tiles = [t for t in results if isinstance(t, Tile)]
-        sights = await asyncio.to_thread(_merge_tiles, tiles, groups, bbox)  # big rivers: keep the loop free
         warnings = []
         if any(t is None for t in results):
             warnings.append(NATURE_UNAVAILABLE)
@@ -480,7 +521,35 @@ class Engine:
             warnings.append(NATURE_LIMIT)
         if any(t.truncated for t in tiles):
             warnings.append(NATURE_TRUNCATED)
-        return NatureSearch(sights=sights, warnings=warnings)
+        return tiles, warnings
+
+    async def nearby_sights(self, points: list[LatLon], radius_km: float) -> NatureSearch:
+        """Named sights (all groups) within radius_km of any of `points`, nearest first.
+
+        points[0] is the anchor: when the points' boxes need more than NEARBY_MAX_TILES tiles, the points
+        closest to it are searched until the cap (NEARBY_SPREAD warning). Points outside Greece are skipped.
+        """
+        g, pad = GREECE_BBOX, NATURE_GREECE_PAD_DEG
+        boxes = [(p, bbox_around(p, radius_km)) for p in points]
+        boxes = [(p, b) for p, b in boxes if b.south < g.north + pad and b.north > g.south - pad
+                 and b.west < g.east + pad and b.east > g.west - pad]
+        if not boxes:
+            return NatureSearch(warnings=[NATURE_GREECE_ONLY])
+        anchor = points[0]
+        boxes.sort(key=lambda pb: haversine_km(anchor, pb[0]))
+        corners: list[tuple[float, float]] = []
+        searched: list[LatLon] = []
+        spread = False
+        for p, box in boxes:
+            new = [t for t in tiles_for(box) if t not in corners]
+            if len(corners) + len(new) > NEARBY_MAX_TILES:
+                spread = True
+                break
+            corners += new
+            searched.append(p)
+        tiles, warnings = await self._nature_tiles(corners)
+        sights = await asyncio.to_thread(_nearby, tiles, searched, radius_km)
+        return NatureSearch(sights=sights, warnings=warnings + ([NEARBY_SPREAD] if spread else []))
 
     async def plan_trip(self, q: TripQuery) -> TripSearch:
         hikes = await self.search_hikes(HikeQuery(

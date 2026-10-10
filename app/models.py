@@ -431,6 +431,19 @@ class SavedTripSummary(BaseModel):
     updated_at: datetime
 
 
+class NearbySightsIn(BaseModel):
+    """Body of POST /api/saved-trips/{id}/nearby-sights (optional)."""
+
+    radius_km: float = Field(default=5, ge=1, le=10)
+
+
+class NearbySightsResult(BaseModel):
+    trip: SavedTrip
+    added: int
+    found: int
+    warnings: list[str] = []
+
+
 class TripItemAdd(BaseModel):
     """Body of POST /api/saved-trips/{id}/items: exactly one hike, stay or sight."""
 

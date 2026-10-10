@@ -15,7 +15,8 @@ from app.cache import DAY
 from app.config import BASE_DIR, Settings
 from app.engine import StayLookupFailed, lookup_airbnb_link, nature_box, nature_groups
 from app.filters import catalogue
-from app.models import (TRIP_TOO_LARGE, HikeQuery, HikeSearch, NatureSearch, SavedTrip, SavedTripIn,
+from app.models import (TRIP_TOO_LARGE, HikeQuery, HikeSearch, LatLon, NatureSearch, NearbySightsIn,
+                        NearbySightsResult, SavedTrip, SavedTripIn,
                         SavedTripSummary, SavedTripUpdate, StayLookup, StayLookupResult, StaySearch, StaySearchQuery,
                         TripItemAdd, TripQuery, TripSearch)
 from app.trip_markdown import content_disposition, trip_markdown
@@ -190,6 +191,23 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
                                 if full.kind == "sights" else "A trip holds at most 50 hikes and 50 stays")
         except TripTooLarge:
             raise HTTPException(status_code=413, detail=TRIP_TOO_LARGE)
+
+    @app.post("/api/saved-trips/{trip_id}/nearby-sights", response_model=NearbySightsResult)
+    async def add_nearby_sights(trip_id: str, body: NearbySightsIn | None = None):
+        radius = (body or NearbySightsIn()).radius_km
+        trip = found(await asyncio.to_thread(trip_store.get, trip_id))
+        points = [LatLon(lat=item.lat, lon=item.lon) for item in [*trip.hikes, *trip.stays]]
+        if not points:
+            raise HTTPException(status_code=422, detail="Add a hike or stay first")
+        nearby = await engine.nearby_sights(points, radius)
+        result = found(await asyncio.to_thread(trip_store.add_sights, trip_id, nearby.sights))
+        saved, added, stopped = result
+        warnings = list(nearby.warnings)
+        if stopped == "sights":
+            warnings.append("Trip already holds 100 nature sights")
+        elif stopped == "size":
+            warnings.append(TRIP_TOO_LARGE)
+        return NearbySightsResult(trip=saved, added=added, found=len(nearby.sights), warnings=warnings)
 
     @app.get("/api/saved-trips/{trip_id}/export.md")
     def export_saved_trip(trip_id: str):

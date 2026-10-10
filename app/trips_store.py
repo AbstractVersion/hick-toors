@@ -7,8 +7,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.models import (MAX_TRIP_BYTES, MAX_TRIP_ITEMS, MAX_TRIP_SIGHTS, SavedTrip, SavedTripIn, SavedTripSummary, TripItemAdd,
-                        trip_size)
+from app.models import (MAX_TRIP_BYTES, MAX_TRIP_ITEMS, MAX_TRIP_SIGHTS, SavedTrip, SavedTripIn, SavedTripSummary,
+                        Sight, TripItemAdd, trip_size)
 
 MAX_ITEMS = MAX_TRIP_ITEMS
 MAX_SIGHTS = MAX_TRIP_SIGHTS
@@ -150,3 +150,41 @@ class TripStore:
                 raise TripTooLarge()
             self._save(db, trip)
         return trip
+
+    def add_sights(self, trip_id: str, sights: list[Sight]) -> tuple[SavedTrip, int, str | None] | None:
+        """Append the sights not yet in the trip, in order (outlines dropped), atomically.
+
+        Stops at MAX_SIGHTS or before the trip would grow past MAX_TRIP_BYTES. Returns (trip, added, stopped)
+        with stopped = "sights" / "size" when a limit left new sights out (else None), or None when the trip
+        doesn't exist. updated_at changes only when something was added.
+        """
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")  # lock before reading: no lost updates, limits hold
+            trip = self._load(db, trip_id)
+            if trip is None:
+                return None
+            seen = {s.id for s in trip.sights}
+            new = []
+            for s in sights:
+                if s.id not in seen:
+                    seen.add(s.id)
+                    new.append(s.model_copy(update={"lines": []}))
+            room = max(0, MAX_SIGHTS - len(trip.sights))
+            stopped = "sights" if len(new) > room else None
+            new = new[:room]
+            # Each sight adds its JSON plus a comma: trim by that estimate, then confirm with the real size.
+            budget, keep = MAX_TRIP_BYTES - trip_size(trip), 0
+            for s in new:
+                budget -= len(s.model_dump_json().encode()) + 1
+                if budget < 0:
+                    break
+                keep += 1
+            if keep < len(new):
+                stopped, new = "size", new[:keep]
+            while new and trip_size(trip.model_copy(update={"sights": [*trip.sights, *new]})) > MAX_TRIP_BYTES:
+                stopped, new = "size", new[:-1]
+            if not new:
+                return trip, 0, stopped
+            trip = trip.model_copy(update={"sights": [*trip.sights, *new], "updated_at": _now()})
+            self._save(db, trip)
+        return trip, len(new), stopped

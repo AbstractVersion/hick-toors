@@ -48,3 +48,14 @@ def ensure_min_size(box: BBox, radius_km: float) -> BBox:
         north=max(box.north, m.north),
         east=max(box.east, m.east),
     )
+
+
+def segment_distance_km(p: LatLon, a: LatLon, b: LatLon) -> float:
+    """Distance from p to the segment a–b (flat projection around p: exact enough for a few tens of km)."""
+    kx = KM_PER_DEG_LAT * math.cos(math.radians(p.lat))
+    ax, ay = (a.lon - p.lon) * kx, (a.lat - p.lat) * KM_PER_DEG_LAT
+    bx, by = (b.lon - p.lon) * kx, (b.lat - p.lat) * KM_PER_DEG_LAT
+    dx, dy = bx - ax, by - ay
+    length2 = dx * dx + dy * dy
+    t = 0.0 if length2 == 0 else max(0.0, min(1.0, -(ax * dx + ay * dy) / length2))
+    return math.hypot(ax + t * dx, ay + t * dy)
