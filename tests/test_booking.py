@@ -2,9 +2,11 @@ from datetime import date
 
 import pytest
 
-from app.models import StayQuery
+from app.models import StayFilters, StayQuery
 from app.sources.stays.base import ProviderUnavailable
-from app.sources.stays.booking import BookingBlocked, BookingProvider, parse_search
+from app.sources.stays.booking import (
+    BookingBlocked, BookingProvider, nflt_tokens, parse_search, review_score,
+)
 from tests.builders import BOOKING_BLOCKED_HTML, booking_property, booking_search_html
 
 Q = StayQuery(lat=39.40, lon=23.03, radius_km=15, check_in=date(2026, 10, 23),
@@ -58,6 +60,59 @@ async def test_search_without_dog_has_no_filter():
 
     [stay] = await BookingProvider(fetch=fetch, sleep=no_sleep).search(Q.model_copy(update={"dog": False}))
     assert stay.pets_allowed is None
+
+
+def test_nflt_tokens_map_every_supported_filter():
+    f = StayFilters(price_min=60, price_max=120, min_rating=4.5, entire_place=True,
+                    property_types=["house", "guesthouse"], min_bedrooms=7, min_bathrooms=2,
+                    amenities=["parking", "ac"], free_cancellation=True, breakfast=True, min_stars=4,
+                    beachfront=True)
+    assert nflt_tokens(f, dog=False) == [
+        "price=EUR-60-120-1", "review_score=90", "privacy_type=3",
+        "ht_id=208", "ht_id=216", "ht_id=220", "ht_id=223",
+        "entire_place_bedroom_count=5", "min_bathrooms=2",
+        "hotelfacility=2", "roomfacility=11",
+        "fc=2", "mealplan=1", "class=4", "class=5", "hotelfacility=146",
+    ]
+
+
+@pytest.mark.parametrize("low,high,token", [
+    (None, 100, "price=EUR-min-100-1"),
+    (80, None, "price=EUR-80-max-1"),
+])
+def test_open_price_ends_use_literal_words(low, high, token):
+    assert nflt_tokens(StayFilters(price_min=low, price_max=high), dog=False) == [token]
+
+
+@pytest.mark.parametrize("rating,score", [(3.5, 70), (4.0, 80), (4.5, 90), (4.8, 90), (2.5, None)])
+def test_review_score_floors_to_step(rating, score):
+    assert review_score(rating) == score
+
+
+async def test_filters_join_pets_token_and_use_en_gb_endpoint():
+    calls = []
+
+    async def fetch(url, params):
+        calls.append((url, params))
+        return 200, booking_search_html([])
+
+    q = Q.model_copy(update={"filters": StayFilters(price_max=120, free_cancellation=True)})
+    await BookingProvider(fetch=fetch, sleep=no_sleep).search(q)
+    url, params = calls[0]
+    assert url == "https://www.booking.com/searchresults.en-gb.html"
+    assert params["nflt"] == "hotelfacility=4;price=EUR-min-120-1;fc=2"
+
+
+async def test_each_attempt_is_a_separate_fetch_call():
+    # default_fetch opens a fresh curl_cffi session per call, so retrying = fresh session.
+    calls = []
+
+    async def fetch(url, params):
+        calls.append(url)
+        return (202, "") if len(calls) < 3 else (200, booking_search_html([]))
+
+    assert await BookingProvider(fetch=fetch, sleep=no_sleep).search(Q) == []
+    assert len(calls) == 3
 
 
 async def test_retries_after_challenge_then_succeeds():

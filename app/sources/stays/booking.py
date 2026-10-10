@@ -5,11 +5,19 @@ import sys
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlencode
 
-from app.models import Stay, StayQuery
+from app.models import Stay, StayFilters, StayQuery
 from app.sources.stays.base import ProviderUnavailable
 
-SEARCH_URL = "https://www.booking.com/searchresults.html"
+# The plain /searchresults.html is always challenged; the en-gb page passes about half the time.
+SEARCH_URL = "https://www.booking.com/searchresults.en-gb.html"
 PETS_FILTER = "hotelfacility=4"
+# Verified nflt tokens (probed 2026-10-10). Repeating a field ORs its values; fields AND together.
+PROPERTY_TYPE_IDS = {"house": [220, 223], "apartment": [201], "guesthouse": [216, 208], "hotel": [204],
+                     "villa": [213]}
+FACILITY_TOKENS = {"parking": "hotelfacility=2", "wifi": "hotelfacility=107", "pool": "hotelfacility=433",
+                   "hot_tub": "hotelfacility=63", "ev_charger": "hotelfacility=182",
+                   "ac": "roomfacility=11", "kitchen": "roomfacility=999", "washer": "roomfacility=34"}
+BEACHFRONT = "hotelfacility=146"
 PHOTO_BASE = "https://cf.bstatic.com"
 JSON_SCRIPT_RE = re.compile(r'<script[^>]*type="application/json"[^>]*>(.*?)</script>', re.S)
 
@@ -77,7 +85,44 @@ def parse_search(html: str) -> list[Stay]:
     return stays
 
 
+def review_score(min_rating: float) -> int | None:
+    """0-5 rating -> Booking review_score step (60/70/80/90), floored; below 3.0 no token."""
+    score = int(round(min_rating * 20, 6)) // 10 * 10
+    return min(score, 90) if score >= 60 else None
+
+
+def nflt_tokens(f: StayFilters, dog: bool) -> list[str]:
+    """StayFilters (+ dog) -> Booking nflt tokens. min_beds, instant_book, guest_favorite and the
+    Airbnb-only amenities have no token; the engine skips Booking when they are active."""
+    tokens = [PETS_FILTER] if dog else []
+    if f.price_min is not None or f.price_max is not None:
+        low = f.price_min if f.price_min is not None else "min"
+        high = f.price_max if f.price_max is not None else "max"
+        tokens.append(f"price=EUR-{low}-{high}-1")
+    if f.min_rating is not None and review_score(f.min_rating) is not None:
+        tokens.append(f"review_score={review_score(f.min_rating)}")
+    if f.entire_place:
+        tokens.append("privacy_type=3")
+    ht_ids = sorted({i for t in f.property_types for i in PROPERTY_TYPE_IDS[t]})
+    tokens += [f"ht_id={i}" for i in ht_ids]
+    if f.min_bedrooms is not None:
+        tokens.append(f"entire_place_bedroom_count={min(f.min_bedrooms, 5)}")
+    if f.min_bathrooms is not None:
+        tokens.append(f"min_bathrooms={f.min_bathrooms}")
+    tokens += [FACILITY_TOKENS[a] for a in f.amenities if a in FACILITY_TOKENS]
+    if f.free_cancellation:
+        tokens.append("fc=2")
+    if f.breakfast:
+        tokens.append("mealplan=1")
+    if f.min_stars is not None:
+        tokens += [f"class={n}" for n in range(f.min_stars, 6)]
+    if f.beachfront:
+        tokens.append(BEACHFRONT)
+    return tokens
+
+
 async def default_fetch(url: str, params: dict) -> tuple[int, str]:
+    """One request in a brand-new impersonated session: each retry gets a fresh fingerprint."""
     from curl_cffi.requests import AsyncSession
 
     async with AsyncSession(impersonate="chrome") as session:
@@ -88,7 +133,7 @@ async def default_fetch(url: str, params: dict) -> tuple[int, str]:
 class BookingProvider:
     name = "Booking.com"
 
-    def __init__(self, fetch: FetchStatus | None = None, retries: int = 3,
+    def __init__(self, fetch: FetchStatus | None = None, retries: int = 4,
                  sleep: Callable[[float], Awaitable[None]] = asyncio.sleep):
         self._fetch = fetch or default_fetch
         self._retries = retries
@@ -99,10 +144,11 @@ class BookingProvider:
             "latitude": q.lat, "longitude": q.lon, "radius": round(q.radius_km),
             "checkin": q.check_in.isoformat(), "checkout": q.check_out.isoformat(),
             "group_adults": q.guests, "no_rooms": 1, "group_children": 0,
-            "lang": "en-us", "selected_currency": "EUR",
+            "lang": "en-gb", "selected_currency": "EUR",
         }
-        if q.dog:
-            params["nflt"] = PETS_FILTER
+        tokens = nflt_tokens(q.filters, q.dog)
+        if tokens:
+            params["nflt"] = ";".join(tokens)
         stays = None
         for attempt in range(self._retries):
             try:
