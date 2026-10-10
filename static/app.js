@@ -9,7 +9,7 @@ const BADGES = {
 };
 const $ = (id) => document.getElementById(id);
 const state = { config: null, hikes: new Map(), stays: new Map(), markers: new Map(), items: new Map(), comboView: false, staysRequest: 0,
-  catalogue: null, filters: null, dialogs: {} };
+  lastHikeBody: null, nextPageOffset: null, hikeGen: 0, hikeWarnings: [], catalogue: null, filters: null, dialogs: {} };
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) =>
@@ -266,9 +266,17 @@ function clearStays() {
   state.stays.clear();
   $("stay-list").replaceChildren();
   $("stay-count").textContent = "";
+  $("stay-note").textContent = "";
 }
 function clearAll() {
   state.comboView = false;
+  state.hikeGen += 1;
+  state.staysRequest += 1;  // a stay answer still on its way belongs to the old search
+  state.lastHikeBody = null;
+  state.nextPageOffset = null;
+  state.hikeWarnings = [];
+  $("hike-total").textContent = "";
+  $("load-more").hidden = true;
   hikeLayer.clearLayers();
   overlay.clearLayers();
   clearStays();
@@ -328,12 +336,50 @@ async function searchHikes() {
   }
   const data = await api("/api/hikes", body);
   clearAll();
+  state.lastHikeBody = body;
+  state.hikeWarnings = data.warnings || [];
   notices(data.warnings);
   data.hikes.forEach(addHike);
-  $("hike-count").textContent = `(${data.hikes.length})`;
+  showHikeMeta(data);
   drawReach(body.mode === "near_home" ? data.drive_limit_minutes : null);
   if (!data.hikes.length && !data.warnings.length) notices(["No hikes found – try more days or a bigger drive limit."]);
   fitAll();
+  // A drawn search also brings the stays inside the shape (not awaited: Search stays usable meanwhile).
+  if (body.mode === "drawn") loadAreaStays(body.area);
+}
+function showHikeMeta(data) {
+  $("hike-count").textContent = `(${state.hikes.size})`;
+  state.nextPageOffset = data.next_page_offset ?? null;
+  $("hike-total").textContent = data.total_available != null
+    ? `Showing ${state.hikes.size.toLocaleString("en-US")} of ${Number(data.total_available).toLocaleString("en-US")} routes in this area`
+    : "";
+  $("load-more").hidden = state.nextPageOffset == null;
+}
+async function loadMoreHikes() {
+  if (!state.lastHikeBody || state.nextPageOffset == null) return;
+  const gen = state.hikeGen;
+  const data = await api("/api/hikes", { ...state.lastHikeBody, page_offset: state.nextPageOffset });
+  if (gen !== state.hikeGen) return;  // a new search replaced the list meanwhile
+  state.hikeWarnings = [...new Set([...state.hikeWarnings, ...(data.warnings || [])])];
+  notices(state.hikeWarnings);
+  data.hikes.filter((h) => !state.hikes.has(h.id)).forEach(addHike);
+  showHikeMeta(data);
+}
+async function loadAreaStays(area) {
+  const request = ++state.staysRequest;
+  try {
+    const data = await api("/api/stays", { ...dates(), area, dog: $("dog").checked,
+      guests: guests(), filters: state.filters?.stay });
+    if (request !== state.staysRequest) return;
+    clearStays();
+    notices([...state.hikeWarnings, ...(data.warnings || [])]);
+    data.stays.forEach(addStay);
+    $("stay-count").textContent = `(${data.stays.length})`;
+    $("stay-note").textContent = "in drawn area";
+    fitAll();
+  } catch (err) {
+    if (request === state.staysRequest) notices([...state.hikeWarnings, err.message]);
+  }
 }
 async function selectHike(id) {
   const request = ++state.staysRequest;
@@ -348,6 +394,7 @@ async function selectHike(id) {
     data.stays.forEach(addStay);
     $("stay-count").textContent = `(${data.stays.length})`;
     const hike = state.hikes.get(id);
+    $("stay-note").textContent = `near ${hike ? hike.name : "selected hike"}`;
     const layers = [state.markers.get(id), ...stayLayer.getLayers()].filter(Boolean);
     if (layers.length > 1) map.fitBounds(L.featureGroup(layers).getBounds().pad(0.2));
     else if (hike) map.setView([hike.lat, hike.lon], 12);
@@ -437,6 +484,7 @@ async function init() {
   $("draw-circle-btn").addEventListener("click", () => startDrawing("circle"));
   $("search").addEventListener("click", () =>
     withBusy($("search"), () => (mode() === "trip" ? planTrip() : searchHikes())));
+  $("load-more").addEventListener("click", () => withBusy($("load-more"), loadMoreHikes));
   $("ask-form").addEventListener("submit", ask);
   try {
     state.config = await api("/api/config");

@@ -17,6 +17,9 @@ main { flex: 1; display: flex; min-height: 0; }
 #sidebar li { padding: 6px 8px; border-radius: 6px; cursor: pointer; }
 #sidebar li:hover, #sidebar li.active { background: #e7f1ea; }
 #sidebar li.selected { outline: 2px solid #2f6f4e; }
+#sidebar .list-note { color: #5d6b63; font-size: 12px; margin: -4px 0 6px; }
+#sidebar .list-note:empty { display: none; }
+.load-more { width: 100%; margin-top: 8px; }
 #sidebar li .meta { color: #5d6b63; font-size: 12px; }
 .badge { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 10px; background: #e3efe7; margin-top: 2px; }
 .badge.garden_unconfirmed { background: #fff0cf; }

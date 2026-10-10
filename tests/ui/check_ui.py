@@ -17,10 +17,28 @@ from playwright.sync_api import expect, sync_playwright
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8765"
 HIKE = {"id": "wikiloc:1", "name": "Test hike", "url": "https://es.wikiloc.com/x", "lat": 38.5, "lon": 22.6,
         "distance_km": 9.5, "elevation_gain_m": 600, "difficulty": "Moderate", "trailrank": 70}
+HIKE2 = {**HIKE, "id": "wikiloc:2", "name": "Second hike", "lat": 38.6}
+STAY = {"id": "airbnb:1", "source": "airbnb", "name": "Area house", "url": "https://www.airbnb.com/rooms/1",
+        "lat": 38.55, "lon": 22.65, "total_price": 180, "currency": "EUR", "rating": 4.8, "badge": "pets",
+        "distance_km": 3.2}
+# Set by the Load more step: hikes answers then carry a total and a next page.
+paging = {"on": False}
+
+
+def canned_hikes(body: dict) -> dict:
+    data = {"hikes": [HIKE], "warnings": [], "drive_limit_minutes": None}
+    if paging["on"]:
+        offset = body.get("page_offset", 0)
+        data.update(hikes=[HIKE] if offset == 0 else [HIKE, HIKE2], total_available=17000,
+                    next_page_offset=20 if offset == 0 else None)
+    return data
+
+
 CANNED = {
-    "/api/hikes": {"hikes": [HIKE], "warnings": [], "drive_limit_minutes": None},
-    "/api/stays": {"stays": [], "warnings": [], "center": None},
-    "/api/trips": {"combos": [], "warnings": []},
+    "/api/hikes": canned_hikes,
+    # Stays inside a drawn area come back with one house; hike-centred stays stay empty.
+    "/api/stays": lambda body: {"stays": [STAY] if "area" in body else [], "warnings": [], "center": None},
+    "/api/trips": lambda body: {"combos": [], "warnings": []},
 }
 
 
@@ -35,7 +53,7 @@ def main() -> None:
         def answer(route):
             path = "/" + route.request.url.split("/", 3)[3].split("?")[0]
             requests.append((path, route.request.post_data_json or {}))
-            route.fulfill(status=200, content_type="application/json", body=json.dumps(CANNED[path]))
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(CANNED[path](requests[-1][1])))
 
         for path in CANNED:
             page.route(f"**{path}", answer)
@@ -46,6 +64,9 @@ def main() -> None:
                 page.evaluate("localStorage.clear()")
                 page.reload()
             expect(page.locator("#hike-filters-btn")).to_be_enabled(timeout=15000)
+
+        def last_request(wanted: str) -> tuple[str, dict]:
+            return [r for r in requests if r[0] == wanted][-1]
 
         def search_and_capture() -> tuple[str, dict]:
             before = len(requests)
@@ -186,7 +207,7 @@ def main() -> None:
         assert page.evaluate("drawnItems.getLayers()[0] instanceof L.Circle") is True
         page.click("#search")
         expect(page.locator("#hike-list li")).to_have_count(1)
-        path, body = requests[-1]
+        path, body = last_request("/api/hikes")
         assert path == "/api/hikes" and body["mode"] == "drawn" and body["area"]["shape"] == "circle", body
         print("PASS circle drawn with the mouse and searched")
 
@@ -201,10 +222,44 @@ def main() -> None:
         assert page.evaluate("drawnItems.getLayers()[0] instanceof L.Circle") is False
         page.click("#search")
         expect(page.locator("#hike-list li")).to_have_count(1)
-        path, body = requests[-1]
+        path, body = last_request("/api/hikes")
         assert path == "/api/hikes" and body["mode"] == "drawn" and body["area"]["shape"] == "rectangle", body
         assert body["area"]["south"] < body["area"]["north"] and body["area"]["west"] < body["area"]["east"], body
         print("PASS rectangle replaces circle, Esc cancels the hint")
+
+        # Part A: a drawn-area hike search also loads the stays inside the shape, no hike click needed.
+        expect(page.locator("#search")).to_be_enabled()
+        page.click("#search")
+        expect(page.locator("#stay-list li")).to_have_count(1)
+        expect(page.locator("#stay-note")).to_have_text("in drawn area")
+        stay_body = last_request("/api/stays")[1]
+        assert "area" in stay_body and "hike_id" not in stay_body, stay_body
+        assert stay_body["area"]["shape"] == "rectangle", stay_body
+        expect(page.locator("#stay-count")).to_have_text("(1)")
+        page.locator("#hike-list li").first.click()  # a hike click replaces the stays with that hike's
+        expect(page.locator("#stay-count")).to_have_text("(0)")
+        expect(page.locator("#stay-note")).to_have_text("near Test hike")
+        print("PASS drawn search loads stays inside the area; hike click replaces them")
+
+        # Part B: total count header and Load more (append, dedupe, button hides at the end).
+        paging["on"] = True
+        page.click("#search")
+        expect(page.locator("#hike-total")).to_have_text("Showing 1 of 17,000 routes in this area")
+        expect(page.locator("#load-more")).to_be_visible()
+        page.click("#load-more")
+        expect(page.locator("#hike-list li")).to_have_count(2)  # HIKE deduped, HIKE2 appended
+        body = last_request("/api/hikes")[1]
+        assert body["page_offset"] == 20 and body["mode"] == "drawn" and "area" in body, body
+        expect(page.locator("#hike-total")).to_have_text("Showing 2 of 17,000 routes in this area")
+        expect(page.locator("#load-more")).to_be_hidden()
+        assert page.evaluate("hikeLayer.getLayers().length") == 2
+        paging["on"] = False
+        expect(page.locator("#search")).to_be_enabled()
+        page.click("#search")
+        expect(page.locator("#hike-list li")).to_have_count(1)
+        expect(page.locator("#hike-total")).to_have_text("")
+        expect(page.locator("#load-more")).to_be_hidden()
+        print("PASS total header, Load more appends and dedupes, new search resets")
 
         # Deleting the shape in Leaflet.draw's toolbar returns to Near home.
         expect(page.locator("#search")).to_be_enabled()  # earlier search finished
