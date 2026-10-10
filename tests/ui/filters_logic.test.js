@@ -47,6 +47,28 @@ assert.deepEqual(old.stay, { price_min: null, price_max: null, min_rating: 4.5, 
 assert.equal(old.guests, 4);
 assert.deepEqual(sanitizeFilters({ hike: { activities: [] } }, catalogue, 2).hike.activities, [1]);
 
+// fractional values for integer fields fall back to the default; decimal-step fields keep fractions
+const cat2 = JSON.parse(JSON.stringify(catalogue));
+cat2.hike.defaults.elevation_min_m = null;
+cat2.hike.fields.push({ key: "elevation_min_m", type: "number", min: 0, max: 5000 });
+cat2.hike.defaults.distance = null;
+cat2.hike.fields.push({ key: "distance", type: "number", min: 0, max: 100, step: 0.1 });
+const frac = sanitizeFilters({ hike: { elevation_min_m: 10.5, distance: 2.5, min_trailrank: 50.5 },
+  stay: { price_min: 10.5, price_max: 100 } }, cat2, 2);
+assert.equal(frac.hike.elevation_min_m, null);
+assert.equal(frac.hike.distance, 2.5);
+assert.equal(frac.hike.min_trailrank, null);
+assert.equal(frac.stay.price_min, null);
+assert.equal(frac.stay.price_max, 100);
+
+// a disabled bool (loop_only without login) is forced to its default
+const cat3 = JSON.parse(JSON.stringify(catalogue));
+cat3.hike.defaults.loop_only = false;
+cat3.hike.fields.push({ key: "loop_only", type: "bool", disabled: true });
+assert.equal(sanitizeFilters({ hike: { loop_only: true } }, cat3, 2).hike.loop_only, false);
+cat3.hike.fields[cat3.hike.fields.length - 1].disabled = false;
+assert.equal(sanitizeFilters({ hike: { loop_only: true } }, cat3, 2).hike.loop_only, true);
+
 // badge counts: one per field, a range counts once, list order ignored
 assert.equal(countActive(defaults.hike, catalogue.hike), 0);
 assert.equal(countActive({ ...defaults.stay, price_min: 50, price_max: 120, amenities: ["wifi"] }, catalogue.stay), 2);

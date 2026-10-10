@@ -15,6 +15,8 @@ function acceptsNumber(value, field, allowNull) {
   if (value === null) return allowNull;
   if (typeof value !== "number" || !Number.isFinite(value)) return false;
   if (field.options) return optionValues(field).includes(value);
+  // integer-step fields (step absent or whole) are integer fields in the API; reject fractions
+  if ((field.step == null || Number.isInteger(field.step)) && !Number.isInteger(value)) return false;
   if (field.min != null && value < field.min) return false;
   if (field.max != null && value > field.max) return false;
   return true;
@@ -45,7 +47,8 @@ function sanitizeSection(raw, section) {
     } else if (field.type === "select") {
       if (field.key in raw && optionValues(field).includes(raw[field.key])) out[field.key] = raw[field.key];
     } else if (field.type === "bool") {
-      if (typeof raw[field.key] === "boolean") out[field.key] = raw[field.key];
+      // a disabled field (e.g. loop_only without a Wikiloc login) always keeps its default
+      if (!field.disabled && typeof raw[field.key] === "boolean") out[field.key] = raw[field.key];
     }
   }
   return out;

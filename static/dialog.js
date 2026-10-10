@@ -79,7 +79,8 @@ function createFilterDialog({ id, title, section, shared, getValues, getShared, 
   for (const s of shared) {
     const label = el("label", { class: "shared-item" }, `${s.label} `);
     const input = el("input", { type: s.type === "slider" ? "range" : s.type, name: `shared_${s.name}`,
-      min: s.min, max: s.max, step: s.step });
+      min: s.min, max: s.max, step: s.step,
+      required: s.type === "date" || s.name === "guests" });
     label.append(input);
     if (s.format) {
       const out = el("span", { class: "slider-text" });
@@ -168,6 +169,16 @@ function createFilterDialog({ id, title, section, shared, getValues, getShared, 
       control(field.min_key).classList.add("invalid");
       control(field.max_key).classList.add("invalid");
       problems.push(`${field.label}: minimum is above maximum`);
+    }
+    const guestsInput = control("shared_guests");
+    if (guestsInput && !(Number.isInteger(Number(guestsInput.value)) && guestsInput.value !== ""
+      && Number(guestsInput.value) >= 1)) {
+      guestsInput.classList.add("invalid");
+      problems.push("Guests must be at least 1");
+    }
+    for (const name of ["shared_start", "shared_end"]) {
+      const d = control(name);
+      if (d && !d.value) { d.classList.add("invalid"); problems.push("Dates are required"); }
     }
     const start = control("shared_start"), end = control("shared_end");
     if (start && end && start.value && end.value && end.value < start.value) {
