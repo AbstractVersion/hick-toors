@@ -42,21 +42,24 @@ def test_parse_search_handles_missing_spas():
     assert parse_search({}) == []
 
 
-async def test_search_pages_and_dedupes():
+async def test_search_pages_by_offset_and_dedupes():
+    # Wikiloc pages with from/to offsets (probed 2026-10-10); a `page` param is ignored.
     pages = {
-        1: {"spas": [wikiloc_spa(i, f"r{i}", 39.3, 22.9) for i in range(25)]},
-        2: {"spas": [wikiloc_spa(24, "dup", 39.3, 22.9), wikiloc_spa(99, "r99", 39.3, 22.9)]},
+        0: {"spas": [wikiloc_spa(i, f"r{i}", 39.3, 22.9) for i in range(25)]},
+        25: {"spas": [wikiloc_spa(24, "dup", 39.3, 22.9), wikiloc_spa(99, "r99", 39.3, 22.9)]},
     }
     calls = []
 
     async def fetch(url, params):
         calls.append(params)
-        return pages[params["page"]]
+        return pages[params["from"]]
 
     hikes = await WikilocSource(fetch=fetch, pages=3).search(BOX)
     assert len(hikes) == 26
     assert calls[0]["sw"] == "39.3,22.9" and calls[0]["ne"] == "39.5,23.2"
-    assert len(calls) == 2  # page 2 had < 25 results, so no page 3
+    assert [(c["from"], c["to"]) for c in calls] == [(0, 25), (25, 50)]
+    assert all("page" not in c for c in calls)
+    assert len(calls) == 2  # second page had < 25 results, so no third
 
 
 async def test_search_raises_when_first_page_fails():
@@ -69,7 +72,7 @@ async def test_search_raises_when_first_page_fails():
 
 async def test_search_returns_partial_when_later_page_fails():
     async def fetch(url, params):
-        if params["page"] == 1:
+        if params["from"] == 0:
             return {"spas": [wikiloc_spa(i, f"r{i}", 39.3, 22.9) for i in range(25)]}
         return None
 

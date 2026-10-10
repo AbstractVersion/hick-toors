@@ -96,18 +96,20 @@ class WikilocSource:
     async def search(self, bbox: BBox, query: str = "") -> list[Hike]:
         hikes: list[Hike] = []
         seen: set[str] = set()
-        for page in range(1, self._pages + 1):
+        for page in range(self._pages):
+            # Wikiloc pages with from/to offsets (max 25 per request); it ignores a `page` param.
+            offset = page * PAGE_SIZE
             params = {
                 "event": "map",
-                "to": PAGE_SIZE,
+                "from": offset,
+                "to": offset + PAGE_SIZE,
                 "sw": f"{bbox.south},{bbox.west}",
                 "ne": f"{bbox.north},{bbox.east}",
                 "q": query,
-                "page": page,
             }
             data = await self._fetch(SEARCH_URL, params)
             if not isinstance(data, dict):
-                if page == 1:
+                if page == 0:
                     raise WikilocUnavailable(
                         "Hikes temporarily unavailable – Wikiloc is rate limiting, try again in a minute"
                     )
