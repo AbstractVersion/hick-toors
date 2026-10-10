@@ -550,8 +550,16 @@ def main() -> None:
         expect(page.locator("#hike-list li.selected")).to_have_count(0)
         print("PASS ＋ Trip on a hike: menu, already-in notice, the hike is not selected")
 
-        page.locator("#hike-list li", has_text="Second hike").locator(".add-trip").click()
+        second_add = page.locator("#hike-list li", has_text="Second hike").locator(".add-trip")
+        second_add.evaluate("(b) => { b.style.position = 'fixed'; b.style.bottom = '2px'; b.style.left = '40px'; }")
+        second_add.click()
         expect(menu).to_be_visible()
+        placed = page.evaluate("""() => { const m = document.querySelector('#trip-menu').getBoundingClientRect();
+            const b = document.querySelector('#hike-list li .add-trip[style]').getBoundingClientRect();
+            return { menuTop: m.top, menuBottom: m.bottom, buttonTop: b.top, inner: window.innerHeight }; }""")
+        assert placed["menuBottom"] <= placed["inner"] and placed["menuBottom"] <= placed["buttonTop"], placed
+        second_add.evaluate("(b) => b.removeAttribute('style')")
+        print("PASS ＋ Trip menu near the bottom edge opens above the button")
         menu.locator("button", has_text=saved_name).click()
         expect(page.locator("#notices")).to_contain_text(f"Added to “{saved_name}”")
         print("PASS ＋ Trip adds a second hike to the saved trip")
@@ -605,6 +613,34 @@ def main() -> None:
         print("PASS 🗺️ Show on map closes the dialog and lists the trip")
 
         page.click("#trips-btn")
+        rows.first.click()
+        page.fill("#trip-notes", "first save")
+        page.click("#trip-save")
+        expect(page.locator("#trip-save")).to_have_text("✓ Saved")
+        page.fill("#trip-notes", "second save")
+        page.click("#trip-save")
+        expect(page.locator("#trip-save")).to_have_text("✓ Saved")
+        expect(page.locator("#trips-error")).to_be_hidden()
+        # Another tab saves in between (start only, no end) → this editor's next save is refused.
+        status = page.evaluate("""async (id) => {
+            const path = `/api/saved-trips/${encodeURIComponent(id)}`;
+            const t = await (await fetch(path)).json();
+            const res = await fetch(path, { method: "PUT", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ ...t, name: "Changed elsewhere", start: "2026-10-23", end: null,
+                                     expected_updated_at: t.updated_at }) });
+            return res.status; }""", trip_id)
+        assert status == 200, status
+        page.fill("#trip-notes", "stale edit")
+        page.click("#trip-save")
+        expect(page.locator("#trips-error")).to_contain_text("Trip changed elsewhere – reopen it")
+        stored = page.evaluate("(id) => fetch(`/api/saved-trips/${encodeURIComponent(id)}`).then((r) => r.json())",
+                               trip_id)
+        assert stored["name"] == "Changed elsewhere" and stored["notes"] == "second save", stored
+        page.click("#trip-back")
+        expect(rows.first).to_contain_text("Changed elsewhere")
+        expect(rows.first).to_contain_text("From 2026-10-23 · ")
+        print("PASS consecutive saves work; a stale save is refused (409); start-only shows From …")
+
         rows.first.click()
         page.click("#trip-delete")
         expect(page.locator("#trip-delete")).to_have_text("Confirm delete")

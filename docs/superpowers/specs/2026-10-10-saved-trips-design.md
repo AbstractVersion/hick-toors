@@ -48,15 +48,16 @@ TripItemAdd            # body of POST /items: exactly one of hike / stay, else 4
 
 ## Storage (`app/trips_store.py`)
 
-- `TripStore(path: Path)`; creates parent dirs and the schema on construction.
+- `TripStore(path: Path, max_trips: int = MAX_TRIPS)`; creates parent dirs and the schema on construction.
 - Table `trips(id TEXT PRIMARY KEY, doc TEXT NOT NULL, updated_at TEXT NOT NULL)`; `doc` is the
   `SavedTrip` JSON. `PRAGMA user_version = 1`. A connection per call (`timeout=10`), so it is safe
   from FastAPI's threadpool.
 - Methods: `list_trips() -> list[SavedTripSummary]` (newest `updated_at` first), `get(id)`,
-  `create(SavedTripIn) -> SavedTrip`, `replace(id, SavedTripIn) -> SavedTrip | None` (keeps
-  `id`/`created_at`, bumps `updated_at`), `delete(id) -> bool`,
+  `create(SavedTripIn) -> SavedTrip` (raises `TooManyTrips` at `max_trips`),
+  `replace(id, SavedTripIn, expected_updated_at=None) -> SavedTrip | None` (keeps
+  `id`/`created_at`, bumps `updated_at`; raises `TripConflict` on a stale expectation), `delete(id) -> bool`,
   `add_item(id, TripItemAdd) -> SavedTrip | None` (appends; an item already present by id is a
-  no-op that still returns the trip; a 51st item raises `TripFull`).
+  no-op that still returns the trip; a 51st item raises `TripFull`, crossing 256 KiB `TripTooLarge`).
 - Setting `trips_db: Path = BASE_DIR / "data" / "trips.db"` (env `TRIPS_DB`). Outside `.cache/`,
   so clearing the cache never loses trips. `data/` is git- and docker-ignored.
 - Docker: `/app/data` owned by the `hick` user; compose mounts the named volume `hick-data` there.
@@ -66,14 +67,32 @@ TripItemAdd            # body of POST /items: exactly one of hike / stay, else 4
 | Method | Path | Result |
 |---|---|---|
 | GET | `/api/saved-trips` | `list[SavedTripSummary]` |
-| POST | `/api/saved-trips` | 201 `SavedTrip` |
+| POST | `/api/saved-trips` | 201 `SavedTrip` / 409 when 500 trips exist |
 | GET | `/api/saved-trips/{id}` | `SavedTrip` / 404 |
-| PUT | `/api/saved-trips/{id}` | `SavedTrip` / 404 (full replace) |
+| PUT | `/api/saved-trips/{id}` | `SavedTrip` / 404 / 409 on a stale `expected_updated_at` (full replace) |
 | DELETE | `/api/saved-trips/{id}` | 204 / 404 |
-| POST | `/api/saved-trips/{id}/items` | `SavedTrip` / 404 / 409 when full |
+| POST | `/api/saved-trips/{id}/items` | `SavedTrip` / 404 / 409 when full / 413 when too large |
 | GET | `/api/saved-trips/{id}/export.md` | `text/markdown; charset=utf-8`, attachment / 404 |
 
-404 detail: `"Trip not found"`. 409 detail: `"A trip holds at most 50 hikes and 50 stays"`.
+404 detail: `"Trip not found"`. 409 details: `"A trip holds at most 50 hikes and 50 stays"`,
+`"At most 500 saved trips – delete some first"` (POST; `MAX_TRIPS = 500`, counted inside
+`BEGIN IMMEDIATE`), `"Trip changed elsewhere – reopen it to see the latest version"` (PUT).
+
+Hardening (the site is public, no auth):
+- **Finite numbers.** `SavedTripIn` and `TripItemAdd` (not `Hike`/`Stay`, which scrapers build)
+  require every hike/stay `lat` in -90..90 and `lon` in -180..180, finite, and every other float
+  (`distance_km`, `total_price`, `rating`, …) finite when present; else 422, e.g.
+  `"hikes.0: lat/lon must be finite coordinates"`. The 422 handler turns NaN/Infinity echoed in
+  `input` into `null` so the error itself stays valid JSON.
+- **Size.** The JSON of a trip's `SavedTripIn` fields is capped at 256 KiB: POST/PUT → 422
+  `"Trip is too large (max 256 KB)"`; an `/items` add that would cross it → 413 with the same detail.
+- **Lost edits.** PUT takes `SavedTripUpdate` = `SavedTripIn` + optional `expected_updated_at`
+  (datetime). When given and different from the stored `updated_at` (compared as datetimes inside
+  `BEGIN IMMEDIATE`) → 409. The editor sends the `updated_at` it loaded; POST ignores the field.
+- **Corrupt rows.** Stored docs are re-validated on load; a row that fails is skipped by the list
+  (one stderr line: id + exception type), reads as 404 for get/PUT/items/export, and can still be
+  deleted. So model changes must stay backward-compatible (only add optional fields; narrowing
+  needs a migration via `PRAGMA user_version`).
 Export filename: `slug(name) + ".md"` — lowercase ASCII letters/digits, other runs become `-`,
 trimmed, max 60 chars, `trip` when empty; header also carries `filename*=UTF-8''<percent-encoded
 original name>.md`. `create_app(..., trip_store=None)` builds `TripStore(settings.trips_db)` when
@@ -107,7 +126,8 @@ Bring the dog's water bowl.
 Exported from hick-toors on 2026-10-10. Prices and ratings as seen when saved.
 ```
 
-Rules: no dates → the 📅 part reads `📅 Dates not set`; `(N nights)` / per-night price only when
+Rules: no dates → the 📅 part reads `📅 Dates not set`; only a start → `📅 From Fri 23 Oct 2026`;
+only an end → `📅 Until Sun 25 Oct 2026` (the UI list shows `From 2026-10-23` / `Until 2026-10-25`); `(N nights)` / per-night price only when
 both dates are set and N > 0 (`1 night` singular); dog off → no 🐕 part; source manual → no ⭐
 line; missing hike fields are skipped (no `?`); `🚗` shows `⛴️ ferry needed` when `ferry_needed`;
 drive minutes formatted like the UI (`≈ ` prefix when estimated); badge text matches the UI

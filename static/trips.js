@@ -61,6 +61,8 @@ async function openTripMenu(button) {
   menu.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - 260))}px`;
   menu.style.top = `${r.bottom + 4}px`;
   menu.hidden = false;
+  const height = menu.offsetHeight;  // measurable only once shown
+  if (r.bottom + 4 + height > window.innerHeight) menu.style.top = `${Math.max(8, r.top - 4 - height)}px`;
   menu.querySelector("button")?.focus();
 }
 async function newTripWith(kind, item) {
@@ -135,7 +137,11 @@ async function openTripsDialog() {
   if (!$("trips-dialog").open) $("trips-dialog").showModal();
   await reloadTripList();
 }
-function tripDates(t) { return t.start && t.end ? `${t.start} → ${t.end}` : "Dates not set"; }
+function tripDates(t) {
+  if (t.start && t.end) return `${t.start} → ${t.end}`;
+  if (t.start) return `From ${t.start}`;
+  return t.end ? `Until ${t.end}` : "Dates not set";
+}
 function renderTripList(list) {
   const ul = $("trips-list");
   ul.replaceChildren();
@@ -217,7 +223,8 @@ function editorBody() {
   const t = trips.current;
   return { name: $("trip-name").value, start: $("trip-start").value || null, end: $("trip-end").value || null,
     guests: Math.min(16, Math.max(1, Math.round(Number($("trip-guests").value)) || 1)), dog: $("trip-dog").checked,
-    notes: $("trip-notes").value, source: t.source, score: t.score, hikes: t.hikes, stays: t.stays };
+    notes: $("trip-notes").value, source: t.source, score: t.score, hikes: t.hikes, stays: t.stays,
+    expected_updated_at: t.updated_at };  // server answers 409 if another tab/visitor saved in between
 }
 async function persistTrip() {
   showTripsError("");
