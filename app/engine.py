@@ -135,6 +135,8 @@ class Engine:
                 fetched = await self._wikiloc_cached(box, q.filters, anon_pages, False)
                 if apply_hike_filters(fetched, q.filters):
                     warnings.append(LOGIN_EXPIRED)
+                if q.filters.loop_only and LOOP_NEEDS_LOGIN not in warnings:
+                    warnings.append(LOOP_NEEDS_LOGIN)  # the anonymous retry cannot filter by loop
         except WikilocUnavailable as exc:
             return HikeSearch(warnings=warnings + [str(exc)], drive_limit_minutes=limit)
         hikes = apply_hike_filters(fetched, q.filters)

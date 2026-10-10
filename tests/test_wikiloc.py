@@ -203,3 +203,18 @@ async def test_make_fetch_gives_up_after_retries():
 
     fetch = make_fetch(transport=transport, sleep=sleep, retries=2)
     assert await fetch("https://es.wikiloc.com/wikiloc/find.do", {}) is None
+
+
+async def test_make_fetch_keeps_cookie_out_of_stderr_and_does_not_retry_bad_header(capsys):
+    attempts = []
+
+    async def no_sleep(_):
+        attempts.append(1)
+
+    def handler(request):  # what h11 raises for a header value containing a newline
+        raise httpx.LocalProtocolError(f"Illegal header value {request.headers['cookie']!r}")
+
+    fetch = make_fetch(transport=httpx.MockTransport(handler), sleep=no_sleep)
+    assert await fetch("https://es.wikiloc.com/wikiloc/find.do", {}, {"Cookie": "a=SECRETX b=1"}) is None
+    assert "SECRETX" not in capsys.readouterr().err
+    assert attempts == []  # returned on the first attempt, no backoff sleep

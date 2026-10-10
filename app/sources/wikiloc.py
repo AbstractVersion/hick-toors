@@ -109,7 +109,11 @@ def make_fetch(
                     response.raise_for_status()
                     return response.json()
                 except (httpx.HTTPError, ValueError) as exc:
-                    print(f"wikiloc request failed: {exc}", file=sys.stderr)
+                    # With extra headers (the session cookie) the message may echo them: name only.
+                    detail = type(exc).__name__ if headers else exc
+                    print(f"wikiloc request failed: {detail}", file=sys.stderr)
+                    if isinstance(exc, httpx.LocalProtocolError):
+                        return None  # deterministic (e.g. malformed header): retrying cannot help
                     if attempt < retries:
                         await sleep(1.5 * (attempt + 1))
         return None

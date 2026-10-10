@@ -395,3 +395,14 @@ async def test_login_and_anonymous_results_are_cached_separately(settings):
     await engine.search_hikes(q({"activities": [1, 43]}))  # different server params -> new fetch
     await engine.search_hikes(q({"activities": [1]}))  # cached
     assert len(wikiloc.calls) == 2
+
+
+LOGIN_EXPIRED_TEXT = "Wikiloc login may have expired – using local filtering. Update WIKILOC_COOKIE in .env"
+
+
+async def test_expired_login_with_loop_only_adds_loop_notice(settings):
+    wikiloc = FakeWikiloc([hike(1, 50, lat=38.1)], logged_in=True, expired=True)
+    engine = make_engine(settings, wikiloc=wikiloc, router=FakeRouter({38.1: 60}))
+    result = await engine.search_hikes(HikeQuery(start=FRI, end=SUN, filters={"min_trailrank": 10,
+                                                                              "loop_only": True}))
+    assert result.warnings == [LOGIN_EXPIRED_TEXT, "Circular-only needs a Wikiloc login (WIKILOC_COOKIE)"]
