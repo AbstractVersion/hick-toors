@@ -11,7 +11,8 @@ from app.filters import (
     apply_hike_filters, hike_filters_active, skip_notice, stay_filters_active, stay_post_check,
     unsupported_filters,
 )
-from app.geo import GREECE_BBOX, bbox_around, clamp_to_greece, ensure_min_size, haversine_km, segment_distance_km
+from app.geo import (GREECE_BBOX, bbox_around, clamp_to_greece, ensure_min_size, haversine_km, point_in_rings,
+                     segment_distance_km)
 from app.models import (
     SIGHT_GROUPS, SIGHT_LABELS, BBox, CircleArea, DriveLimit, Hike, HikeFilters, HikeQuery, HikeSearch, LatLon,
     NatureSearch, Sight, Stay, StayLookup, StayLookupResult, StayQuery, StaySearch, StaySearchQuery, TripQuery,
@@ -55,6 +56,9 @@ NATURE_TILE_DEADLINE_S = 60.0  # per tile, both Overpass endpoints included
 NATURE_MAX_INFLIGHT = 32  # tile fetches queued or running; new uncached tiles beyond this are skipped
 NEARBY_MAX_TILES = 48  # 🌿 Find nearby sights: distinct tiles per trip
 NEARBY_SPREAD = "Trip is spread out – searched near the first places only"
+NEARBY_DEADLINE_S = 120.0  # whole tile search of one Find nearby sights request
+NEARBY_TIMEOUT = "Search timed out – showing what was found; try again to continue"
+AREA_KINDS = {"lake", "protected_area", "forest"}  # outlines: a point inside counts as 0 km away
 _LIMITED = object()  # a tile not fetched because the daily Overpass budget is used up
 
 
@@ -178,8 +182,11 @@ def _merge_tiles(tiles: list[Tile], groups: list[str], keep) -> list[Sight]:
 def sight_distance_km(s: Sight, points: list[LatLon], radius_km: float) -> float:
     """Distance from the sight (its position or the nearest point of its lines) to the nearest point.
 
-    Points whose radius box can't reach the sight's extent are skipped; inf when none is within reach.
+    An area (lake, protected area, forest) counts as 0 km from a point inside its outline. Points whose radius
+    box can't reach the sight's extent are skipped; inf when none is within reach.
     """
+    if s.kind in AREA_KINDS and s.lines and any(point_in_rings(p, s.lines) for p in points):
+        return 0.0
     lats = [s.lat] + [q[0] for line in s.lines for q in line]
     lons = [s.lon] + [q[1] for line in s.lines for q in line]
     s0, s1, w0, w1 = min(lats), max(lats), min(lons), max(lons)
@@ -200,7 +207,9 @@ def sight_distance_km(s: Sight, points: list[LatLon], radius_km: float) -> float
 def _nearby(tiles: list[Tile], points: list[LatLon], radius_km: float) -> list[Sight]:
     """Named sights of the tiles within radius_km of a point, nearest first (pure: run in a thread)."""
     merged = _merge_tiles(tiles, list(SIGHT_GROUPS), lambda s: True)
-    named = [s for s in merged if s.name != SIGHT_LABELS.get(s.kind)]  # unnamed ones carry the kind label
+    # Named only: the nature source names an unnamed feature after its kind ("Waterfall", "Peak"), so a name
+    # equal to the kind label means "no name in OSM". (A feature really named just "Peak" is dropped too.)
+    named = [s for s in merged if s.name != SIGHT_LABELS.get(s.kind)]
     scored = [(sight_distance_km(s, points, radius_km), s) for s in named]
     return [s for d, s in sorted((ds for ds in scored if ds[0] <= radius_km), key=lambda ds: ds[0])]
 
@@ -508,11 +517,26 @@ class Engine:
         sights = await asyncio.to_thread(_merge_tiles, tiles, groups, lambda s: _sight_in_box(s, bbox))
         return NatureSearch(sights=sights, warnings=warnings)
 
-    async def _nature_tiles(self, corners: list[tuple[float, float]]) -> tuple[list[Tile], list[str]]:
-        """The tiles at these south-west corners plus their warnings, MAX_TILES at a time (the queue cap)."""
-        results = []
+    async def _nature_tiles(self, corners: list[tuple[float, float]],
+                            timeout: float | None = None) -> tuple[list[Tile], list[str]]:
+        """The tiles at these south-west corners plus their warnings, MAX_TILES at a time (the queue cap).
+
+        With a timeout, tiles not finished by then are left out (NEARBY_TIMEOUT warning); their Overpass
+        queries are shielded, so they still finish and get cached for the next try.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
+        results, timed_out = [], False
         for i in range(0, len(corners), MAX_TILES):
-            results += await asyncio.gather(*(self._nature_tile(s, w) for s, w in corners[i:i + MAX_TILES]))
+            tasks = [asyncio.ensure_future(self._nature_tile(s, w)) for s, w in corners[i:i + MAX_TILES]]
+            left = None if deadline is None else max(0.0, deadline - loop.time())
+            _, pending = await asyncio.wait(tasks, timeout=left)
+            results += [t.result() for t in tasks if t not in pending]
+            if pending:
+                for t in pending:
+                    t.cancel()
+                timed_out = True
+                break
         tiles = [t for t in results if isinstance(t, Tile)]
         warnings = []
         if any(t is None for t in results):
@@ -521,6 +545,8 @@ class Engine:
             warnings.append(NATURE_LIMIT)
         if any(t.truncated for t in tiles):
             warnings.append(NATURE_TRUNCATED)
+        if timed_out:
+            warnings.append(NEARBY_TIMEOUT)
         return tiles, warnings
 
     async def nearby_sights(self, points: list[LatLon], radius_km: float) -> NatureSearch:
@@ -547,7 +573,7 @@ class Engine:
                 break
             corners += new
             searched.append(p)
-        tiles, warnings = await self._nature_tiles(corners)
+        tiles, warnings = await self._nature_tiles(corners, timeout=NEARBY_DEADLINE_S)
         sights = await asyncio.to_thread(_nearby, tiles, searched, radius_km)
         return NatureSearch(sights=sights, warnings=warnings + ([NEARBY_SPREAD] if spread else []))
 

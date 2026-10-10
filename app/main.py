@@ -15,10 +15,11 @@ from app.cache import DAY
 from app.config import BASE_DIR, Settings
 from app.engine import StayLookupFailed, lookup_airbnb_link, nature_box, nature_groups
 from app.filters import catalogue
-from app.models import (TRIP_TOO_LARGE, HikeQuery, HikeSearch, LatLon, NatureSearch, NearbySightsIn,
+from app.models import (MAX_TRIP_SIGHTS, TRIP_TOO_LARGE, HikeQuery, HikeSearch, LatLon, NatureSearch, NearbySightsIn,
                         NearbySightsResult, SavedTrip, SavedTripIn,
                         SavedTripSummary, SavedTripUpdate, StayLookup, StayLookupResult, StaySearch, StaySearchQuery,
                         TripItemAdd, TripQuery, TripSearch)
+from app.nearby_limits import NearbyBusy, NearbyLimits
 from app.trip_markdown import content_disposition, trip_markdown
 from app.trip_print import CSP, trip_print_html
 from app.trips_store import TooManyTrips, TripConflict, TripFull, TripStore, TripTooLarge
@@ -27,6 +28,7 @@ from app.wiring import build_engine
 STATIC_DIR = BASE_DIR / "static"
 # The page and its scripts must update together: browsers revalidate them (ETag) on every load.
 REVALIDATE = {"Cache-Control": "no-cache"}
+TRIP_SIGHTS_FULL = "Trip already holds 100 nature sights"
 
 
 class RevalidatedStaticFiles(StaticFiles):
@@ -81,6 +83,8 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
     app.state.ask = ask_runner
     trip_store = trip_store or TripStore(settings.trips_db)
     app.state.trips = trip_store
+    nearby_limits = NearbyLimits()
+    app.state.nearby = nearby_limits
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request, exc: RequestValidationError):
@@ -199,12 +203,18 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
         points = [LatLon(lat=item.lat, lon=item.lon) for item in [*trip.hikes, *trip.stays]]
         if not points:
             raise HTTPException(status_code=422, detail="Add a hike or stay first")
-        nearby = await engine.nearby_sights(points, radius)
+        if len(trip.sights) >= MAX_TRIP_SIGHTS:  # nothing could be added: don't spend Overpass calls
+            return NearbySightsResult(trip=trip, added=0, found=0, warnings=[TRIP_SIGHTS_FULL])
+        try:
+            with nearby_limits.slot(trip_id):
+                nearby = await engine.nearby_sights(points, radius)
+        except NearbyBusy as busy:
+            raise HTTPException(status_code=429, detail=str(busy))
         result = found(await asyncio.to_thread(trip_store.add_sights, trip_id, nearby.sights))
         saved, added, stopped = result
         warnings = list(nearby.warnings)
         if stopped == "sights":
-            warnings.append("Trip already holds 100 nature sights")
+            warnings.append(TRIP_SIGHTS_FULL)
         elif stopped == "size":
             warnings.append(TRIP_TOO_LARGE)
         return NearbySightsResult(trip=saved, added=added, found=len(nearby.sights), warnings=warnings)

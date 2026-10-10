@@ -59,3 +59,30 @@ def segment_distance_km(p: LatLon, a: LatLon, b: LatLon) -> float:
     length2 = dx * dx + dy * dy
     t = 0.0 if length2 == 0 else max(0.0, min(1.0, -(ax * dx + ay * dy) / length2))
     return math.hypot(ax + t * dx, ay + t * dy)
+
+
+def _in_ring(p: LatLon, ring: list[list[float]]) -> bool:
+    """Even-odd ray casting (ray towards +lon) over a ring of [lat, lon] points."""
+    inside = False
+    for (lat1, lon1), (lat2, lon2) in zip(ring, ring[1:]):
+        if (lat1 > p.lat) != (lat2 > p.lat):
+            cross_lon = lon1 + (p.lat - lat1) * (lon2 - lon1) / (lat2 - lat1)
+            if p.lon < cross_lon:
+                inside = not inside
+    return inside
+
+
+def point_in_rings(p: LatLon, lines: list[list[list[float]]]) -> bool:
+    """Is p inside any closed ring (first point == last, at least 4 points) of an area outline?
+
+    Inner rings (holes) are not subtracted: a point in a hole still counts as inside. When no line is a
+    closed ring (outlines clipped at tile edges or simplified open), inside the lines' bounding box counts.
+    """
+    rings = [line for line in lines if len(line) >= 4 and line[0] == line[-1]]
+    if rings:
+        return any(_in_ring(p, ring) for ring in rings)
+    points = [q for line in lines for q in line]
+    if not points:
+        return False
+    lats, lons = [q[0] for q in points], [q[1] for q in points]
+    return min(lats) <= p.lat <= max(lats) and min(lons) <= p.lon <= max(lons)

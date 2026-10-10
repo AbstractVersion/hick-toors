@@ -45,3 +45,16 @@ def test_segment_distance_km():
     assert segment_distance_km(p, a, a) == pytest.approx(haversine_km(p, a), rel=0.01)  # degenerate segment
     c = LatLon(lat=38.0, lon=22.1)
     assert segment_distance_km(p, c, LatLon(lat=38.0, lon=22.3)) == pytest.approx(haversine_km(p, c), rel=0.01)
+
+
+def test_point_in_rings():
+    from app.geo import point_in_rings
+    ring = [[38.0, 22.0], [38.0, 22.4], [38.4, 22.4], [38.4, 22.0], [38.0, 22.0]]
+    assert point_in_rings(LatLon(lat=38.2, lon=22.2), [ring])
+    assert not point_in_rings(LatLon(lat=38.5, lon=22.2), [ring])
+    notch = [[38.0, 22.0], [38.0, 22.4], [38.4, 22.4], [38.2, 22.2], [38.4, 22.0], [38.0, 22.0]]  # concave
+    assert not point_in_rings(LatLon(lat=38.35, lon=22.2), [notch])
+    open_line = ring[:-1]  # no closed ring: inside the lines' bbox counts
+    assert point_in_rings(LatLon(lat=38.2, lon=22.2), [open_line])
+    assert not point_in_rings(LatLon(lat=38.2, lon=22.5), [open_line])
+    assert not point_in_rings(LatLon(lat=38.2, lon=22.2), [])

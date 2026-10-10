@@ -156,3 +156,84 @@ def test_nearby_sights_cap_warning(settings):
     body = c.post(f"/api/saved-trips/{trip['id']}/nearby-sights").json()
     assert body["added"] == 1 and len(body["trip"]["sights"]) == 100
     assert body["warnings"] == ["Trip already holds 100 nature sights"]
+
+
+# --- fix round: inside areas, limits, deadline --------------------------------------------------------
+
+
+def square(lat, lon, half_lat, half_lon, closed=True):
+    ring = [[lat - half_lat, lon - half_lon], [lat - half_lat, lon + half_lon], [lat + half_lat, lon + half_lon],
+            [lat + half_lat, lon - half_lon]]
+    return [ring + [ring[0]]] if closed else [ring]
+
+
+def test_nearby_sights_point_inside_big_area_is_kept(settings):
+    # Each park is ~30 km wide; its edges and centre point are far from the hike.
+    inside = sight(10, HIKE[0] + 0.3, HIKE[1], name="Big park", kind="protected_area",
+                   lines=square(HIKE[0], HIKE[1], 0.15, 0.2))
+    outside = sight(11, HIKE[0] + 0.3, HIKE[1], name="Other park", kind="protected_area",
+                    lines=square(HIKE[0], HIKE[1] + 0.51, 0.15, 0.2))  # hike ~10 km west of its edge
+    open_forest = sight(12, HIKE[0] + 0.3, HIKE[1], name="Clipped forest", kind="forest",
+                        lines=square(HIKE[0], HIKE[1], 0.15, 0.2, closed=False))  # no closed ring: bbox fallback
+    c = make_client(settings, FakeNature({(37.5, 22.0): [inside, outside, open_forest]}))
+    trip = new_trip(c, hikes=[hike(1, *HIKE)])
+    body = c.post(f"/api/saved-trips/{trip['id']}/nearby-sights").json()
+    assert sorted(s["id"] for s in body["trip"]["sights"]) == ["osm:node/10", "osm:node/12"]
+
+
+def test_nearby_sights_full_trip_skips_fetching(settings):
+    nature = FakeNature(area_tiles())
+    c = make_client(settings, nature)
+    trip = new_trip(c, hikes=[hike(1, *HIKE)], sights=[sight(100 + i, 38.0, 22.0).model_dump() for i in range(100)])
+    body = c.post(f"/api/saved-trips/{trip['id']}/nearby-sights").json()
+    assert body["added"] == 0 and body["found"] == 0 and nature.calls == []
+    assert body["warnings"] == ["Trip already holds 100 nature sights"]
+
+
+def test_nearby_sights_limits_429(settings):
+    engine = Engine(settings, None, [], None, None, DiskCache(settings.cache_dir), nature=FakeNature())
+    app = create_app(engine=engine, ask_runner=object(), settings=settings)
+    c = TestClient(app)
+    limits = app.state.nearby
+    now = {"t": 1000.0}
+    limits.clock = lambda: now["t"]
+    a, b, d = (new_trip(c, hikes=[hike(1, *HIKE)]) for _ in range(3))
+
+    def url(t):
+        return f"/api/saved-trips/{t['id']}/nearby-sights"
+
+    assert c.post(url(a)).status_code == 200
+    r = c.post(url(a))  # within 30 s of the last search of this trip
+    assert r.status_code == 429 and r.json()["detail"] == "Wait a moment before searching this trip again"
+    now["t"] += 31
+    assert c.post(url(a)).status_code == 200
+
+    limits.running.add(b["id"])  # a search for b is in flight
+    r = c.post(url(b))
+    assert r.status_code == 429 and r.json()["detail"] == "A search for this trip is already running"
+    limits.running.add("other")  # two searches in flight overall
+    r = c.post(url(d))
+    assert r.status_code == 429 and r.json()["detail"] == "Too many searches right now – try again in a minute"
+    limits.running.clear()
+    assert c.post(url(d)).status_code == 200 and limits.running == set()
+
+
+async def test_nearby_sights_deadline_returns_finished_tiles(settings, monkeypatch):
+    import asyncio
+
+    import app.engine as engine_module
+    from app.models import LatLon
+
+    class Slow(FakeNature):
+        async def fetch_tile(self, south, west):
+            if (south, west) == (37.5, 22.5):
+                await asyncio.sleep(0.5)
+            return await super().fetch_tile(south, west)
+
+    monkeypatch.setattr(engine_module, "NEARBY_DEADLINE_S", 0.1)
+    engine = Engine(settings, None, [], None, None, DiskCache(settings.cache_dir), nature=Slow(area_tiles()))
+    result = await engine.nearby_sights([LatLon(lat=HIKE[0], lon=HIKE[1]), LatLon(lat=STAY[0], lon=STAY[1])], 5)
+    assert result.warnings == ["Search timed out – showing what was found; try again to continue"]
+    assert [s.id for s in result.sights] == ["osm:node/4", "osm:node/1"]  # the hike's tiles only
+    await asyncio.sleep(0.6)  # the slow tile keeps going in the background and is cached
+    assert engine.cache.get("nature:v1:37.50_22.50") is not None
