@@ -25,24 +25,35 @@ def _limit(max_drive_minutes: int | None, unlimited: bool):
 
 
 def _error(exc: ValidationError) -> str:
-    return json.dumps({"error": "; ".join(e["msg"] for e in exc.errors())})
+    def one(e: dict) -> str:
+        msg = str(e["msg"]).replace("Value error, ", "")
+        loc = ".".join(str(p) for p in e.get("loc", ()))
+        return f"{loc}: {msg}" if loc else msg
+
+    return json.dumps({"error": "; ".join(one(e) for e in exc.errors())})
 
 
 @mcp.tool()
 async def search_hikes(start: str, end: str, place: str | None = None,
-                       max_drive_minutes: int | None = None, unlimited: bool = False) -> str:
+                       max_drive_minutes: int | None = None, unlimited: bool = False,
+                       hike_filters: dict | None = None) -> str:
     """Find hikes in Greece (Wikiloc) for a trip from start to end (YYYY-MM-DD).
 
     Without `place`, searches around home (Athens) within a drive limit that defaults from the
     number of days (1 day: 90 min, 2-3 days: 4 h, 4+ days: unlimited). Set max_drive_minutes to
     override, or unlimited=True to include islands (hikes flagged ferry_needed).
     With `place` (e.g. "Pelion", "Zagori"), searches that area instead.
+    hike_filters (optional dict, every key optional): activities (list of ids: 1 Hiking [default],
+    43 Walking, 48 Trail running, 57 Nordic walking, 66 Canicross, 60 Via ferrata),
+    difficulty_min / difficulty_max (1 Easy .. 5 Experts Only), distance_min_km / distance_max_km,
+    elevation_min_m / elevation_max_m, min_trailrank (0-100), loop_only (circular routes; needs
+    WIKILOC_COOKIE, otherwise ignored with a warning), sort ("popular" or "top_rated").
     Returns JSON {hikes: [{id, name, url, lat, lon, distance_km, elevation_gain_m, difficulty,
     trailrank, near, drive_minutes, ferry_needed}], warnings}.
     """
     try:
         q = HikeQuery(start=start, end=end, mode="place" if place else "near_home", place=place,
-                      drive_limit=_limit(max_drive_minutes, unlimited))
+                      drive_limit=_limit(max_drive_minutes, unlimited), filters=hike_filters or {})
     except ValidationError as exc:
         return _error(exc)
     return (await engine().search_hikes(q)).model_dump_json()
@@ -51,16 +62,23 @@ async def search_hikes(start: str, end: str, place: str | None = None,
 @mcp.tool()
 async def search_stays(start: str, end: str, hike_id: str | None = None, lat: float | None = None,
                        lon: float | None = None, dog: bool = True, guests: int = 2,
-                       radius_km: float | None = None) -> str:
+                       radius_km: float | None = None, stay_filters: dict | None = None) -> str:
     """Find stays (Airbnb, Booking.com) near a hike (hike_id from search_hikes) or a lat/lon.
 
     With dog=True only stays that allow pets, or have a garden (badge garden_unconfirmed =
-    pets not confirmed), are returned. Returns JSON {stays: [{id, source, name, url, lat, lon,
-    total_price, currency, rating, badge, distance_km}], warnings}.
+    pets not confirmed), are returned.
+    stay_filters (optional dict, every key optional): price_min / price_max (EUR per night),
+    min_rating (0-5), entire_place, property_types (house, apartment, guesthouse, hotel, villa),
+    min_bedrooms, min_beds, min_bathrooms, amenities (wifi, kitchen, parking, pool, hot_tub, ac,
+    washer, ev_charger, fireplace, heating, workspace, bbq), free_cancellation, instant_book,
+    guest_favorite, breakfast, min_stars (1-5), beachfront. A source that can't apply a filter is
+    skipped and a warning says so (e.g. Booking.com can't filter by fireplace).
+    Returns JSON {stays: [{id, source, name, url, lat, lon, total_price, currency, rating, badge,
+    distance_km}], warnings}.
     """
     try:
         q = StaySearchQuery(start=start, end=end, hike_id=hike_id, lat=lat, lon=lon, dog=dog,
-                            guests=guests, radius_km=radius_km)
+                            guests=guests, radius_km=radius_km, filters=stay_filters or {})
     except ValidationError as exc:
         return _error(exc)
     return (await engine().search_stays(q)).model_dump_json()
@@ -68,14 +86,17 @@ async def search_stays(start: str, end: str, hike_id: str | None = None, lat: fl
 
 @mcp.tool()
 async def plan_trip(start: str, end: str, dog: bool = True, guests: int = 2,
-                    max_drive_minutes: int | None = None, unlimited: bool = False) -> str:
+                    max_drive_minutes: int | None = None, unlimited: bool = False,
+                    hike_filters: dict | None = None, stay_filters: dict | None = None) -> str:
     """Rank hike + stay combos for a trip from home (score /100 with breakdown).
 
+    hike_filters / stay_filters take the same keys as in search_hikes / search_stays.
     Returns JSON {combos: [{hike, stay, score, breakdown}], warnings}.
     """
     try:
         q = TripQuery(start=start, end=end, dog=dog, guests=guests,
-                      drive_limit=_limit(max_drive_minutes, unlimited))
+                      drive_limit=_limit(max_drive_minutes, unlimited),
+                      hike_filters=hike_filters or {}, stay_filters=stay_filters or {})
     except ValidationError as exc:
         return _error(exc)
     return (await engine().plan_trip(q)).model_dump_json()

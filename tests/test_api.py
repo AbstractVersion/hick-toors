@@ -1,3 +1,5 @@
+import json
+
 from fastapi.testclient import TestClient
 
 from app.config import Settings
@@ -67,6 +69,52 @@ def test_end_before_start_is_422_with_message(tmp_path):
     r = client(tmp_path).post("/api/hikes", json={"start": "2026-10-25", "end": "2026-10-23"})
     assert r.status_code == 422
     assert "end date must be on or after start date" in r.text
+
+
+def test_filters_catalogue_endpoint(tmp_path):
+    body = client(tmp_path).get("/api/filters").json()
+    assert body["hike"]["defaults"]["activities"] == [1]
+    assert body["stay"]["defaults"]["price_max"] is None
+    assert [f["key"] for f in body["hike"]["fields"]][0] == "activities"
+    assert any(f["key"] == "amenities" for f in body["stay"]["fields"])
+    assert body["wikiloc_login"] is False
+
+
+def test_filters_catalogue_reports_wikiloc_login(tmp_path):
+    settings = Settings(_env_file=None, cache_dir=tmp_path, wikiloc_cookie="SESSION=abc")
+    c = TestClient(create_app(engine=FakeEngine(), ask_runner=FakeAsk(), settings=settings))
+    body = c.get("/api/filters").json()
+    assert body["wikiloc_login"] is True and "SESSION" not in json.dumps(body)
+
+
+def test_filters_and_area_reach_engine(tmp_path):
+    engine = FakeEngine()
+    c = client(tmp_path, engine)
+    r = c.post("/api/hikes", json={"start": "2026-10-23", "end": "2026-10-25", "mode": "drawn",
+                                   "area": {"shape": "circle", "lat": 38.5, "lon": 22.6, "radius_m": 8000},
+                                   "filters": {"min_trailrank": 60, "sort": "top_rated"}})
+    assert r.status_code == 200
+    q = engine.calls[0][1]
+    assert q.area.radius_m == 8000 and q.filters.min_trailrank == 60 and q.filters.sort == "top_rated"
+    c.post("/api/stays", json={"start": "2026-10-23", "end": "2026-10-25", "hike_id": "wikiloc:1",
+                               "filters": {"price_max": 120, "amenities": ["parking"]}})
+    assert engine.calls[1][1].filters.amenities == ["parking"]
+    c.post("/api/trips", json={"start": "2026-10-23", "end": "2026-10-25",
+                               "area": {"shape": "rectangle", "south": 38.3, "west": 22.3, "north": 38.7,
+                                        "east": 22.9},
+                               "hike_filters": {"difficulty_max": 3}, "stay_filters": {"entire_place": True}})
+    trip = engine.calls[2][1]
+    assert trip.area.shape == "rectangle" and trip.hike_filters.difficulty_max == 3
+    assert trip.stay_filters.entire_place is True
+
+
+def test_invalid_filter_range_and_missing_area_are_422(tmp_path):
+    c = client(tmp_path)
+    r = c.post("/api/stays", json={"start": "2026-10-23", "end": "2026-10-25", "hike_id": "wikiloc:1",
+                                   "filters": {"price_min": 200, "price_max": 100}})
+    assert r.status_code == 422 and "price per night: minimum must not be greater than maximum" in r.text
+    r = c.post("/api/hikes", json={"start": "2026-10-23", "end": "2026-10-25", "mode": "drawn"})
+    assert r.status_code == 422 and "Draw a rectangle or circle first" in r.text
 
 
 def test_index_loads_leaflet_and_app(tmp_path):

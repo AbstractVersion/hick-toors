@@ -55,3 +55,23 @@ async def test_search_stays_and_plan_trip(engine):
 async def test_invalid_input_returns_error_json(engine):
     out = json.loads(await tools.search_hikes("2026-10-25", "2026-10-23"))
     assert "end date must be on or after start date" in out["error"]
+
+
+async def test_filter_dicts_are_passed_through(engine):
+    await tools.search_hikes("2026-10-23", "2026-10-25", hike_filters={"min_trailrank": 60})
+    await tools.search_stays("2026-10-23", "2026-10-25", hike_id="wikiloc:1",
+                             stay_filters={"price_max": 120, "amenities": ["parking"]})
+    await tools.plan_trip("2026-10-23", "2026-10-25", hike_filters={"sort": "top_rated"},
+                          stay_filters={"entire_place": True})
+    assert engine.queries[0].filters.min_trailrank == 60
+    assert engine.queries[1].filters.price_max == 120
+    assert engine.queries[2].hike_filters.sort == "top_rated" and engine.queries[2].stay_filters.entire_place
+
+
+async def test_invalid_filters_return_error_json(engine):
+    out = json.loads(await tools.search_stays("2026-10-23", "2026-10-25", hike_id="wikiloc:1",
+                                              stay_filters={"price_min": 200, "price_max": 100}))
+    assert "price per night: minimum must not be greater than maximum" in out["error"]
+    out = json.loads(await tools.search_hikes("2026-10-23", "2026-10-25", hike_filters={"min_rank": 5}))
+    assert out["error"] == "filters.min_rank: Extra inputs are not permitted"
+    assert engine.queries == []

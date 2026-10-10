@@ -4,6 +4,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.ask import AskRequest, AskResult, AskRunner
 from app.config import BASE_DIR, Settings
+from app.filters import catalogue
 from app.models import HikeQuery, HikeSearch, StaySearch, StaySearchQuery, TripQuery, TripSearch
 from app.wiring import build_engine
 
@@ -27,6 +28,10 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None) -
             "default_guests": settings.default_guests,
             "ask_available": bool(ask_runner and ask_runner.available()),
         }
+
+    @app.get("/api/filters")
+    async def filters():
+        return catalogue(wikiloc_login=bool(settings.wikiloc_cookie))
 
     @app.post("/api/hikes", response_model=HikeSearch)
     async def hikes(q: HikeQuery):
