@@ -61,6 +61,21 @@ main { flex: 1; display: flex; min-height: 0; }
 .filters-dialog .dialog-buttons .primary { border: 0; background: #2f6f4e; color: #fff; }
 .filters-dialog .dialog-buttons .primary:disabled { opacity: .5; cursor: not-allowed; }
 .src-tag { font-size: 10px; font-weight: normal; padding: 0 5px; border-radius: 8px; background: #eef1ed; color: #5d6b63; margin-left: 4px; }
+.spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid #c8d0c6; border-top-color: #2f6f4e; border-radius: 50%; vertical-align: middle; animation: spin .8s linear infinite; }
+.spinner[hidden], .load-chip[hidden], .link-btn[hidden] { display: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; width: auto; height: auto; border: 0; border-radius: 0; }
+  .spinner::before { content: "…"; }
+}
+.chips-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.chips-row:empty { display: none; }
+.load-chip { font-size: 12px; padding: 1px 8px; border-radius: 10px; background: #eef1ed; color: #5d6b63; }
+.link-btn { border: 0; background: none; padding: 0; color: #1f4fa3; text-decoration: underline; cursor: pointer; font: inherit; font-size: 12px; }
+.goto { display: inline-flex; gap: 4px; align-items: center; }
+#goto-input { padding: 4px 6px; border: 1px solid #c8d0c6; border-radius: 6px; width: 210px; }
+#suggest-trips { padding: 6px 14px; border: 0; border-radius: 6px; background: #b5562f; color: #fff; cursor: pointer; }
+#suggest-trips:disabled { opacity: .5; cursor: wait; }
 @media (max-width: 800px) {
   main { flex-direction: column; }
   #sidebar { width: 100%; max-height: 40vh; border-right: 0; }

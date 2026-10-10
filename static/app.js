@@ -9,7 +9,7 @@ const BADGES = {
 };
 const $ = (id) => document.getElementById(id);
 const state = { config: null, hikes: new Map(), stays: new Map(), markers: new Map(), items: new Map(), comboView: false, staysRequest: 0,
-  lastHikeBody: null, nextPageOffset: null, hikeTotal: null, hikeGen: 0, hikeWarnings: [], catalogue: null, filters: null, dialogs: {} };
+  stayWarnings: {}, bookingFailed: false, staySpec: null, lastHikeBody: null, nextPageOffset: null, hikeTotal: null, hikeGen: 0, hikeWarnings: [], catalogue: null, filters: null, dialogs: {} };
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) =>
@@ -116,6 +116,31 @@ function areaProblem(area) {
     return "Draw a bigger rectangle";
   }
   return null;
+}
+
+// ---- loading indicators: the newest request for a key owns its spinner; stale ones never touch it ----
+const SPIN_SECTION = { hikes: "hike-section", "hikes-more": "hike-section", "stay:airbnb": "stay-section",
+  "stay:booking": "stay-section", "stay:retry": "stay-section", combos: "combo-section", ask: "ask" };
+const loading = { owners: {}, seq: 0 };
+function paintLoading(key) {
+  const on = key in loading.owners;
+  for (const el of document.querySelectorAll(`[data-spin="${key}"]`)) el.hidden = !on;
+  const section = SPIN_SECTION[key];
+  if (section) {
+    const busy = Object.keys(loading.owners).some((k) => SPIN_SECTION[k] === section);
+    $(section)?.setAttribute("aria-busy", busy ? "true" : "false");
+  }
+}
+function startLoading(key) {
+  const id = ++loading.seq;
+  loading.owners[key] = id;
+  paintLoading(key);
+  return id;
+}
+function stopLoading(key, id) {
+  if (loading.owners[key] !== id) return;  // a newer request owns this spinner now
+  delete loading.owners[key];
+  paintLoading(key);
 }
 
 function safeUrl(u) { return /^https?:\/\//i.test(String(u ?? "")) ? u : "#"; }
@@ -267,6 +292,10 @@ function clearStays() {
   $("stay-list").replaceChildren();
   $("stay-count").textContent = "";
   $("stay-note").textContent = "";
+  state.stayWarnings = {};
+  state.bookingFailed = false;
+  state.staySpec = null;
+  $("retry-booking").hidden = true;
 }
 function clearAll() {
   state.comboView = false;
@@ -284,6 +313,7 @@ function clearAll() {
   state.hikes.clear();
   state.markers.clear();
   state.items.clear();
+  $("combo-section").hidden = true;
   for (const id of ["hike-list", "combo-list"]) $(id).replaceChildren();
   for (const id of ["hike-count", "combo-count"]) $(id).textContent = "";
 }
@@ -335,7 +365,9 @@ async function searchHikes() {
     if (problem) { notices([problem]); return; }
     body.area = area;
   }
-  const data = await api("/api/hikes", body);
+  const spin = startLoading("hikes");
+  let data;
+  try { data = await api("/api/hikes", body); } finally { stopLoading("hikes", spin); }
   clearAll();
   state.lastHikeBody = body;
   state.hikeWarnings = data.warnings || [];
@@ -346,8 +378,7 @@ async function searchHikes() {
   if (!data.hikes.length && !data.warnings.length) notices(["No hikes found – try more days or a bigger drive limit."]);
   fitAll();
   // A drawn search also brings the stays inside the shape (not awaited: Search stays usable meanwhile).
-  if (body.mode === "drawn") loadAreaStays(body.area);
-}
+  if (body.mode === "drawn") loadAreaStays(body.area);}
 function showHikeMeta(data) {
   $("hike-count").textContent = `(${state.hikes.size})`;
   state.nextPageOffset = data.next_page_offset ?? null;
@@ -360,48 +391,115 @@ function showHikeMeta(data) {
 async function loadMoreHikes() {
   if (!state.lastHikeBody || state.nextPageOffset == null) return;
   const gen = state.hikeGen;
-  const data = await api("/api/hikes", { ...state.lastHikeBody, page_offset: state.nextPageOffset });
+  const spin = startLoading("hikes-more");
+  let data;
+  try {
+    data = await api("/api/hikes", { ...state.lastHikeBody, page_offset: state.nextPageOffset });
+  } finally { stopLoading("hikes-more", spin); }
   if (gen !== state.hikeGen) return;  // a new search replaced the list meanwhile
   state.hikeWarnings = [...new Set([...state.hikeWarnings, ...(data.warnings || [])])];
   notices(state.hikeWarnings);
   data.hikes.filter((h) => !state.hikes.has(h.id)).forEach(addHike);
   showHikeMeta(data);
 }
-async function loadAreaStays(area) {
-  const request = ++state.staysRequest;
+// Stays load as two parallel requests (Airbnb is quick, Booking.com is retried and slow); each answer
+// is merged into the same list as it arrives. Every request is guarded by state.staysRequest.
+const STAY_PROVIDERS = ["airbnb", "booking"];
+const BOOKING_DOWN = /^Booking\.com unavailable/;
+function showStayNotices(spec) {
+  notices([...spec.baseWarnings(), ...Object.values(state.stayWarnings).flat()]);
+}
+function mergeStays(list) {
+  list.filter((s) => !state.stays.has(s.id)).forEach(addStay);
+  $("stay-count").textContent = `(${state.stays.size})`;
+}
+async function requestStays(provider, request, spec, key) {
+  const spin = startLoading(key);
   try {
-    const data = await api("/api/stays", { ...dates(), area, dog: $("dog").checked,
-      guests: guests(), filters: state.filters?.stay });
+    const data = await api("/api/stays", { ...spec.body, providers: [provider] });
     if (request !== state.staysRequest) return;
-    clearStays();
-    notices([...state.hikeWarnings, ...(data.warnings || [])]);
-    data.stays.forEach(addStay);
-    $("stay-count").textContent = `(${data.stays.length})`;
-    $("stay-note").textContent = "in drawn area";
-    fitAll();
+    mergeStays(data.stays);
+    state.stayWarnings[provider] = data.warnings || [];
+    if (provider === "booking" && state.stayWarnings.booking.some((w) => BOOKING_DOWN.test(w))) {
+      state.bookingFailed = true;
+    }
+    spec.afterMerge();
   } catch (err) {
-    if (request === state.staysRequest) notices([...state.hikeWarnings, err.message]);
+    if (request === state.staysRequest) {
+      state.stayWarnings[provider] = [err.message];
+      if (provider === "booking") state.bookingFailed = true;
+    }
+  } finally {
+    stopLoading(key, spin);
+    if (request === state.staysRequest) {
+      showStayNotices(spec);
+      if (provider === "booking") $("retry-booking").hidden = !state.bookingFailed;
+    }
   }
 }
-async function selectHike(id) {
+function startStays(spec) {
   const request = ++state.staysRequest;
+  clearStays();
+  state.staySpec = spec;
+  $("stay-note").textContent = spec.note;
+  return Promise.all(STAY_PROVIDERS.map((p) => requestStays(p, request, spec, `stay:${p}`)));
+}
+async function retryBooking() {
+  const spec = state.staySpec;
+  if (!spec) return;
+  state.bookingFailed = false;
+  $("retry-booking").hidden = true;
+  delete state.stayWarnings.booking;
+  showStayNotices(spec);
+  await requestStays("booking", state.staysRequest, spec, "stay:retry");
+}
+function loadAreaStays(area) {
+  return startStays({
+    body: { ...dates(), area, dog: $("dog").checked, guests: guests(), filters: state.filters?.stay },
+    note: "in drawn area",
+    baseWarnings: () => state.hikeWarnings,
+    afterMerge: fitAll,
+  });
+}
+function selectHike(id) {
+  for (const li of document.querySelectorAll("#hike-list li.selected")) li.classList.remove("selected");
+  state.items.get(id)?.classList.add("selected");
+  const hike = state.hikes.get(id);
+  return startStays({
+    body: { ...dates(), hike_id: id, dog: $("dog").checked, guests: guests(), filters: state.filters?.stay },
+    note: `near ${hike ? hike.name : "selected hike"}`,
+    baseWarnings: () => [],
+    afterMerge: () => {
+      const layers = [state.markers.get(id), ...stayLayer.getLayers()].filter(Boolean);
+      if (layers.length > 1) map.fitBounds(L.featureGroup(layers).getBounds().pad(0.2));
+      else if (hike) map.setView([hike.lat, hike.lon], 12);
+    },
+  });
+}
+
+// ---- go to place (navigation only: no hike or stay search) ----
+const placeLayer = L.layerGroup().addTo(map);  // not part of the hike/stay layers, survives clearAll
+async function gotoPlace() {
+  const text = $("goto-input").value.trim();
+  if (!text) return;
+  const spin = startLoading("goto");
   try {
-    for (const li of document.querySelectorAll("#hike-list li.selected")) li.classList.remove("selected");
-    state.items.get(id)?.classList.add("selected");
-    const data = await api("/api/stays", { ...dates(), hike_id: id, dog: $("dog").checked,
-      guests: guests(), filters: state.filters?.stay });
-    if (request !== state.staysRequest) return;
-    clearStays();
-    notices(data.warnings);
-    data.stays.forEach(addStay);
-    $("stay-count").textContent = `(${data.stays.length})`;
-    const hike = state.hikes.get(id);
-    $("stay-note").textContent = `near ${hike ? hike.name : "selected hike"}`;
-    const layers = [state.markers.get(id), ...stayLayer.getLayers()].filter(Boolean);
-    if (layers.length > 1) map.fitBounds(L.featureGroup(layers).getBounds().pad(0.2));
-    else if (hike) map.setView([hike.lat, hike.lon], 12);
-  } catch (err) {
-    if (request === state.staysRequest) notices([err.message]);
+    const data = await api(`/api/locate?q=${encodeURIComponent(text)}`);
+    if (data.warnings?.length) notices(data.warnings);
+    const place = data.place;
+    if (!place) return;
+    placeLayer.clearLayers();
+    const popup = document.createElement("div");
+    popup.textContent = place.name;
+    L.marker([place.lat, place.lon], { icon: pin("📍", "goto") }).bindPopup(popup).addTo(placeLayer);
+    const b = place.bbox;
+    if (b && b.south < b.north && b.west < b.east) {
+      map.flyToBounds([[b.south, b.west], [b.north, b.east]], { maxZoom: 15 });
+    } else {
+      map.setView([place.lat, place.lon], 12);
+    }
+  } finally {
+    stopLoading("goto", spin);
   }
 }
 
@@ -413,7 +511,8 @@ function renderCombos(combos) {
     L.polyline([[c.hike.lat, c.hike.lon], [c.stay.lat, c.stay.lon]],
       { dashArray: "6 6", color: "#2f6f4e", weight: 2 }).bindTooltip(esc(label)).addTo(overlay);
     const b = c.breakdown;
-    const meta = b ? `hike ${b.hike} · stay ${b.stay} · near ${b.proximity} · price ${b.price}` : (c.note || "");
+    const km = c.stay.distance_km != null ? ` (${c.stay.distance_km} km)` : "";
+    const meta = b ? `hike ${b.hike} · stay ${b.stay} · near ${b.proximity}${km} · price ${b.price}` : (c.note || "");
     const li = listItem($("combo-list"), `combo:${i}`, `${i + 1}. ${c.hike.name} + ${c.stay.name}`,
       `${c.score != null ? c.score + "/100 · " : ""}${meta}`, c.stay.badge,
       () => map.fitBounds(L.latLngBounds([[c.hike.lat, c.hike.lon], [c.stay.lat, c.stay.lon]]).pad(0.3)));
@@ -422,22 +521,36 @@ function renderCombos(combos) {
   $("combo-count").textContent = `(${combos.length})`;
   $("stay-count").textContent = `(${state.stays.size})`;
   $("hike-count").textContent = `(${state.hikes.size})`;
+  $("combo-section").hidden = combos.length === 0;
   if (combos.length > 0) state.comboView = true;
 }
 async function planTrip() {
-  const body = { ...dates(), drive_limit: driveLimit(), dog: $("dog").checked, guests: guests(),
+  // WHERE comes from the mode radios (near home / place / drawn area), exactly as for Search hikes.
+  const body = { ...dates(), mode: mode(), drive_limit: driveLimit(), dog: $("dog").checked, guests: guests(),
     hike_filters: state.filters?.hike, stay_filters: state.filters?.stay };
-  const area = drawnArea();  // a drawn shape replaces the drive-time radius for Trip plan
-  if (area) {
+  if (body.mode === "place") body.place = $("place").value;
+  if (body.mode === "drawn") {
+    const area = drawnArea();
     const problem = areaProblem(area);
     if (problem) { notices([problem]); return; }
     body.area = area;
   }
-  const data = await api("/api/trips", body);
+  const section = $("combo-section");
+  section.hidden = false;  // the spinner lives in this section
+  const spin = startLoading("combos");
+  let data;
+  try {
+    data = await api("/api/trips", body);
+  } catch (err) {
+    section.hidden = $("combo-list").children.length === 0;
+    throw err;
+  } finally {
+    stopLoading("combos", spin);
+  }
   clearAll();
   notices(data.warnings);
   renderCombos(data.combos);
-  if (!data.combos.length && !data.warnings.length) notices(["No combos found – try more days or turn off the dog filter."]);
+  if (!data.combos.length && !data.warnings.length) notices(["No trip picks found – try more days or turn off the dog filter."]);
   fitAll();
 }
 async function ask(event) {
@@ -445,6 +558,7 @@ async function ask(event) {
   const question = $("ask-input").value.trim();
   if (question.length < 3) return;
   const started = Date.now();
+  const spin = startLoading("ask");
   const timer = setInterval(() => {
     $("ask-status").textContent = `Claude is planning… ${Math.round((Date.now() - started) / 1000)} s`;
   }, 1000);
@@ -463,6 +577,7 @@ async function ask(event) {
       }
     } finally {
       clearInterval(timer);
+      stopLoading("ask", spin);
       $("ask-status").textContent = "";
     }
   });
@@ -484,10 +599,15 @@ async function init() {
   }
   $("draw-rect-btn").addEventListener("click", () => startDrawing("rectangle"));
   $("draw-circle-btn").addEventListener("click", () => startDrawing("circle"));
-  $("search").addEventListener("click", () =>
-    withBusy($("search"), () => (mode() === "trip" ? planTrip() : searchHikes())));
+  $("search").addEventListener("click", () => withBusy($("search"), searchHikes));
+  $("suggest-trips").addEventListener("click", () => withBusy($("suggest-trips"), planTrip));
   $("load-more").addEventListener("click", () => withBusy($("load-more"), loadMoreHikes));
   $("ask-form").addEventListener("submit", ask);
+  $("retry-booking").addEventListener("click", retryBooking);
+  $("goto-btn").addEventListener("click", () => withBusy($("goto-btn"), gotoPlace));
+  $("goto-input").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !$("goto-btn").disabled) { event.preventDefault(); $("goto-btn").click(); }
+  });
   try {
     state.config = await api("/api/config");
     const home = state.config.home;

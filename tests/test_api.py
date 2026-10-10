@@ -4,7 +4,8 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
-from app.models import Hike, HikeSearch, Stay, StaySearch, TripSearch
+from app.geocode import Place
+from app.models import BBox, Hike, HikeSearch, Stay, StaySearch, TripSearch
 
 
 class FakeEngine:
@@ -182,6 +183,82 @@ def test_hike_response_carries_total_and_next_page_offset(tmp_path):
 
     body = client(tmp_path, Paged()).post("/api/hikes", json={"start": "2026-10-23", "end": "2026-10-25"}).json()
     assert body["total_available"] == 17000 and body["next_page_offset"] == 20
+
+
+class FakeGeocoder:
+    def __init__(self, place=None, fail=False):
+        self.place, self.fail, self.calls = place, fail, []
+
+    async def locate(self, text):
+        self.calls.append(text)
+        if self.fail:
+            raise ConnectionError("down")
+        return self.place
+
+
+PLACE = Place(name="Makrinitsa, Volos", lat=39.39, lon=22.99,
+              bbox=BBox(south=39.38, west=22.98, north=39.40, east=23.00))
+
+
+def geo_client(tmp_path, geocoder):
+    engine = FakeEngine()
+    engine.geocoder = geocoder
+    return client(tmp_path, engine)
+
+
+def test_locate_found(tmp_path):
+    geo = FakeGeocoder(PLACE)
+    body = geo_client(tmp_path, geo).get("/api/locate", params={"q": "Μακρινίτσα"}).json()
+    assert body["place"]["name"] == "Makrinitsa, Volos" and body["place"]["bbox"]["north"] == 39.40
+    assert body["place"]["lat"] == 39.39 and body["warnings"] == [] and geo.calls == ["Μακρινίτσα"]
+
+
+def test_locate_not_found_warns(tmp_path):
+    body = geo_client(tmp_path, FakeGeocoder(None)).get("/api/locate", params={"q": "Atlantis"}).json()
+    assert body == {"place": None, "warnings": ["Couldn't find 'Atlantis' in Greece"]}
+
+
+def test_locate_geocoder_down_is_200_with_warning(tmp_path):
+    r = geo_client(tmp_path, FakeGeocoder(fail=True)).get("/api/locate", params={"q": "Volos"})
+    assert r.status_code == 200
+    assert r.json() == {"place": None, "warnings": ["Place search unavailable – try again later"]}
+
+
+def test_locate_validates_q(tmp_path):
+    c = geo_client(tmp_path, FakeGeocoder(PLACE))
+    assert c.get("/api/locate").status_code == 422
+    assert c.get("/api/locate", params={"q": ""}).status_code == 422
+    assert c.get("/api/locate", params={"q": "x" * 201}).status_code == 422
+    assert c.get("/api/locate", params={"q": "x" * 200}).status_code == 200
+
+
+def test_stays_endpoint_accepts_providers(tmp_path):
+    engine = FakeEngine()
+    c = client(tmp_path, engine)
+    body = {"start": "2026-10-23", "end": "2026-10-25", "hike_id": "wikiloc:1"}
+    assert c.post("/api/stays", json={**body, "providers": ["booking"]}).status_code == 200
+    assert engine.calls[0][1].providers == ["booking"]
+    assert c.post("/api/stays", json={**body, "providers": ["expedia"]}).status_code == 422
+
+
+def test_trips_endpoint_accepts_mode_and_place(tmp_path):
+    engine = FakeEngine()
+    c = client(tmp_path, engine)
+    r = c.post("/api/trips", json={"start": "2026-10-23", "end": "2026-10-25", "mode": "place", "place": "Zagori"})
+    assert r.status_code == 200 and engine.calls[0][1].place == "Zagori"
+    assert c.post("/api/trips", json={"start": "2026-10-23", "end": "2026-10-25", "mode": "place"}).status_code == 422
+    assert c.post("/api/trips", json={"start": "2026-10-23", "end": "2026-10-25", "mode": "drawn"}).status_code == 422
+
+
+def test_index_has_two_action_buttons_and_no_trip_radio(tmp_path):
+    html = client(tmp_path).get("/").text
+    assert 'id="search"' in html and 'id="suggest-trips"' in html and 'value="trip"' not in html
+    assert 'id="combo-section"' in html and 'id="retry-booking"' in html
+
+
+def test_index_has_goto_control(tmp_path):
+    html = client(tmp_path).get("/").text
+    assert 'id="goto-input"' in html and 'id="goto-btn"' in html
 
 
 def test_index_has_draw_tools(tmp_path):

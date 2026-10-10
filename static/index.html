@@ -13,6 +13,9 @@
 <body>
   <header id="controls">
     <strong class="brand">🥾 hick-toors</strong>
+    <span class="goto">📍 <input type="text" id="goto-input" maxlength="200" placeholder="Go to place… (Greek or English)">
+      <button type="button" id="goto-btn" class="tool-btn">Go</button>
+      <span class="spinner" data-spin="goto" role="status" aria-label="Looking up place" hidden></span></span>
     <label>📅 <input type="date" id="start"> → <input type="date" id="end"></label>
     <span id="home-label">🏠 Athens</span>
     <label>🚗 <input type="range" id="drive" min="0" max="9" step="1" value="0">
@@ -27,29 +30,37 @@
     <fieldset id="modes">
       <label><input type="radio" name="mode" value="near_home" checked> Near home</label>
       <label><input type="radio" name="mode" value="place"> Place</label>
-      <label><input type="radio" name="mode" value="trip"> Trip plan</label>
       <label><input type="radio" name="mode" value="drawn"> Drawn area</label>
     </fieldset>
     <input type="text" id="place" placeholder="e.g. Pelion, Zagori, Olympus" hidden>
-    <button id="search">Search</button>
+    <button id="search">🔍 Search hikes</button>
+    <button id="suggest-trips">⭐ Suggest trips</button>
   </header>
   <div id="notices"></div>
   <main>
     <aside id="sidebar">
-      <section><h2>🥾 Hikes <span id="hike-count"></span></h2><div id="hike-total" class="list-note"></div><ul id="hike-list"></ul>
-        <button type="button" id="load-more" class="tool-btn load-more" hidden>Load more hikes</button></section>
-      <section><h2>🏡 Stays <span id="stay-count"></span></h2><div id="stay-note" class="list-note"></div><ul id="stay-list"></ul></section>
-      <section><h2>⭐ Combos <span id="combo-count"></span></h2><ul id="combo-list"></ul></section>
+      <section id="hike-section" aria-busy="false"><h2>🥾 Hikes <span id="hike-count"></span> <span class="spinner" data-spin="hikes" role="status" aria-label="Loading hikes" hidden></span></h2><div id="hike-total" class="list-note"></div><ul id="hike-list"></ul>
+        <button type="button" id="load-more" class="tool-btn load-more" hidden>Load more hikes</button>
+        <span class="spinner" data-spin="hikes-more" role="status" aria-label="Loading more hikes" hidden></span></section>
+      <section id="stay-section" aria-busy="false"><h2>🏡 Stays <span id="stay-count"></span></h2>
+        <div id="stay-loading" class="chips-row">
+          <span class="load-chip" data-spin="stay:airbnb" hidden>Airbnb… <i class="spinner"></i></span>
+          <span class="load-chip" data-spin="stay:booking" hidden>Booking.com… <i class="spinner"></i></span>
+          <span class="load-chip" data-spin="stay:retry" hidden>Retrying Booking.com… <i class="spinner"></i></span>
+          <button type="button" id="retry-booking" class="link-btn" hidden>Retry Booking</button>
+        </div>
+        <div id="stay-note" class="list-note"></div><ul id="stay-list"></ul></section>
+      <section id="combo-section" aria-busy="false" hidden><h2>⭐ Trip picks (hike + stay) <span id="combo-count"></span> <span class="spinner" data-spin="combos" role="status" aria-label="Planning trips" hidden></span></h2><ul id="combo-list"></ul></section>
     </aside>
     <div id="map-wrap"><div id="map"></div><div id="draw-hint" hidden></div></div>
   </main>
-  <footer id="ask">
+  <footer id="ask" aria-busy="false">
     <form id="ask-form">
       <input id="ask-input" maxlength="2000"
              placeholder="💬 Ask Claude: quiet weekend, river hike, cabin with a garden under €120/night">
       <button id="ask-button">Ask</button>
     </form>
-    <div id="ask-status"></div>
+    <div><span class="spinner" data-spin="ask" role="status" aria-label="Claude is thinking" hidden></span> <span id="ask-status"></span></div>
     <div id="ask-answer"></div>
   </footer>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
