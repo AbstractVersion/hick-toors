@@ -152,3 +152,11 @@ def test_ask_endpoint(tmp_path):
     assert r.status_code == 200 and r.json()["summary"] == "Go to Pelion"
     assert runner.requests[0].context == {"dog": True}
     assert c.post("/api/ask", json={"question": "x"}).status_code == 422
+
+
+def test_index_has_filter_buttons_and_scripts(tmp_path):
+    c = client(tmp_path)
+    html = c.get("/").text
+    assert 'id="hike-filters-btn"' in html and 'id="stay-filters-btn"' in html
+    assert html.index("/static/filters.js") < html.index("/static/dialog.js") < html.index("/static/app.js")
+    assert c.get("/static/filters.js").status_code == 200 and c.get("/static/dialog.js").status_code == 200

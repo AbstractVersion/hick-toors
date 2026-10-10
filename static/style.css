@@ -32,6 +32,28 @@ main { flex: 1; display: flex; min-height: 0; }
 #ask-input { flex: 1; padding: 6px 8px; border: 1px solid #c8d0c6; border-radius: 6px; }
 #ask-status { color: #5d6b63; font-size: 12px; min-height: 16px; }
 #ask-answer { white-space: pre-wrap; max-height: 120px; overflow-y: auto; }
+.tool-btn { padding: 5px 10px; border: 1px solid #c8d0c6; border-radius: 6px; background: #fff; cursor: pointer; }
+.tool-btn:disabled { opacity: .5; cursor: default; }
+.tool-btn .count { margin-left: 4px; padding: 0 6px; border-radius: 10px; background: #2f6f4e; color: #fff; font-size: 12px; }
+.filters-dialog { width: min(640px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow: auto; border: 0; border-radius: 10px; padding: 0; box-shadow: 0 10px 40px rgba(0,0,0,.25); }
+.filters-dialog::backdrop { background: rgba(20, 30, 25, .45); }
+.filters-dialog form { display: flex; flex-direction: column; gap: 10px; padding: 16px; }
+.filters-dialog h2 { margin: 0; font-size: 17px; }
+.filters-dialog .shared { display: flex; flex-wrap: wrap; gap: 8px 14px; border: 1px solid #dde3dc; border-radius: 8px; }
+.filters-dialog .fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px 16px; }
+.filters-dialog .field-head { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; font-weight: 600; }
+.filters-dialog .chips { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.filters-dialog .chip { font-weight: normal; }
+.filters-dialog .range-row { display: flex; gap: 6px; align-items: center; }
+.filters-dialog input[type=number] { width: 90px; padding: 3px 6px; border: 1px solid #c8d0c6; border-radius: 6px; }
+.filters-dialog select { padding: 3px 6px; border: 1px solid #c8d0c6; border-radius: 6px; }
+.filters-dialog .invalid { outline: 2px solid #c0392b; }
+.filters-dialog .form-error { margin: 0; min-height: 18px; color: #c0392b; }
+.filters-dialog .dialog-buttons { display: flex; justify-content: flex-end; gap: 8px; }
+.filters-dialog .dialog-buttons button { padding: 6px 14px; border: 1px solid #c8d0c6; border-radius: 6px; background: #fff; cursor: pointer; }
+.filters-dialog .dialog-buttons .primary { border: 0; background: #2f6f4e; color: #fff; }
+.filters-dialog .dialog-buttons .primary:disabled { opacity: .5; cursor: not-allowed; }
+.src-tag { font-size: 10px; font-weight: normal; padding: 0 5px; border-radius: 8px; background: #eef1ed; color: #5d6b63; margin-left: 4px; }
 @media (max-width: 800px) {
   main { flex-direction: column; }
   #sidebar { width: 100%; max-height: 40vh; border-right: 0; }

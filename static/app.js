@@ -8,7 +8,8 @@ const BADGES = {
   garden_unconfirmed: "⚠️ Garden – pets not confirmed",
 };
 const $ = (id) => document.getElementById(id);
-const state = { config: null, hikes: new Map(), stays: new Map(), markers: new Map(), items: new Map(), comboView: false, staysRequest: 0 };
+const state = { config: null, hikes: new Map(), stays: new Map(), markers: new Map(), items: new Map(), comboView: false, staysRequest: 0,
+  catalogue: null, filters: null, dialogs: {} };
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) =>
@@ -105,6 +106,53 @@ async function api(path, body) {
 const mode = () => document.querySelector("input[name=mode]:checked").value;
 const driveLimit = () => DRIVE_STEPS[Number($("drive").value)];
 const dates = () => ({ start: $("start").value, end: $("end").value });
+const guests = () => state.filters?.guests ?? state.config?.default_guests ?? 2;
+
+// ---- filter popups ----
+function updateFilterBadges() {
+  for (const kind of ["hike", "stay"]) {
+    const n = state.filters ? countActive(state.filters[kind], state.catalogue[kind]) : 0;
+    const badge = $(`${kind}-filter-count`);
+    badge.textContent = `•${n}`;
+    badge.hidden = n === 0;
+  }
+}
+function applyShared(shared) {
+  if ("start" in shared) { $("start").value = shared.start; $("end").value = shared.end; }
+  if ("drive" in shared) { $("drive").value = String(shared.drive); $("drive-label").textContent = driveText(driveLimit()); }
+  if ("dog" in shared) $("dog").checked = shared.dog;
+  if ("guests" in shared) state.filters.guests = shared.guests;
+}
+function setupFilterDialogs() {
+  const dateFields = [{ name: "start", label: "📅 From", type: "date" }, { name: "end", label: "to", type: "date" }];
+  const make = (kind, title, shared, readShared) => createFilterDialog({
+    id: `${kind}-dialog`, title, section: state.catalogue[kind], shared,
+    getValues: () => state.filters[kind],
+    getShared: readShared,
+    onApply: (values, sharedValues) => {
+      state.filters[kind] = values;
+      applyShared(sharedValues);
+      saveFilters(state.filters);
+      updateFilterBadges();
+    },
+  });
+  state.dialogs.hike = make("hike", "⚙️ Hike filters", [
+    ...dateFields,
+    { name: "drive", label: "🚗 Drive", type: "slider", min: 0, max: DRIVE_STEPS.length - 1, step: 1,
+      format: (i) => driveText(DRIVE_STEPS[i]) },
+  ], () => ({ ...dates(), drive: Number($("drive").value) }));
+  state.dialogs.stay = make("stay", "⚙️ Stay filters", [
+    ...dateFields,
+    { name: "dog", label: "🐕 Dog", type: "checkbox" },
+    { name: "guests", label: "👥 Guests", type: "number", min: 1, max: 16, step: 1 },
+  ], () => ({ ...dates(), dog: $("dog").checked, guests: guests() }));
+  for (const kind of ["hike", "stay"]) {
+    const button = $(`${kind}-filters-btn`);
+    button.disabled = false;
+    button.addEventListener("click", () => state.dialogs[kind].open());
+  }
+  updateFilterBadges();
+}
 
 // ---- list + markers ----
 function listItem(ul, id, title, meta, badge, onClick) {
@@ -198,7 +246,7 @@ async function withBusy(button, fn) {
   try { await fn(); } catch (err) { notices([err.message]); } finally { button.disabled = false; }
 }
 async function searchHikes() {
-  const body = { ...dates(), mode: mode(), drive_limit: driveLimit() };
+  const body = { ...dates(), mode: mode(), drive_limit: driveLimit(), filters: state.filters?.hike };
   if (body.mode === "place") body.place = $("place").value;
   const data = await api("/api/hikes", body);
   clearAll();
@@ -215,7 +263,7 @@ async function selectHike(id) {
     for (const li of document.querySelectorAll("#hike-list li.selected")) li.classList.remove("selected");
     state.items.get(id)?.classList.add("selected");
     const data = await api("/api/stays", { ...dates(), hike_id: id, dog: $("dog").checked,
-      guests: state.config?.default_guests ?? 2 });
+      guests: guests(), filters: state.filters?.stay });
     if (request !== state.staysRequest) return;
     clearStays();
     notices(data.warnings);
@@ -250,8 +298,9 @@ function renderCombos(combos) {
   if (combos.length > 0) state.comboView = true;
 }
 async function planTrip() {
-  const data = await api("/api/trips", { ...dates(), drive_limit: driveLimit(), dog: $("dog").checked,
-    guests: state.config?.default_guests ?? 2 });
+  const body = { ...dates(), drive_limit: driveLimit(), dog: $("dog").checked, guests: guests(),
+    hike_filters: state.filters?.hike, stay_filters: state.filters?.stay };
+  const data = await api("/api/trips", body);
   clearAll();
   notices(data.warnings);
   renderCombos(data.combos);
@@ -313,6 +362,9 @@ async function init() {
       $("ask-button").disabled = true;
       $("ask-input").placeholder = "Ask Claude unavailable – run `claude` once to log in";
     }
+    state.catalogue = await api("/api/filters");
+    state.filters = loadFilters(state.catalogue, state.config.default_guests);
+    setupFilterDialogs();
   } catch (err) {
     notices([err.message]);
   }
