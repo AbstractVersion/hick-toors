@@ -28,14 +28,28 @@ GEO_TYPES = {"region", "state", "municipality", "county", "city", "town", "villa
              "administrative"}
 
 
+def _area(c: dict) -> float:
+    try:
+        south, north, west, east = (float(v) for v in c["boundingbox"])
+    except (KeyError, TypeError, ValueError):
+        return 0.0
+    return abs(north - south) * abs(east - west)
+
+
 def _pick_best(candidates: list[dict]) -> dict:
-    """Prefer real places over POIs: geographic class, then sensible type, then Nominatim importance."""
+    """Prefer real places over POIs; among them highest importance (0.02 near-ties go to the larger
+    bbox), then a sensible type, then Nominatim order."""
+    geo = [(i, c) for i, c in enumerate(candidates) if c.get("class") in GEO_CLASSES]
+    if not geo:
+        return candidates[0]
+    top = max(float(c.get("importance") or 0) for _, c in geo)
+    tied = [(i, c) for i, c in geo if top - float(c.get("importance") or 0) <= 0.02]
+
     def rank(item: tuple[int, dict]):
         i, c = item
-        geo = c.get("class") in GEO_CLASSES
         typed = c.get("addresstype") in GEO_TYPES or c.get("type") in GEO_TYPES
-        return (geo, typed if geo else False, float(c.get("importance") or 0) if geo else 0.0, -i)
-    return max(enumerate(candidates), key=rank)[1]
+        return (_area(c), typed, -i)
+    return max(tied, key=rank)[1]
 
 
 class Place(BaseModel):
@@ -69,7 +83,7 @@ class Geocoder:
     async def locate(self, text: str) -> Place | None:
         """Navigation lookup (Greek or English): the place itself with its exact, unwidened box."""
         lang = "el" if GREEK_RE.search(text) else "en"  # labels come back in the language you typed
-        key = f"locate2:{lang}:{text.strip().casefold()}"
+        key = f"locate3:{lang}:{text.strip().casefold()}"
         cached = self._cache.get(key)
         if cached:
             return Place(**cached)

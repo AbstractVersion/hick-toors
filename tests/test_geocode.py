@@ -85,8 +85,8 @@ async def test_locate_cache_key_includes_language(tmp_path):
 
     geocoder = Geocoder(cache, fetch=fetch)
     await geocoder.locate("Athens")
-    assert cache.get("locate2:en:athens") is not None
-    assert cache.get("locate2:el:athens") is None
+    assert cache.get("locate3:en:athens") is not None
+    assert cache.get("locate3:el:athens") is None
 
 
 async def test_locate_cache_is_separate_from_geocode(tmp_path):
@@ -152,3 +152,20 @@ async def test_locate_sends_limit_10(tmp_path):
 
     await Geocoder(DiskCache(tmp_path), fetch=fetch).locate("x")
     assert seen[0]["limit"] == 10
+
+
+def _box(c, south, north, west, east):
+    c["boundingbox"] = [str(south), str(north), str(west), str(east)]
+    return c
+
+
+async def test_locate_higher_importance_region_beats_same_named_village(tmp_path):
+    data = [_box(_cand("Village", "place", "village", 0.30), 39.0, 39.01, 21.0, 21.01),
+            _box(_cand("Range", "natural", "mountain_range", 0.60), 38.0, 40.0, 20.0, 22.0)]
+    assert (await _locate(tmp_path, data)).name == "Range, Ελλάδα"
+
+
+async def test_locate_near_tied_importance_prefers_larger_bbox(tmp_path):
+    data = [_box(_cand("Small", "place", "village", 0.50), 39.0, 39.01, 21.0, 21.01),
+            _box(_cand("Big", "boundary", "administrative", 0.49), 38.0, 40.0, 20.0, 22.0)]
+    assert (await _locate(tmp_path, data)).name == "Big, Ελλάδα"
