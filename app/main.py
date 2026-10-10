@@ -18,6 +18,15 @@ from app.trips_store import TooManyTrips, TripConflict, TripFull, TripStore, Tri
 from app.wiring import build_engine
 
 STATIC_DIR = BASE_DIR / "static"
+# The page and its scripts must update together: browsers revalidate them (ETag) on every load.
+REVALIDATE = {"Cache-Control": "no-cache"}
+
+
+class RevalidatedStaticFiles(StaticFiles):
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers.update(REVALIDATE)
+        return response
 
 
 def _json_safe(value):
@@ -143,9 +152,9 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
 
     @app.get("/")
     async def index():
-        return FileResponse(STATIC_DIR / "index.html")
+        return FileResponse(STATIC_DIR / "index.html", headers=REVALIDATE)
 
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    app.mount("/static", RevalidatedStaticFiles(directory=STATIC_DIR), name="static")
     return app
 
 

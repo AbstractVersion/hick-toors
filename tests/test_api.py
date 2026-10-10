@@ -41,6 +41,15 @@ def test_index_served(tmp_path):
     assert r.status_code == 200 and "<html" in r.text
 
 
+def test_page_and_static_files_are_revalidated(tmp_path):
+    # A cached old index.html with a new app.js (or the reverse) breaks the UI after an update.
+    c = client(tmp_path)
+    for path in ["/", "/static/app.js", "/static/trips.js", "/static/style.css"]:
+        r = c.get(path)
+        assert r.status_code == 200, path
+        assert r.headers["cache-control"] == "no-cache", path
+
+
 def test_config(tmp_path):
     body = client(tmp_path).get("/api/config").json()
     assert body["home"] == {"name": "Athens", "lat": 37.9838, "lon": 23.7275}
