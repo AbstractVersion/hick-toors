@@ -26,7 +26,8 @@ def test_catalogue_shape_and_defaults():
     assert cat["hike"]["defaults"] == HikeFilters().model_dump()
     assert cat["stay"]["defaults"] == StayFilters().model_dump()
     hike_keys = [f["key"] for f in cat["hike"]["fields"]]
-    assert hike_keys == ["activities", "difficulty", "distance", "elevation", "min_trailrank", "sort"]
+    assert hike_keys == ["activities", "difficulty", "distance", "elevation", "min_trailrank", "loop_only",
+                         "sort"]
     fields = {f["key"]: f for f in cat["stay"]["fields"]}
     assert fields["price"]["min_key"] == "price_min" and fields["price"]["unit"] == "€/night"
     assert fields["min_beds"]["sources"] == "Airbnb only"
@@ -43,9 +44,19 @@ def test_catalogue_shape_and_defaults():
             assert set(keys) <= model_keys, f
 
 
+def test_catalogue_marks_loop_only_by_login():
+    anon = {f["key"]: f for f in catalogue()["hike"]["fields"]}["loop_only"]
+    assert catalogue()["wikiloc_login"] is False
+    assert anon["disabled"] is True and anon["sources"] == "Needs Wikiloc login"
+    cat = catalogue(wikiloc_login=True)
+    logged = {f["key"]: f for f in cat["hike"]["fields"]}["loop_only"]
+    assert cat["wikiloc_login"] is True and logged["disabled"] is False and logged["sources"] is None
+
+
 def test_hike_filters_active_ignores_sort():
     assert hike_filters_active(HikeFilters()) is False
     assert hike_filters_active(HikeFilters(sort="top_rated")) is False
+    assert hike_filters_active(HikeFilters(loop_only=True)) is False  # server-side only
     assert hike_filters_active(HikeFilters(min_trailrank=10)) is True
     assert hike_filters_active(HikeFilters(activities=[1, 43])) is True
 

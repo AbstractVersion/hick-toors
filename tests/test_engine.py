@@ -8,7 +8,7 @@ from app.engine import Engine
 from app.models import BBox, Hike, HikeQuery, LatLon, Stay, StaySearchQuery, TripQuery
 from app.routing import RouteTime
 from app.sources.stays.base import ProviderUnavailable
-from app.sources.wikiloc import WikilocUnavailable
+from app.sources.wikiloc import WikilocLoginExpired, WikilocUnavailable
 
 FRI, SUN = date(2026, 10, 23), date(2026, 10, 25)
 
@@ -25,12 +25,16 @@ def stay(id, source="airbnb", pets=True, garden=None, lat=39.41, lon=23.01, rati
 
 
 class FakeWikiloc:
-    def __init__(self, hikes=None, fail=False):
+    def __init__(self, hikes=None, fail=False, logged_in=False, expired=False):
         self.hikes, self.fail, self.boxes, self.calls = hikes or [], fail, [], []
+        self.logged_in, self.expired, self.modes = logged_in, expired, []
 
-    async def search(self, bbox, query="", sort="popular", pages=None):
+    async def search(self, bbox, query="", sort="popular", pages=None, filters=None, use_login=True):
         self.boxes.append(bbox)
         self.calls.append({"sort": sort, "pages": pages})
+        self.modes.append({"filters": filters, "use_login": use_login})
+        if self.expired and use_login and self.logged_in:
+            raise WikilocLoginExpired()
         if self.fail:
             raise WikilocUnavailable("Hikes temporarily unavailable – Wikiloc is rate limiting, try again in a minute")
         return list(self.hikes)
@@ -341,3 +345,53 @@ async def test_plan_trip_with_area_and_filters(settings):
     assert [c.hike.id for c in result.combos] == ["wikiloc:1"]  # 500 min drive ignored inside a shape
     assert wikiloc.boxes[0].north == pytest.approx(39.0 + 10 / 111.32)
     assert wikiloc.calls[0]["pages"] == 10 and airbnb.queries[0].filters.price_max == 120
+
+
+# ---- v2: Wikiloc login mode ----
+
+async def test_logged_in_search_sends_filters_with_normal_page_count(settings):
+    wikiloc = FakeWikiloc([hike(1, 50, lat=38.1)], logged_in=True)
+    engine = make_engine(settings, wikiloc=wikiloc, router=FakeRouter({38.1: 60}))
+    result = await engine.search_hikes(HikeQuery(start=FRI, end=SUN, filters={"min_trailrank": 10,
+                                                                              "loop_only": True}))
+    assert wikiloc.calls == [{"sort": "popular", "pages": 6}]
+    assert wikiloc.modes[0]["use_login"] is True and wikiloc.modes[0]["filters"].loop_only is True
+    assert [h.id for h in result.hikes] == ["wikiloc:1"] and result.warnings == []
+
+
+async def test_anonymous_loop_only_is_ignored_with_notice(settings):
+    wikiloc = FakeWikiloc([hike(1, 50, lat=38.1)])
+    engine = make_engine(settings, wikiloc=wikiloc, router=FakeRouter({38.1: 60}))
+    result = await engine.search_hikes(HikeQuery(start=FRI, end=SUN, filters={"loop_only": True}))
+    assert result.warnings == ["Circular-only needs a Wikiloc login (WIKILOC_COOKIE)"]
+    assert [h.id for h in result.hikes] == ["wikiloc:1"]
+    assert wikiloc.modes == [{"filters": None, "use_login": False}] and wikiloc.calls[0]["pages"] == 6
+
+
+async def test_expired_login_falls_back_to_local_filtering_with_warning(settings):
+    wikiloc = FakeWikiloc([hike(1, 50, lat=38.1)], logged_in=True, expired=True)
+    engine = make_engine(settings, wikiloc=wikiloc, router=FakeRouter({38.1: 60}))
+    result = await engine.search_hikes(HikeQuery(start=FRI, end=SUN, filters={"min_trailrank": 10}))
+    assert [m["use_login"] for m in wikiloc.modes] == [True, False]
+    assert wikiloc.calls[1]["pages"] == 10  # anonymous fallback fetches the filtered page count
+    assert result.warnings == [
+        "Wikiloc login may have expired – using local filtering. Update WIKILOC_COOKIE in .env"]
+    assert [h.id for h in result.hikes] == ["wikiloc:1"]
+
+
+async def test_empty_area_with_login_does_not_claim_expiry(settings):
+    # Server-filtered page empty, anonymous retry has routes but none match -> genuinely no match.
+    wikiloc = FakeWikiloc([hike(1, 50, lat=38.1)], logged_in=True, expired=True)
+    engine = make_engine(settings, wikiloc=wikiloc, router=FakeRouter({38.1: 60}))
+    result = await engine.search_hikes(HikeQuery(start=FRI, end=SUN, filters={"min_trailrank": 95}))
+    assert result.warnings == ["No hikes match your filters"]
+
+
+async def test_login_and_anonymous_results_are_cached_separately(settings):
+    wikiloc = FakeWikiloc([hike(1, 50, lat=38.1)], logged_in=True)
+    engine = make_engine(settings, wikiloc=wikiloc, router=FakeRouter({38.1: 60}))
+    q = lambda f: HikeQuery(start=FRI, end=SUN, filters=f)  # noqa: E731
+    await engine.search_hikes(q({"activities": [1]}))
+    await engine.search_hikes(q({"activities": [1, 43]}))  # different server params -> new fetch
+    await engine.search_hikes(q({"activities": [1]}))  # cached
+    assert len(wikiloc.calls) == 2

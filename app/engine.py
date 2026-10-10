@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 from datetime import date
 
@@ -11,12 +12,12 @@ from app.filters import (
 )
 from app.geo import GREECE_BBOX, bbox_around, clamp_to_greece, ensure_min_size, haversine_km
 from app.models import (
-    BBox, CircleArea, DriveLimit, Hike, HikeQuery, HikeSearch, LatLon, Stay, StayQuery, StaySearch,
+    BBox, CircleArea, DriveLimit, Hike, HikeFilters, HikeQuery, HikeSearch, LatLon, Stay, StayQuery, StaySearch,
     StaySearchQuery, TripQuery, TripSearch,
 )
 from app.ranking import rank_combos
 from app.sources.stays.base import ProviderUnavailable, StayProvider
-from app.sources.wikiloc import WikilocUnavailable
+from app.sources.wikiloc import WikilocLoginExpired, WikilocUnavailable, server_filter_params
 from app.trip_window import max_drive_minutes, stay_window
 
 STRAIGHT_LINE_KM_PER_MIN = 1.5  # generous: nothing within the drive limit falls outside the box
@@ -26,6 +27,8 @@ NO_HIKES_MATCH = "No hikes match your filters"
 NO_STAYS_MATCH = "No stays match your filters"
 NO_SOURCE = "No source supports this combination of filters"
 OUTSIDE_GREECE = "The drawn area is outside Greece – draw it over Greece"
+LOOP_NEEDS_LOGIN = "Circular-only needs a Wikiloc login (WIKILOC_COOKIE)"
+LOGIN_EXPIRED = "Wikiloc login may have expired – using local filtering. Update WIKILOC_COOKIE in .env"
 
 
 def _dedupe(items: list[str]) -> list[str]:
@@ -81,14 +84,21 @@ class Engine:
             return None
         return (Hike if entry["kind"] == "hike" else Stay)(**entry["data"])
 
-    async def _wikiloc_cached(self, box, sort: str, pages: int) -> list[Hike]:
+    @property
+    def wikiloc_login(self) -> bool:
+        return bool(getattr(self.wikiloc, "logged_in", False))
+
+    async def _wikiloc_cached(self, box, f: HikeFilters, pages: int, login: bool) -> list[Hike]:
         # v2 key: entries now hold every activity (v1 entries were hiking-only, without `activity`).
-        # Post-fetch filters are not in the key, so they share one raw fetch per sort + page count.
-        key = f"hikes:v2:{sort}:{pages}:{box.south:.3f},{box.west:.3f},{box.north:.3f},{box.east:.3f}"
+        # Anonymous fetches ignore post-fetch filters, so they share one raw fetch per sort + page
+        # count; logged-in fetches are server-filtered, so their key carries the server params.
+        mode = "login:" + json.dumps(server_filter_params(f), sort_keys=True) if login else "anon"
+        key = f"hikes:v2:{mode}:{f.sort}:{pages}:{box.south:.3f},{box.west:.3f},{box.north:.3f},{box.east:.3f}"
         cached = self.cache.get(key)
         if cached is not None:
             return [Hike(**h) for h in cached]
-        hikes = await self.wikiloc.search(box, sort=sort, pages=pages)
+        hikes = await self.wikiloc.search(box, sort=f.sort, pages=pages, filters=f if login else None,
+                                          use_login=login)
         self.cache.set(key, [h.model_dump(mode="json") for h in hikes], 7 * DAY)
         return hikes
 
@@ -111,14 +121,25 @@ class Engine:
             limit = self.drive_limit_minutes(q.start, q.end, q.drive_limit)
             box = GREECE_BBOX if limit is None else clamp_to_greece(
                 bbox_around(self.home, limit * STRAIGHT_LINE_KM_PER_MIN))
-        pages = self.settings.hike_pages_filtered if hike_filters_active(q.filters) else self.settings.hike_pages
+        # Anonymous: Wikiloc can't filter, so fetch more and filter here. Logged in: the server
+        # filters (the local filter below stays as an idempotent safety net).
+        anon_pages = self.settings.hike_pages_filtered if hike_filters_active(q.filters) else self.settings.hike_pages
+        login = self.wikiloc_login
+        if q.filters.loop_only and not login:
+            warnings.append(LOOP_NEEDS_LOGIN)
         try:
-            fetched = await self._wikiloc_cached(box, q.filters.sort, pages)
+            try:
+                fetched = await self._wikiloc_cached(box, q.filters, self.settings.hike_pages if login else anon_pages,
+                                                     login)
+            except WikilocLoginExpired:
+                fetched = await self._wikiloc_cached(box, q.filters, anon_pages, False)
+                if apply_hike_filters(fetched, q.filters):
+                    warnings.append(LOGIN_EXPIRED)
         except WikilocUnavailable as exc:
-            return HikeSearch(warnings=[str(exc)], drive_limit_minutes=limit)
+            return HikeSearch(warnings=warnings + [str(exc)], drive_limit_minutes=limit)
         hikes = apply_hike_filters(fetched, q.filters)
         if fetched and not hikes:
-            return HikeSearch(warnings=[NO_HIKES_MATCH], drive_limit_minutes=limit)
+            return HikeSearch(warnings=warnings + [NO_HIKES_MATCH], drive_limit_minutes=limit)
         if q.mode == "drawn":
             hikes = [h for h in hikes if in_area(h, q.area)]
         times, warning = await self.router.drive_times(self.home, [LatLon(lat=h.lat, lon=h.lon) for h in hikes])

@@ -1,8 +1,10 @@
 import httpx
 import pytest
 
-from app.models import BBox
-from app.sources.wikiloc import WikilocSource, WikilocUnavailable, make_fetch, parse_search
+from app.models import BBox, HikeFilters
+from app.sources.wikiloc import (
+    WikilocLoginExpired, WikilocSource, WikilocUnavailable, make_fetch, parse_search, server_filter_params,
+)
 from tests.builders import wikiloc_spa
 
 BOX = BBox(south=39.3, west=22.9, north=39.5, east=23.2)
@@ -128,6 +130,69 @@ async def test_make_fetch_retries_403_then_succeeds():
     fetch = make_fetch(transport=transport, sleep=sleep)
     assert await fetch("https://es.wikiloc.com/wikiloc/find.do", {}) == {"spas": []}
     assert len(sleeps) == 1
+
+
+def test_server_filter_params():
+    assert server_filter_params(HikeFilters()) == {"a": "1"}
+    f = HikeFilters(activities=[1, 43], distance_min_km=10, distance_max_km=15.5, elevation_min_m=800,
+                    elevation_max_m=1500, difficulty_min=3, difficulty_max=4, loop_only=True,
+                    min_trailrank=50, sort="top_rated")
+    assert server_filter_params(f) == {"a": "1,43", "lfr": "10", "lto": "15.5", "ufr": 800, "uto": 1500,
+                                       "sfr": 3, "sto": 4, "t": 1}
+    assert server_filter_params(HikeFilters(difficulty_min=5)) == {"a": "1", "sfr": 4}  # max 5: no sto
+    assert server_filter_params(HikeFilters(difficulty_max=2)) == {"a": "1", "sfr": 1, "sto": 2}
+
+
+async def test_logged_in_search_sends_cookie_and_server_filters():
+    calls = []
+
+    async def fetch(url, params, headers=None):
+        calls.append((params, headers))
+        return {"spas": [wikiloc_spa(1, "r", 39.3, 22.9)], "forwardToLogin": None, "restricted": False}
+
+    source = WikilocSource(fetch=fetch, cookie="SESSION=abc")
+    assert source.logged_in and "abc" not in repr(source)
+    hikes = await source.search(BOX, filters=HikeFilters(distance_min_km=10, loop_only=True))
+    params, headers = calls[0]
+    assert headers == {"Cookie": "SESSION=abc"}
+    assert (params["a"], params["lfr"], params["t"]) == ("1", "10", 1)
+    assert len(hikes) == 1
+
+
+async def test_anonymous_search_sends_no_cookie_and_no_filter_params():
+    calls = []
+
+    async def fetch(url, params):  # two-argument fetch: anonymous calls must not pass headers
+        calls.append(params)
+        return {"spas": []}
+
+    await WikilocSource(fetch=fetch).search(BOX, filters=HikeFilters(distance_min_km=10))
+    await WikilocSource(fetch=fetch, cookie="SESSION=abc").search(
+        BOX, filters=HikeFilters(distance_min_km=10), use_login=False)
+    assert all(not {"a", "lfr", "t"} & set(p) for p in calls)
+
+
+@pytest.mark.parametrize("payload", [{"spas": [], "count": 0}, {"spas": None, "forwardToLogin": True}])
+async def test_logged_in_empty_or_forward_to_login_raises_expired(payload):
+    async def fetch(url, params, headers=None):
+        return payload
+
+    with pytest.raises(WikilocLoginExpired):
+        await WikilocSource(fetch=fetch, cookie="SESSION=abc").search(BOX, filters=HikeFilters())
+
+
+async def test_make_fetch_sends_extra_headers():
+    seen = []
+
+    def handler(request):
+        seen.append((request.headers.get("cookie"), request.headers.get("user-agent")))
+        return httpx.Response(200, json={"spas": []})
+
+    fetch = make_fetch(transport=httpx.MockTransport(handler))
+    await fetch("https://es.wikiloc.com/wikiloc/find.do", {}, {"Cookie": "SESSION=abc"})
+    await fetch("https://es.wikiloc.com/wikiloc/find.do", {})
+    assert seen == [("SESSION=abc", "wikiloc-app/1.0"), (None, "wikiloc-app/1.0")]
+
 
 
 async def test_make_fetch_gives_up_after_retries():

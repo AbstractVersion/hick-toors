@@ -78,8 +78,11 @@ def _stay(key: str, field: dict) -> dict:
     return {"key": key, "label": label, "sources": _source_tag(providers), **field}
 
 
-def catalogue() -> dict:
-    """Everything the filter popups render: fields, options, defaults and source tags."""
+def catalogue(wikiloc_login: bool = False) -> dict:
+    """Everything the filter popups render: fields, options, defaults and source tags.
+
+    wikiloc_login: a Wikiloc session cookie is configured, so server-only filters (loop_only) work.
+    """
     hike_fields = [
         {"key": "activities", "type": "multi", "label": "Activities", "sources": None,
          "options": _options(ACTIVITY_OPTIONS)},
@@ -91,6 +94,8 @@ def catalogue() -> dict:
          "min_key": "elevation_min_m", "max_key": "elevation_max_m", "min": 0, "max": 5000, "step": 1},
         {"key": "min_trailrank", "type": "number", "label": "Minimum TrailRank", "sources": None,
          "min": 0, "max": 100, "step": 1},
+        {"key": "loop_only", "type": "bool", "label": "Circular routes only",
+         "sources": None if wikiloc_login else "Needs Wikiloc login", "disabled": not wikiloc_login},
         {"key": "sort", "type": "select", "label": "Wikiloc order", "sources": None,
          "options": _options([("popular", "Most popular"), ("top_rated", "Top rated (TrailRank)")])},
     ]
@@ -114,14 +119,15 @@ def catalogue() -> dict:
         _stay("beachfront", {"type": "bool"}),
     ]
     return {
+        "wikiloc_login": wikiloc_login,
         "hike": {"fields": hike_fields, "defaults": HikeFilters().model_dump()},
         "stay": {"fields": stay_fields, "defaults": StayFilters().model_dump()},
     }
 
 
 def hike_filters_active(f: HikeFilters) -> bool:
-    """True when a post-fetch hike filter narrows results (sort is applied by Wikiloc itself)."""
-    return f.model_copy(update={"sort": "popular"}) != HikeFilters()
+    """True when a post-fetch hike filter narrows results (sort and loop_only are server-side only)."""
+    return f.model_copy(update={"sort": "popular", "loop_only": False}) != HikeFilters()
 
 
 def stay_filters_active(f: StayFilters) -> bool:

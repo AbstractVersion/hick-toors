@@ -4,7 +4,7 @@ from typing import Any, Awaitable, Callable
 
 import httpx
 
-from app.models import BBox, Hike
+from app.models import BBox, Hike, HikeFilters
 
 SEARCH_URL = "https://es.wikiloc.com/wikiloc/find.do"
 BASE_URL = "https://es.wikiloc.com"
@@ -13,11 +13,36 @@ PAGE_SIZE = 25
 GREECE_MARKERS = ("Greece", "Ελλάδα", "Grecia")
 SKILL = {1: "Easy", 2: "Moderate", 3: "Hard", 4: "Very Hard", 5: "Experts Only"}
 
-Fetch = Callable[[str, dict], Awaitable[Any]]
+Fetch = Callable[..., Awaitable[Any]]  # fetch(url, params) or fetch(url, params, headers)
 
 
 class WikilocUnavailable(Exception):
     pass
+
+
+class WikilocLoginExpired(Exception):
+    """A logged-in, server-filtered search came back empty or asked to log in again."""
+
+
+def server_filter_params(f: HikeFilters) -> dict:
+    """HikeFilters -> find.do filter params. Wikiloc honours them only for logged-in callers
+    (probed 2026-10-10); anonymously they return count 0, so they are sent only with a cookie."""
+    params: dict = {"a": ",".join(str(a) for a in f.activities)}
+    if f.distance_min_km is not None:
+        params["lfr"] = f"{f.distance_min_km:g}"
+    if f.distance_max_km is not None:
+        params["lto"] = f"{f.distance_max_km:g}"
+    if f.elevation_min_m is not None:
+        params["ufr"] = f.elevation_min_m
+    if f.elevation_max_m is not None:
+        params["uto"] = f.elevation_max_m
+    if (f.difficulty_min, f.difficulty_max) != (1, 5):
+        params["sfr"] = min(f.difficulty_min, 4)  # the filter scale is 1-4, results are 1-5
+        if f.difficulty_max < 5:
+            params["sto"] = min(f.difficulty_max, 4)
+    if f.loop_only:
+        params["t"] = 1
+    return params
 
 
 def _num(value) -> float | None:
@@ -75,11 +100,12 @@ def make_fetch(
 ) -> Fetch:
     """Build a JSON fetcher that retries Wikiloc's intermittent 403s with backoff."""
 
-    async def fetch(url: str, params: dict) -> Any:
+    async def fetch(url: str, params: dict, headers: dict | None = None) -> Any:
+        # headers may carry the Wikiloc session cookie: never log them.
         async with httpx.AsyncClient(transport=transport, headers={"User-Agent": USER_AGENT}) as client:
             for attempt in range(retries + 1):
                 try:
-                    response = await client.get(url, params=params, timeout=30.0)
+                    response = await client.get(url, params=params, headers=headers, timeout=30.0)
                     response.raise_for_status()
                     return response.json()
                 except (httpx.HTTPError, ValueError) as exc:
@@ -92,14 +118,28 @@ def make_fetch(
 
 
 class WikilocSource:
-    def __init__(self, fetch: Fetch | None = None, pages: int = 2):
+    def __init__(self, fetch: Fetch | None = None, pages: int = 2, cookie: str | None = None):
         self._fetch = fetch or make_fetch()
         self._pages = pages
+        self._cookie = cookie or None  # Wikiloc session cookie (WIKILOC_COOKIE); never logged
+
+    @property
+    def logged_in(self) -> bool:
+        return self._cookie is not None
+
+    def __repr__(self) -> str:  # keep the cookie out of any debug output
+        return f"WikilocSource(pages={self._pages}, logged_in={self.logged_in})"
 
     async def search(self, bbox: BBox, query: str = "", sort: str = "popular",
-                     pages: int | None = None) -> list[Hike]:
-        """Routes in bbox. sort="top_rated" asks Wikiloc for its TrailRank order (the only
-        server-side filter that works anonymously); pages overrides the configured page count."""
+                     pages: int | None = None, filters: HikeFilters | None = None,
+                     use_login: bool = True) -> list[Hike]:
+        """Routes in bbox. sort="top_rated" asks Wikiloc for its TrailRank order; pages overrides
+        the configured page count. With a cookie (and use_login) the cookie is sent, plus
+        `filters` as server params; raises WikilocLoginExpired when that comes back empty or
+        Wikiloc asks to log in, so the caller can retry anonymously."""
+        login = use_login and self._cookie is not None
+        headers = {"Cookie": self._cookie} if login else None
+        server = server_filter_params(filters) if login and filters is not None else {}
         hikes: list[Hike] = []
         seen: set[str] = set()
         for page in range(pages or self._pages):
@@ -115,13 +155,16 @@ class WikilocSource:
             }
             if sort == "top_rated":
                 params["sort"] = "trailrank"
-            data = await self._fetch(SEARCH_URL, params)
+            params.update(server)
+            data = await (self._fetch(SEARCH_URL, params, headers) if login else self._fetch(SEARCH_URL, params))
             if not isinstance(data, dict):
                 if page == 0:
                     raise WikilocUnavailable(
                         "Hikes temporarily unavailable – Wikiloc is rate limiting, try again in a minute"
                     )
                 break
+            if page == 0 and login and (data.get("forwardToLogin") or (server and not data.get("spas"))):
+                raise WikilocLoginExpired()
             for hike in parse_search(data):
                 if hike.id not in seen:
                     seen.add(hike.id)

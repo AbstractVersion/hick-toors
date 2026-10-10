@@ -13,7 +13,7 @@ def build_engine(settings: Settings | None = None) -> Engine:
     cache = DiskCache(settings.cache_dir)
     return Engine(
         settings=settings,
-        wikiloc=WikilocSource(pages=settings.hike_pages),
+        wikiloc=WikilocSource(pages=settings.hike_pages, cookie=settings.wikiloc_cookie),
         providers=[AirbnbProvider(detail_top_n=settings.airbnb_detail_top_n), BookingProvider()],
         router=Router(cache, settings.ors_api_key),
         geocoder=Geocoder(cache, min_radius_km=settings.stay_radius_km),

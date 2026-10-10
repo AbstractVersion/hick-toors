@@ -106,6 +106,7 @@ class HikeFilters(BaseModel):
     elevation_min_m: int | None = Field(default=None, ge=0)
     elevation_max_m: int | None = Field(default=None, ge=0)
     min_trailrank: int | None = Field(default=None, ge=0, le=100)
+    loop_only: bool = False  # circular routes; Wikiloc server-side only (needs WIKILOC_COOKIE)
     sort: Literal["popular", "top_rated"] = "popular"
 
     _dedupe = field_validator("activities")(_unique)
