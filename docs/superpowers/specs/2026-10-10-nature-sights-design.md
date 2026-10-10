@@ -107,6 +107,24 @@ NatureSearch { sights: list[Sight], warnings: list[str] }
   the nature layer's separate "trip sights" group, cleared by the next Show on map / clearAll).
 - All text via textContent/esc(); links only for http(s).
 
+## Limits (added after the final review — public VM, Overpass fair use)
+
+- Greece only: boxes that don't touch the Greece bbox padded by 0.5° → 422 "Nature sights are available for
+  Greece only" (API and MCP).
+- At most 32 tile fetches in flight; further uncached tiles return the "unavailable for part of the map" warning.
+- Both endpoints failing → no fetching for 60 s, doubling per consecutive failure up to 10 min; the endpoint
+  that last answered is tried first.
+- At most 5,000 Overpass HTTP calls per UTC day (persisted in the cache); then cache only + "Nature sights limit
+  reached for today – showing cached areas only".
+- Truncated tiles: warning "Some nature sights were left out here (too many in this area)", cached 7 days.
+- Disk cache sweep at startup and daily: expired entries, files older than 31 days, `.tmp` files older than 1 h.
+
+## PDF export (added mid-run by the user)
+
+`GET /api/saved-trips/{id}/print` → printable HTML (same facts as the Markdown export, hikes numbered), strict
+CSP with a sha256-hashed inline print script; the 🖨️ PDF button saves first, opens the tab inside the click
+(Safari), then navigates it; the user picks "Save as PDF" in the print dialog.
+
 ## Out of scope
 
 Full-country overview at low zoom, routing to sights, photos, editing OSM.
