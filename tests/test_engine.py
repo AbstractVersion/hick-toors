@@ -5,7 +5,7 @@ import pytest
 from app.cache import DiskCache
 from app.config import Settings
 from app.engine import Engine
-from app.models import Hike, HikeQuery, LatLon, Stay, StaySearchQuery, TripQuery
+from app.models import BBox, Hike, HikeQuery, LatLon, Stay, StaySearchQuery, TripQuery
 from app.routing import RouteTime
 from app.sources.stays.base import ProviderUnavailable
 from app.sources.wikiloc import WikilocUnavailable
@@ -26,10 +26,11 @@ def stay(id, source="airbnb", pets=True, garden=None, lat=39.41, lon=23.01, rati
 
 class FakeWikiloc:
     def __init__(self, hikes=None, fail=False):
-        self.hikes, self.fail, self.boxes = hikes or [], fail, []
+        self.hikes, self.fail, self.boxes, self.calls = hikes or [], fail, [], []
 
-    async def search(self, bbox, query=""):
+    async def search(self, bbox, query="", sort="popular", pages=None):
         self.boxes.append(bbox)
+        self.calls.append({"sort": sort, "pages": pages})
         if self.fail:
             raise WikilocUnavailable("Hikes temporarily unavailable – Wikiloc is rate limiting, try again in a minute")
         return list(self.hikes)
@@ -200,3 +201,143 @@ async def test_v1_hike_cache_entries_are_not_reused(settings):
                      [hike(7, 99, lat=39.4, activity=None).model_dump(mode="json")], 3600)
     result = await engine.search_hikes(HikeQuery(start=FRI, end=FRI, mode="place", place="Pelion"))
     assert [h.id for h in result.hikes] == ["wikiloc:2"]
+
+
+
+async def test_filtered_search_fetches_more_pages_and_passes_sort(settings):
+    wikiloc = FakeWikiloc([hike(1, 50, lat=38.1)])
+    engine = make_engine(settings, wikiloc=wikiloc, router=FakeRouter({38.1: 60}))
+    await engine.search_hikes(HikeQuery(start=FRI, end=SUN))
+    await engine.search_hikes(HikeQuery(start=FRI, end=SUN, filters={"sort": "top_rated"}))
+    await engine.search_hikes(HikeQuery(start=FRI, end=SUN, filters={"min_trailrank": 10}))
+    assert wikiloc.calls == [{"sort": "popular", "pages": 6}, {"sort": "top_rated", "pages": 6},
+                             {"sort": "popular", "pages": 10}]
+
+
+async def test_hike_cache_is_shared_by_post_fetch_filters(settings):
+    wikiloc = FakeWikiloc([hike(1, 50, lat=38.1, distance_km=8.0), hike(2, 90, lat=38.1, distance_km=20.0)])
+    engine = make_engine(settings, wikiloc=wikiloc, router=FakeRouter({38.1: 60}))
+    a = await engine.search_hikes(HikeQuery(start=FRI, end=SUN, filters={"distance_max_km": 10}))
+    b = await engine.search_hikes(HikeQuery(start=FRI, end=SUN, filters={"distance_min_km": 10}))
+    assert len(wikiloc.calls) == 1  # same sort + page count -> same raw Wikiloc fetch
+    assert [h.id for h in a.hikes] == ["wikiloc:1"] and [h.id for h in b.hikes] == ["wikiloc:2"]
+
+
+async def test_hike_filters_leaving_nothing_give_notice(settings):
+    engine = make_engine(settings, wikiloc=FakeWikiloc([hike(1, 50, lat=38.1)]), router=FakeRouter({38.1: 60}))
+    result = await engine.search_hikes(HikeQuery(start=FRI, end=SUN, filters={"min_trailrank": 95}))
+    assert result.hikes == [] and result.warnings == ["No hikes match your filters"]
+
+
+# ---- v2: drawn area ----
+
+def drawn(area, **kw):
+    return HikeQuery(start=FRI, end=SUN, mode="drawn", area=area, **kw)
+
+
+async def test_drawn_rectangle_searches_its_box_without_drive_limit(settings):
+    wikiloc = FakeWikiloc([hike(1, 50, lat=38.5, lon=22.6)])
+    engine = make_engine(settings, wikiloc=wikiloc, router=FakeRouter({38.5: 999}))
+    rect = {"shape": "rectangle", "south": 38.3, "west": 22.3, "north": 38.7, "east": 22.9}
+    result = await engine.search_hikes(drawn(rect))
+    assert wikiloc.boxes == [BBox(south=38.3, west=22.3, north=38.7, east=22.9)]
+    assert [h.id for h in result.hikes] == ["wikiloc:1"] and result.drive_limit_minutes is None
+
+
+async def test_drawn_circle_drops_hikes_outside_radius(settings):
+    inside, corner = hike(1, 50, lat=39.03, lon=22.02), hike(2, 90, lat=39.08, lon=22.10)
+    engine = make_engine(settings, wikiloc=FakeWikiloc([inside, corner]),
+                         router=FakeRouter({39.03: 100, 39.08: 100}))
+    result = await engine.search_hikes(drawn({"shape": "circle", "lat": 39.0, "lon": 22.0, "radius_m": 10_000}))
+    assert [h.id for h in result.hikes] == ["wikiloc:1"]
+
+
+async def test_circle_crossing_greece_border_is_clamped_but_keeps_greek_hikes(settings):
+    wikiloc = FakeWikiloc([hike(1, 50, lat=41.75, lon=24.0)])
+    engine = make_engine(settings, wikiloc=wikiloc, router=FakeRouter({41.75: 200}))
+    result = await engine.search_hikes(drawn({"shape": "circle", "lat": 41.7, "lon": 24.0, "radius_m": 30_000}))
+    box = wikiloc.boxes[0]
+    assert box.north == 41.8 and box.south == pytest.approx(41.7 - 30 / 111.32)
+    assert [h.id for h in result.hikes] == ["wikiloc:1"]
+
+
+async def test_area_outside_greece_warns_without_fetching(settings):
+    wikiloc = FakeWikiloc([hike(1, 50)])
+    engine = make_engine(settings, wikiloc=wikiloc)
+    rome = {"shape": "rectangle", "south": 41.0, "west": 12.0, "north": 42.0, "east": 13.0}
+    result = await engine.search_hikes(drawn(rome))
+    assert result.hikes == [] and result.warnings == ["The drawn area is outside Greece – draw it over Greece"]
+    assert wikiloc.boxes == []
+
+
+async def test_tiny_shapes_are_widened_to_five_km(settings):
+    wikiloc = FakeWikiloc([hike(1, 50, lat=38.52, lon=22.5)])  # ~2.2 km north of the centre
+    engine = make_engine(settings, wikiloc=wikiloc, router=FakeRouter({38.52: 100}))
+    tiny_rect = {"shape": "rectangle", "south": 38.5, "west": 22.5, "north": 38.505, "east": 22.505}
+    await engine.search_hikes(drawn(tiny_rect))
+    box = wikiloc.boxes[0]
+    assert box.north - box.south == pytest.approx(2 * 5 / 111.32)
+    result = await engine.search_hikes(drawn({"shape": "circle", "lat": 38.5, "lon": 22.5, "radius_m": 300}))
+    assert [h.id for h in result.hikes] == ["wikiloc:1"]
+
+
+# ---- v2: stay filters ----
+
+async def test_unsupported_filter_skips_provider_with_notice(settings):
+    airbnb, booking = FakeProvider("Airbnb", [stay(1)]), FakeProvider("Booking.com", [stay(2, "booking")])
+    engine = make_engine(settings, providers=[airbnb, booking])
+    result = await engine.search_stays(StaySearchQuery(start=FRI, end=SUN, lat=39.4, lon=23.0,
+                                                       filters={"amenities": ["fireplace"]}))
+    assert result.warnings == ["Booking.com skipped – it can't filter by Fireplace"]
+    assert booking.queries == [] and airbnb.queries[0].filters.amenities == ["fireplace"]
+    assert [s.id for s in result.stays] == ["airbnb:1"]
+
+
+async def test_every_provider_skipped_gives_no_source_notice(settings):
+    airbnb, booking = FakeProvider("Airbnb", [stay(1)]), FakeProvider("Booking.com", [stay(2, "booking")])
+    engine = make_engine(settings, providers=[airbnb, booking])
+    result = await engine.search_stays(StaySearchQuery(start=FRI, end=SUN, lat=39.4, lon=23.0,
+                                                       filters={"min_beds": 2, "breakfast": True}))
+    assert result.stays == [] and airbnb.queries == [] and booking.queries == []
+    assert result.warnings == ["Airbnb skipped – it can't filter by Breakfast included",
+                               "Booking.com skipped – it can't filter by Beds",
+                               "No source supports this combination of filters"]
+
+
+async def test_price_post_check_is_per_night(settings):
+    airbnb = FakeProvider("Airbnb", [stay(1, price=200.0), stay(2, price=300.0)])  # 2 nights: 100 / 150
+    engine = make_engine(settings, providers=[airbnb])
+    result = await engine.search_stays(StaySearchQuery(start=FRI, end=SUN, lat=39.4, lon=23.0,
+                                                       filters={"price_max": 120}))
+    assert [s.id for s in result.stays] == ["airbnb:1"] and result.warnings == []
+
+
+async def test_stay_filters_leaving_nothing_give_notice(settings):
+    airbnb = FakeProvider("Airbnb", [stay(1, price=200.0)])
+    engine = make_engine(settings, providers=[airbnb])
+    result = await engine.search_stays(StaySearchQuery(start=FRI, end=SUN, lat=39.4, lon=23.0,
+                                                       filters={"price_max": 50}))
+    assert result.stays == [] and result.warnings == ["No stays match your filters"]
+
+
+async def test_stay_cache_key_includes_filters(settings):
+    airbnb = FakeProvider("Airbnb", [stay(1)])
+    engine = make_engine(settings, providers=[airbnb])
+    base = dict(start=FRI, end=SUN, lat=39.4, lon=23.0)
+    for filters in ({"price_max": 120}, {"price_max": 200}, {"price_max": 120}):
+        await engine.search_stays(StaySearchQuery(**base, filters=filters))
+    assert [q.filters.price_max for q in airbnb.queries] == [120, 200]
+
+
+async def test_plan_trip_with_area_and_filters(settings):
+    inside, outside = hike(1, 50, lat=39.03, lon=22.02), hike(2, 99, lat=39.3, lon=22.4)
+    wikiloc = FakeWikiloc([inside, outside])
+    airbnb = FakeProvider("Airbnb", [stay(1, lat=39.031, lon=22.021, price=100)])
+    engine = make_engine(settings, wikiloc=wikiloc, providers=[airbnb],
+                         router=FakeRouter({39.03: 500, 39.3: 500}))
+    result = await engine.plan_trip(TripQuery(
+        start=FRI, end=SUN, area={"shape": "circle", "lat": 39.0, "lon": 22.0, "radius_m": 10_000},
+        hike_filters={"min_trailrank": 10}, stay_filters={"price_max": 120}))
+    assert [c.hike.id for c in result.combos] == ["wikiloc:1"]  # 500 min drive ignored inside a shape
+    assert wikiloc.boxes[0].north == pytest.approx(39.0 + 10 / 111.32)
+    assert wikiloc.calls[0]["pages"] == 10 and airbnb.queries[0].filters.price_max == 120

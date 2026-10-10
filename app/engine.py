@@ -5,10 +5,13 @@ from datetime import date
 from app.cache import DAY, HOUR, DiskCache
 from app.config import Settings
 from app.dog_rule import apply_dog_rule, badge_tier
-from app.filters import apply_hike_filters
-from app.geo import GREECE_BBOX, bbox_around, clamp_to_greece, haversine_km
+from app.filters import (
+    apply_hike_filters, hike_filters_active, skip_notice, stay_filters_active, stay_post_check,
+    unsupported_filters,
+)
+from app.geo import GREECE_BBOX, bbox_around, clamp_to_greece, ensure_min_size, haversine_km
 from app.models import (
-    DriveLimit, Hike, HikeQuery, HikeSearch, LatLon, Stay, StayQuery, StaySearch,
+    BBox, CircleArea, DriveLimit, Hike, HikeQuery, HikeSearch, LatLon, Stay, StayQuery, StaySearch,
     StaySearchQuery, TripQuery, TripSearch,
 )
 from app.ranking import rank_combos
@@ -18,10 +21,35 @@ from app.trip_window import max_drive_minutes, stay_window
 
 STRAIGHT_LINE_KM_PER_MIN = 1.5  # generous: nothing within the drive limit falls outside the box
 STAY_RADIUS_SLACK = 1.5  # providers search a square; drop results far outside the circle
+MIN_AREA_RADIUS_KM = 5.0  # tiny drawn shapes are widened to at least this radius
+NO_HIKES_MATCH = "No hikes match your filters"
+NO_STAYS_MATCH = "No stays match your filters"
+NO_SOURCE = "No source supports this combination of filters"
+OUTSIDE_GREECE = "The drawn area is outside Greece – draw it over Greece"
 
 
 def _dedupe(items: list[str]) -> list[str]:
     return list(dict.fromkeys(items))
+
+
+def area_search_box(area) -> BBox | None:
+    """Bounding box Wikiloc is searched in for a drawn shape (None when it misses Greece)."""
+    if isinstance(area, CircleArea):
+        box = bbox_around(LatLon(lat=area.lat, lon=area.lon), area.radius_m / 1000)
+    else:
+        box = BBox(south=area.south, west=area.west, north=area.north, east=area.east)
+    box = clamp_to_greece(box)
+    if box.south >= box.north or box.west >= box.east:
+        return None
+    return ensure_min_size(box, MIN_AREA_RADIUS_KM)
+
+
+def in_area(h: Hike, area) -> bool:
+    """Circle: within the (min-size widened) radius of its centre. Rectangle: the box already trims."""
+    if not isinstance(area, CircleArea):
+        return True
+    radius_km = max(area.radius_m / 1000, MIN_AREA_RADIUS_KM)
+    return haversine_km(LatLon(lat=area.lat, lon=area.lon), LatLon(lat=h.lat, lon=h.lon)) <= radius_km
 
 
 class Engine:
@@ -53,18 +81,20 @@ class Engine:
             return None
         return (Hike if entry["kind"] == "hike" else Stay)(**entry["data"])
 
-    async def _wikiloc_cached(self, box) -> list[Hike]:
+    async def _wikiloc_cached(self, box, sort: str, pages: int) -> list[Hike]:
         # v2 key: entries now hold every activity (v1 entries were hiking-only, without `activity`).
-        key = f"hikes:v2:{box.south:.3f},{box.west:.3f},{box.north:.3f},{box.east:.3f}"
+        # Post-fetch filters are not in the key, so they share one raw fetch per sort + page count.
+        key = f"hikes:v2:{sort}:{pages}:{box.south:.3f},{box.west:.3f},{box.north:.3f},{box.east:.3f}"
         cached = self.cache.get(key)
         if cached is not None:
             return [Hike(**h) for h in cached]
-        hikes = await self.wikiloc.search(box)
+        hikes = await self.wikiloc.search(box, sort=sort, pages=pages)
         self.cache.set(key, [h.model_dump(mode="json") for h in hikes], 7 * DAY)
         return hikes
 
     async def search_hikes(self, q: HikeQuery) -> HikeSearch:
         warnings: list[str] = []
+        limit = None
         if q.mode == "place":
             try:
                 box = await self.geocoder.geocode(q.place)
@@ -73,16 +103,24 @@ class Engine:
                 return HikeSearch(warnings=["Place search unavailable – try again later"])
             if box is None:
                 return HikeSearch(warnings=[f"Couldn't find '{q.place}' in Greece"])
-            limit = None
+        elif q.mode == "drawn":
+            box = area_search_box(q.area)
+            if box is None:
+                return HikeSearch(warnings=[OUTSIDE_GREECE])
         else:
             limit = self.drive_limit_minutes(q.start, q.end, q.drive_limit)
             box = GREECE_BBOX if limit is None else clamp_to_greece(
                 bbox_around(self.home, limit * STRAIGHT_LINE_KM_PER_MIN))
+        pages = self.settings.hike_pages_filtered if hike_filters_active(q.filters) else self.settings.hike_pages
         try:
-            hikes = await self._wikiloc_cached(box)
+            fetched = await self._wikiloc_cached(box, q.filters.sort, pages)
         except WikilocUnavailable as exc:
             return HikeSearch(warnings=[str(exc)], drive_limit_minutes=limit)
-        hikes = apply_hike_filters(hikes, q.filters)
+        hikes = apply_hike_filters(fetched, q.filters)
+        if fetched and not hikes:
+            return HikeSearch(warnings=[NO_HIKES_MATCH], drive_limit_minutes=limit)
+        if q.mode == "drawn":
+            hikes = [h for h in hikes if in_area(h, q.area)]
         times, warning = await self.router.drive_times(self.home, [LatLon(lat=h.lat, lon=h.lon) for h in hikes])
         if warning:
             warnings.append(warning)
@@ -125,29 +163,44 @@ class Engine:
         radius = q.radius_km or self.settings.stay_radius_km
         check_in, check_out = stay_window(q.start, q.end)
         sq = StayQuery(lat=center.lat, lon=center.lon, radius_km=radius, check_in=check_in,
-                       check_out=check_out, guests=q.guests, dog=q.dog)
-        results = await asyncio.gather(*(self._provider_search(p, sq) for p in self.providers))
-        warnings = [w for _, w in results if w]
+                       check_out=check_out, guests=q.guests, dog=q.dog, filters=q.filters)
+        warnings: list[str] = []
+        runnable = []
+        for p in self.providers:
+            missing = unsupported_filters(p.name, q.filters, dog=q.dog)
+            if missing:
+                warnings.append(skip_notice(p.name, missing))
+            else:
+                runnable.append(p)
+        if self.providers and not runnable:
+            return StaySearch(warnings=warnings + [NO_SOURCE], center=center)
+        results = await asyncio.gather(*(self._provider_search(p, sq) for p in runnable))
+        warnings += [w for _, w in results if w]
         stays = []
         for provider_stays, _ in results:
             for s in provider_stays:
                 km = haversine_km(center, LatLon(lat=s.lat, lon=s.lon))
                 if km <= radius * STAY_RADIUS_SLACK:
                     stays.append(s.model_copy(update={"distance_km": round(km, 1)}))
+        stays = stay_post_check(stays, q.filters, (check_out - check_in).days)
         stays = apply_dog_rule(stays, q.dog)
         stays.sort(key=lambda s: (badge_tier(s) if q.dog else 0, s.distance_km))
+        if not stays and stay_filters_active(q.filters) and any(w is None for _, w in results):
+            warnings.append(NO_STAYS_MATCH)
         self._register(stays)
         return StaySearch(stays=stays, warnings=_dedupe(warnings), center=center)
 
     async def plan_trip(self, q: TripQuery) -> TripSearch:
-        hikes = await self.search_hikes(HikeQuery(start=q.start, end=q.end, drive_limit=q.drive_limit))
+        hikes = await self.search_hikes(HikeQuery(
+            start=q.start, end=q.end, drive_limit=q.drive_limit, mode="drawn" if q.area else "near_home",
+            area=q.area, filters=q.hike_filters))
         warnings = list(hikes.warnings)
         semaphore = asyncio.Semaphore(2)
 
         async def stays_for(h: Hike):
             async with semaphore:
                 return h, await self.search_stays(StaySearchQuery(
-                    start=q.start, end=q.end, hike_id=h.id, guests=q.guests, dog=q.dog))
+                    start=q.start, end=q.end, hike_id=h.id, guests=q.guests, dog=q.dog, filters=q.stay_filters))
 
         results = await asyncio.gather(*(stays_for(h) for h in hikes.hikes[: self.settings.trip_top_hikes]))
         pairs = []
