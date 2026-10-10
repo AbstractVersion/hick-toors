@@ -62,8 +62,12 @@ async def search_hikes(start: str, end: str, place: str | None = None,
 @mcp.tool()
 async def search_stays(start: str, end: str, hike_id: str | None = None, lat: float | None = None,
                        lon: float | None = None, dog: bool = True, guests: int = 2,
-                       radius_km: float | None = None, stay_filters: dict | None = None) -> str:
-    """Find stays (Airbnb, Booking.com) near a hike (hike_id from search_hikes) or a lat/lon.
+                       radius_km: float | None = None, stay_filters: dict | None = None,
+                       area: dict | None = None) -> str:
+    """Find stays (Airbnb, Booking.com) near a hike (hike_id from search_hikes), a lat/lon, or inside a
+    drawn area (used only when neither hike_id nor lat/lon is given): area is
+    {"shape": "circle", "lat", "lon", "radius_m" (200-300000)} or
+    {"shape": "rectangle", "south", "west", "north", "east"}; only stays inside the shape are returned.
 
     With dog=True only stays that allow pets, or have a garden (badge garden_unconfirmed =
     pets not confirmed), are returned.
@@ -78,7 +82,7 @@ async def search_stays(start: str, end: str, hike_id: str | None = None, lat: fl
     """
     try:
         q = StaySearchQuery(start=start, end=end, hike_id=hike_id, lat=lat, lon=lon, dog=dog,
-                            guests=guests, radius_km=radius_km, filters=stay_filters or {})
+                            guests=guests, radius_km=radius_km, area=area, filters=stay_filters or {})
     except ValidationError as exc:
         return _error(exc)
     return (await engine().search_stays(q)).model_dump_json()

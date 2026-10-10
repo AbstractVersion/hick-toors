@@ -52,6 +52,22 @@ async def test_search_stays_and_plan_trip(engine):
     assert engine.queries[1].guests == 3
 
 
+async def test_search_stays_takes_a_drawn_area(engine):
+    area = {"shape": "circle", "lat": 38.5, "lon": 22.6, "radius_m": 8000}
+    await tools.search_stays("2026-10-23", "2026-10-25", area=area)
+    q = engine.queries[0]
+    assert q.area.shape == "circle" and q.area.radius_m == 8000 and q.hike_id is None
+
+
+async def test_invalid_area_returns_error_json(engine):
+    out = json.loads(await tools.search_stays("2026-10-23", "2026-10-25",
+                                              area={"shape": "circle", "lat": 38.5, "lon": 22.6, "radius_m": 10}))
+    assert "area" in out["error"]
+    out = json.loads(await tools.search_stays("2026-10-23", "2026-10-25"))
+    assert "hike_id or lat/lon" in out["error"]
+    assert engine.queries == []
+
+
 async def test_invalid_input_returns_error_json(engine):
     out = json.loads(await tools.search_hikes("2026-10-25", "2026-10-23"))
     assert "end date must be on or after start date" in out["error"]

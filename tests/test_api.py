@@ -162,6 +162,28 @@ def test_index_has_filter_buttons_and_scripts(tmp_path):
     assert c.get("/static/filters.js").status_code == 200 and c.get("/static/dialog.js").status_code == 200
 
 
+def test_stays_accept_a_drawn_area_and_hikes_a_page_offset(tmp_path):
+    engine = FakeEngine()
+    c = client(tmp_path, engine)
+    r = c.post("/api/stays", json={"start": "2026-10-23", "end": "2026-10-25",
+                                   "area": {"shape": "circle", "lat": 38.5, "lon": 22.6, "radius_m": 8000}})
+    assert r.status_code == 200 and engine.calls[0][1].area.radius_m == 8000
+    assert c.post("/api/stays", json={"start": "2026-10-23", "end": "2026-10-25"}).status_code == 422
+    r = c.post("/api/hikes", json={"start": "2026-10-23", "end": "2026-10-25", "page_offset": 20})
+    assert r.status_code == 200 and engine.calls[1][1].page_offset == 20
+    assert c.post("/api/hikes", json={"start": "2026-10-23", "end": "2026-10-25",
+                                      "page_offset": 401}).status_code == 422
+
+
+def test_hike_response_carries_total_and_next_page_offset(tmp_path):
+    class Paged(FakeEngine):
+        async def search_hikes(self, q):
+            return HikeSearch(total_available=17000, next_page_offset=20)
+
+    body = client(tmp_path, Paged()).post("/api/hikes", json={"start": "2026-10-23", "end": "2026-10-25"}).json()
+    assert body["total_available"] == 17000 and body["next_page_offset"] == 20
+
+
 def test_index_has_draw_tools(tmp_path):
     html = client(tmp_path).get("/").text
     assert "leaflet-draw@1.0.4/dist/leaflet.draw.js" in html and "leaflet-draw@1.0.4/dist/leaflet.draw.css" in html
