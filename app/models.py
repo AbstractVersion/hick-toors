@@ -262,6 +262,27 @@ class TripSearch(BaseModel):
     warnings: list[str] = []
 
 
+class StayLookup(BaseModel):
+    """Body of POST /api/stays/lookup: a pasted Airbnb room link plus the trip's dates/guests/dog."""
+
+    url: str = Field(min_length=1, max_length=2000)
+    start: date | None = None
+    end: date | None = None
+    guests: int = Field(default=2, ge=1, le=16)
+    dog: bool = True
+
+    @model_validator(mode="after")
+    def _check_dates(self):
+        if self.start and self.end and self.end < self.start:
+            raise ValueError("end must be on or after start")
+        return self
+
+
+class StayLookupResult(BaseModel):
+    stay: Stay
+    warnings: list[str] = []
+
+
 MAX_TRIP_ITEMS = 50
 MAX_TRIP_BYTES = 256 * 1024  # serialized SavedTripIn fields of one trip
 TRIP_TOO_LARGE = "Trip is too large (max 256 KB)"

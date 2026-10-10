@@ -4,7 +4,7 @@ from datetime import date
 from mcp.server.fastmcp import FastMCP
 from pydantic import ValidationError
 
-from app.models import HikeQuery, StaySearchQuery, TripQuery
+from app.models import HikeQuery, StayLookup, StaySearchQuery, TripQuery
 from app.trip_markdown import trip_markdown
 
 mcp = FastMCP("hicktoors")
@@ -126,6 +126,29 @@ async def plan_trip(start: str, end: str, dog: bool = True, guests: int = 2,
     except ValidationError as exc:
         return _error(exc)
     return (await engine().plan_trip(q)).model_dump_json()
+
+
+@mcp.tool()
+async def lookup_airbnb(url: str, start: str | None = None, end: str | None = None, guests: int = 2,
+                        dog: bool = True) -> str:
+    """Look up one known Airbnb listing from its room link (airbnb.<tld>/rooms/<id>, or just the id).
+    Read-only. Dates/guests/dog in the link are ignored: pass start/end (YYYY-MM-DD) to get the total
+    price for those dates; without both dates no price is looked up.
+
+    Returns JSON {stay: {id, source, name, url, lat, lon, total_price, currency, rating, photo,
+    pets_allowed, has_garden, badge}, warnings}, or {"error": "..."} for a bad link, a removed
+    listing or when Airbnb doesn't answer.
+    """
+    from app.engine import StayLookupFailed, lookup_airbnb_link
+
+    try:
+        q = StayLookup(url=url, start=start, end=end, guests=guests, dog=dog)
+    except ValidationError as exc:
+        return _error(exc)
+    try:
+        return (await lookup_airbnb_link(engine(), q)).model_dump_json()
+    except StayLookupFailed as exc:
+        return json.dumps({"error": exc.message})
 
 
 @mcp.tool()

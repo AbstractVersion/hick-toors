@@ -2,10 +2,13 @@ import asyncio
 import base64
 import binascii
 import json
+import math
 import re
 import sys
+from datetime import date
+from html import unescape
 from typing import Any, Awaitable, Callable
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import httpx
 
@@ -32,11 +35,94 @@ AMENITY_IDS = {"wifi": 4, "ac": 5, "pool": 7, "kitchen": 8, "parking": 9, "hot_t
                "heating": 30, "washer": 33, "workspace": 47, "ev_charger": 97, "bbq": 99}
 BEACHFRONT_TAG = "Tag:789"
 
+LD_JSON_RE = re.compile(r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>', re.S | re.I)
+OG_RE = re.compile(r'<meta[^>]*property="og:(title|image)"[^>]*content="([^"]*)"', re.I)
+ROOM_PATH_RE = re.compile(r"/rooms/(?:plus/)?(\d{1,25})/?")
+ROOM_HOST_RE = re.compile(r"(?:www\.|m\.)?airbnb\.(?:[a-z]{2,3}|co\.[a-z]{2}|com\.[a-z]{2})")
+ROOM_ID_RE = re.compile(r"\d{1,25}")
+LOOKUP_BOX_KM = 1.5  # price lookup: search a small box around the listing and pick it out by id
+NO_ANSWER = "Airbnb didn't answer – try again in a minute"
+
 FetchText = Callable[[str, dict], Awaitable[str]]
 
 
 class AirbnbParseError(Exception):
     pass
+
+
+class ListingNotFound(Exception):
+    """The room page is gone (404/410): removed or private listing."""
+
+
+def room_id_from_url(url: str) -> str | None:
+    """The listing id of an Airbnb room link (any airbnb.<tld> host, /rooms/<id> or /rooms/plus/<id>),
+    or of a bare id; None for anything else."""
+    text = (url or "").strip()
+    if ROOM_ID_RE.fullmatch(text):
+        return text
+    try:
+        parts = urlsplit(text)
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or not ROOM_HOST_RE.fullmatch(parts.hostname or ""):
+        return None
+    match = ROOM_PATH_RE.fullmatch(parts.path)
+    return match.group(1) if match else None
+
+
+def _ld_objects(node: Any) -> list[dict]:
+    """Every dict in a JSON-LD payload (top-level lists and @graph included)."""
+    if isinstance(node, list):
+        return [o for item in node for o in _ld_objects(item)]
+    if isinstance(node, dict):
+        return [node] + _ld_objects(node.get("@graph") or [])
+    return []
+
+
+def _float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def parse_room(html: str, room_id: str) -> Stay:
+    """A Stay from a room page's schema.org JSON-LD (og: meta as fallback for name and photo).
+    The page carries no price; raises AirbnbParseError without coordinates."""
+    objects = []
+    for block in LD_JSON_RE.findall(html):
+        try:
+            objects += _ld_objects(json.loads(block))
+        except ValueError:
+            continue
+    place = next((o for o in objects if _float(o.get("latitude")) is not None
+                  and _float(o.get("longitude")) is not None), None)
+    if place is None:
+        raise AirbnbParseError("room page has no coordinates")
+    og = {key.lower(): unescape(value) for key, value in OG_RE.findall(html)}
+    ordered = [place] + [o for o in objects if o is not place]
+    name = next((o["name"] for o in ordered if isinstance(o.get("name"), str) and o["name"].strip()), None)
+    photo = None
+    for o in ordered:
+        image = o.get("image")
+        image = image[0] if isinstance(image, list) and image else image
+        if isinstance(image, str) and image:
+            photo = image
+            break
+    ratings = [_float(o["aggregateRating"].get("ratingValue")) for o in ordered
+               if isinstance(o.get("aggregateRating"), dict)]
+    rating = next((r for r in ratings if r is not None), None)
+    return Stay(
+        id=f"airbnb:{room_id}",
+        source="airbnb",
+        name=(name or og.get("title") or "Airbnb stay").strip(),
+        url=ROOM_URL.format(id=room_id),
+        lat=_float(place["latitude"]),
+        lon=_float(place["longitude"]),
+        rating=rating if rating is not None and 0 <= rating <= 5 else None,
+        photo=photo or og.get("image"),
+    )
 
 
 def _walk_results(node: Any) -> list[dict]:
@@ -268,9 +354,53 @@ class AirbnbProvider:
                 others = []
             await self._enrich(pet_stays[: self._top_n] + others[: self._top_n])
             stays = pet_stays + others
-        link = {"check_in": q.check_in.isoformat(), "check_out": q.check_out.isoformat(), "adults": q.guests}
-        if q.dog:
-            link["pets"] = 1
         for stay in stays:
-            stay.url = f"{stay.url}?{urlencode(link)}"
+            stay.url = _room_link(stay.url, q)
         return stays
+
+    async def _find(self, params: dict, stay_id: str) -> Stay | None:
+        """The listing among one page of search results, or None (also when the search fails)."""
+        try:
+            stays = await self._search(params)
+        except ProviderUnavailable as exc:
+            print(f"airbnb: price lookup search failed: {exc}", file=sys.stderr)
+            return None
+        return next((s for s in stays if s.id == stay_id), None)
+
+    async def lookup(self, room_id: str, check_in: date | None, check_out: date | None, guests: int,
+                     dog: bool) -> Stay:
+        """One listing by id: details from its room page; with dates, the total price from a search
+        over a small box around it (pets search first when the dog comes along)."""
+        try:
+            html = await self._fetch(ROOM_URL.format(id=room_id), {})
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (404, 410):
+                raise ListingNotFound(room_id) from exc
+            raise ProviderUnavailable(NO_ANSWER) from exc
+        except httpx.HTTPError as exc:
+            raise ProviderUnavailable(NO_ANSWER) from exc
+        stay = parse_room(html, room_id)
+        stay.pets_allowed, stay.has_garden = parse_details(html)
+        if check_in is None or check_out is None:
+            return stay
+        q = StayQuery(lat=stay.lat, lon=stay.lon, radius_km=LOOKUP_BOX_KM, check_in=check_in,
+                      check_out=check_out, guests=guests, dog=dog,
+                      bbox=bbox_around(LatLon(lat=stay.lat, lon=stay.lon), LOOKUP_BOX_KM))
+        base = self._search_params(q)
+        found = await self._find({**base, "pets": 1}, stay.id) if dog else None
+        if found is not None:
+            stay.pets_allowed = True
+        else:
+            found = await self._find(base, stay.id)
+        if found is not None:
+            stay.total_price, stay.currency = found.total_price, found.currency
+        stay.url = _room_link(stay.url, q)
+        return stay
+
+
+def _room_link(url: str, q: StayQuery) -> str:
+    """Room URL with the trip's dates/guests (and pets) so Airbnb opens it priced for the trip."""
+    link = {"check_in": q.check_in.isoformat(), "check_out": q.check_out.isoformat(), "adults": q.guests}
+    if q.dog:
+        link["pets"] = 1
+    return f"{url}?{urlencode(link)}"

@@ -10,9 +10,11 @@ from fastapi.staticfiles import StaticFiles
 
 from app.ask import AskRequest, AskResult, AskRunner
 from app.config import BASE_DIR, Settings
+from app.engine import StayLookupFailed, lookup_airbnb_link
 from app.filters import catalogue
 from app.models import (TRIP_TOO_LARGE, HikeQuery, HikeSearch, SavedTrip, SavedTripIn, SavedTripSummary,
-                        SavedTripUpdate, StaySearch, StaySearchQuery, TripItemAdd, TripQuery, TripSearch)
+                        SavedTripUpdate, StayLookup, StayLookupResult, StaySearch, StaySearchQuery, TripItemAdd,
+                        TripQuery, TripSearch)
 from app.trip_markdown import content_disposition, trip_markdown
 from app.trips_store import TooManyTrips, TripConflict, TripFull, TripStore, TripTooLarge
 from app.wiring import build_engine
@@ -91,6 +93,13 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
     @app.post("/api/stays", response_model=StaySearch)
     async def stays(q: StaySearchQuery):
         return await engine.search_stays(q)
+
+    @app.post("/api/stays/lookup", response_model=StayLookupResult)
+    async def stay_lookup(q: StayLookup):
+        try:
+            return await lookup_airbnb_link(engine, q)
+        except StayLookupFailed as exc:
+            raise HTTPException(status_code=exc.status, detail=exc.message)
 
     @app.post("/api/trips", response_model=TripSearch)
     async def trips(q: TripQuery):

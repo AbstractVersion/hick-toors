@@ -90,3 +90,21 @@ def booking_search_html(props):
 
 
 BOOKING_BLOCKED_HTML = "<html><head><title>Just a moment...</title></head><body></body></html>"
+
+
+def airbnb_room_html(name="Bezeniko Amazing Arcadian Property!", lat=37.71914, lon=22.25123, rating=4.96,
+                     titles=(), og_title="Cottage in Vlacherna · ★4.96", ld=True):
+    """A room page as probed 2026-10-10: Product + VacationRental JSON-LD, og: meta, amenity titles."""
+    rental = {"@context": "https://schema.org", "@type": "VacationRental", "name": name,
+              "image": ["https://a0.muscache.com/im/pictures/room-1.jpeg", "https://a0.muscache.com/room-2.jpeg"],
+              "address": {"addressLocality": "Vlacherna"},
+              "aggregateRating": {"@type": "AggregateRating", "ratingValue": rating, "ratingCount": "24"}}
+    if lat is not None:
+        rental.update(latitude=lat, longitude=lon)
+    product = {"@context": "https://schema.org", "@type": "Product", "name": name}
+    scripts = "".join(f'<script type="application/ld+json">{json.dumps(o)}</script>'
+                      for o in (product, rental)) if ld else ""
+    blob = json.dumps({"sections": [{"title": t} for t in titles]}, separators=(",", ":"))
+    return (f'<html><head><meta property="og:title" content="{og_title}"/>'
+            '<meta property="og:image" content="https://a0.muscache.com/og.jpeg?im_w=720&amp;width=720"/>'
+            f"{scripts}</head><body><script>{blob}</script></body></html>")

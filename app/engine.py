@@ -5,17 +5,19 @@ from datetime import date
 
 from app.cache import DAY, HOUR, DiskCache
 from app.config import Settings
-from app.dog_rule import apply_dog_rule, badge_tier
+from app.dog_rule import apply_dog_rule, assign_badge, badge_tier
 from app.filters import (
     apply_hike_filters, hike_filters_active, skip_notice, stay_filters_active, stay_post_check,
     unsupported_filters,
 )
 from app.geo import GREECE_BBOX, bbox_around, clamp_to_greece, ensure_min_size, haversine_km
 from app.models import (
-    BBox, CircleArea, DriveLimit, Hike, HikeFilters, HikeQuery, HikeSearch, LatLon, Stay, StayQuery, StaySearch,
-    StaySearchQuery, TripQuery, TripSearch,
+    BBox, CircleArea, DriveLimit, Hike, HikeFilters, HikeQuery, HikeSearch, LatLon, Stay, StayLookup,
+    StayLookupResult, StayQuery, StaySearch, StaySearchQuery, TripQuery, TripSearch,
 )
 from app.ranking import rank_combos
+from app.sources.stays.airbnb import NO_ANSWER as AIRBNB_NO_ANSWER
+from app.sources.stays.airbnb import AirbnbParseError, ListingNotFound, room_id_from_url
 from app.sources.stays.base import ProviderUnavailable, StayProvider
 from app.sources.wikiloc import WikilocLoginExpired, WikilocResult, WikilocUnavailable, server_filter_params
 from app.trip_window import max_drive_minutes, stay_window
@@ -35,6 +37,10 @@ NO_SOURCE = "No source supports this combination of filters"
 OUTSIDE_GREECE = "The drawn area is outside Greece – draw it over Greece"
 LOOP_NEEDS_LOGIN = "Circular-only needs a Wikiloc login (WIKILOC_COOKIE)"
 LOGIN_EXPIRED = "Wikiloc login may have expired – using local filtering. Update WIKILOC_COOKIE in .env"
+BAD_AIRBNB_LINK = "Paste an Airbnb room link (airbnb.com/rooms/…)"
+LISTING_NOT_FOUND = "That Airbnb listing wasn't found (removed or private)"
+PRICE_NOT_FOUND = "Price not found for these dates – you can type it in"
+NO_DATES = "No dates set – price not looked up"
 
 
 def _provider_key(provider) -> str:
@@ -89,6 +95,28 @@ def stay_in_area(s: Stay, area, center: LatLon, radius_km: float) -> bool:
     if isinstance(area, CircleArea):
         return haversine_km(center, LatLon(lat=s.lat, lon=s.lon)) <= radius_km
     return area.south <= s.lat <= area.north and area.west <= s.lon <= area.east
+
+
+class StayLookupFailed(Exception):
+    """A pasted-link lookup that failed: HTTP status for the API and a message for the user."""
+
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status, self.message = status, message
+
+
+async def lookup_airbnb_link(engine: "Engine", q: StayLookup) -> StayLookupResult:
+    """POST /api/stays/lookup and the lookup_airbnb MCP tool: link -> listing, errors -> StayLookupFailed."""
+    room_id = room_id_from_url(q.url)
+    if room_id is None:
+        raise StayLookupFailed(422, BAD_AIRBNB_LINK)
+    try:
+        return await engine.lookup_airbnb(room_id, q.start, q.end, q.guests, q.dog)
+    except ListingNotFound:
+        raise StayLookupFailed(404, LISTING_NOT_FOUND)
+    except (ProviderUnavailable, AirbnbParseError) as exc:
+        print(f"airbnb lookup of {room_id} failed: {exc!r}", file=sys.stderr)
+        raise StayLookupFailed(502, AIRBNB_NO_ANSWER)
 
 
 class Engine:
@@ -279,6 +307,35 @@ class Engine:
             warnings.append(NO_STAYS_MATCH)
         self._register(stays)
         return StaySearch(stays=stays, warnings=_dedupe(warnings), center=center)
+
+    async def lookup_airbnb(self, room_id: str, start: date | None, end: date | None, guests: int,
+                            dog: bool) -> StayLookupResult:
+        """One Airbnb listing by id, priced for the trip's dates when both are given.
+
+        Raises ListingNotFound, ProviderUnavailable or AirbnbParseError (callers map them to messages).
+        Unlike a search, the dog rule only badges the listing: the user picked it, so it is never dropped.
+        """
+        provider = next((p for p in self.providers if _provider_key(p) == "airbnb"), None)
+        if provider is None:
+            raise ProviderUnavailable(AIRBNB_NO_ANSWER)
+        check_in, check_out = stay_window(start, end) if start and end else (None, None)
+        key = f"airbnb-room:v1:{room_id}:{check_in}:{check_out}:{guests}:{int(dog)}"
+        cached = self.cache.get(key)
+        if cached is not None:
+            stay = Stay(**cached)
+        else:
+            stay = await provider.lookup(room_id, check_in, check_out, guests, dog)
+            stay.badge = assign_badge(stay, dog)
+            # A missing price may be a search hiccup: retry it sooner than a full day later.
+            ttl = HOUR if check_in and stay.total_price is None else DAY
+            self.cache.set(key, stay.model_dump(mode="json"), ttl)
+        self._register([stay])
+        warnings = []
+        if check_in is None:
+            warnings.append(NO_DATES)
+        elif stay.total_price is None:
+            warnings.append(PRICE_NOT_FOUND)
+        return StayLookupResult(stay=stay, warnings=warnings)
 
     async def plan_trip(self, q: TripQuery) -> TripSearch:
         hikes = await self.search_hikes(HikeQuery(
