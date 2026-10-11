@@ -24,6 +24,8 @@ from app.sources.nature import (MAX_TILES, NatureLimitReached, Tile, cap_lines, 
 from app.sources.stays.airbnb import NO_ANSWER as AIRBNB_NO_ANSWER
 from app.sources.stays.airbnb import AirbnbParseError, ListingNotFound, room_id_from_url
 from app.sources.stays.base import ProviderUnavailable, StayProvider
+from app.sources.stays.booking import NO_ANSWER as BOOKING_NO_ANSWER
+from app.sources.stays.booking import HotelNotFound, HotelRef, hotel_ref_from_url
 from app.sources.wikiloc import WikilocLoginExpired, WikilocResult, WikilocUnavailable, server_filter_params
 from app.trip_window import max_drive_minutes, stay_window
 
@@ -42,8 +44,9 @@ NO_SOURCE = "No source supports this combination of filters"
 OUTSIDE_GREECE = "The drawn area is outside Greece – draw it over Greece"
 LOOP_NEEDS_LOGIN = "Circular-only needs a Wikiloc login (WIKILOC_COOKIE)"
 LOGIN_EXPIRED = "Wikiloc login may have expired – using local filtering. Update WIKILOC_COOKIE in .env"
-BAD_AIRBNB_LINK = "Paste an Airbnb room link (airbnb.com/rooms/…)"
+BAD_STAY_LINK = "Paste an Airbnb room link (airbnb.com/rooms/…) or a Booking.com hotel link (booking.com/hotel/…)"
 LISTING_NOT_FOUND = "That Airbnb listing wasn't found (removed or private)"
+HOTEL_NOT_FOUND = "That Booking.com property wasn't found for these dates and guests – check the link"
 PRICE_NOT_FOUND = "Price not found for these dates – you can type it in"
 NO_DATES = "No dates set – price not looked up"
 NATURE_UNAVAILABLE = "Nature sights unavailable for part of the map – try again in a minute"
@@ -222,11 +225,21 @@ class StayLookupFailed(Exception):
         self.status, self.message = status, message
 
 
-async def lookup_airbnb_link(engine: "Engine", q: StayLookup) -> StayLookupResult:
-    """POST /api/stays/lookup and the lookup_airbnb MCP tool: link -> listing, errors -> StayLookupFailed."""
+async def lookup_stay_link(engine: "Engine", q: StayLookup) -> StayLookupResult:
+    """POST /api/stays/lookup and the lookup_stay MCP tool: Airbnb or Booking.com link -> stay,
+    errors -> StayLookupFailed."""
+    ref = hotel_ref_from_url(q.url)
+    if ref is not None:
+        try:
+            return await engine.lookup_booking(ref, q.start, q.end, q.guests, q.dog)
+        except HotelNotFound:
+            raise StayLookupFailed(404, HOTEL_NOT_FOUND)
+        except ProviderUnavailable as exc:
+            print(f"booking lookup of {ref.key} failed: {exc!r}", file=sys.stderr)
+            raise StayLookupFailed(502, BOOKING_NO_ANSWER)
     room_id = room_id_from_url(q.url)
     if room_id is None:
-        raise StayLookupFailed(422, BAD_AIRBNB_LINK)
+        raise StayLookupFailed(422, BAD_STAY_LINK)
     try:
         return await engine.lookup_airbnb(room_id, q.start, q.end, q.guests, q.dog)
     except ListingNotFound:
@@ -438,13 +451,33 @@ class Engine:
         provider = next((p for p in self.providers if _provider_key(p) == "airbnb"), None)
         if provider is None:
             raise ProviderUnavailable(AIRBNB_NO_ANSWER)
+        return await self._lookup_stay(
+            f"airbnb-room:v1:{room_id}", start, end, guests, dog,
+            lambda check_in, check_out: provider.lookup(room_id, check_in, check_out, guests, dog))
+
+    async def lookup_booking(self, ref: HotelRef, start: date | None, end: date | None, guests: int,
+                             dog: bool) -> StayLookupResult:
+        """One Booking.com property from its link, priced for the trip's dates when both are given.
+
+        Raises HotelNotFound or ProviderUnavailable. Like lookup_airbnb, the dog rule only badges it.
+        """
+        provider = next((p for p in self.providers if _provider_key(p) == "booking"), None)
+        if provider is None:
+            raise ProviderUnavailable(BOOKING_NO_ANSWER)
+        return await self._lookup_stay(
+            f"booking-hotel:v1:{ref.key}", start, end, guests, dog,
+            lambda check_in, check_out: provider.lookup(ref, check_in, check_out, guests))
+
+    async def _lookup_stay(self, key_prefix: str, start: date | None, end: date | None, guests: int, dog: bool,
+                           fetch) -> StayLookupResult:
+        """Shared by the link lookups: trip window, cache, badge, registration and warnings."""
         check_in, check_out = stay_window(start, end) if start and end else (None, None)
-        key = f"airbnb-room:v1:{room_id}:{check_in}:{check_out}:{guests}:{int(dog)}"
+        key = f"{key_prefix}:{check_in}:{check_out}:{guests}:{int(dog)}"
         cached = self.cache.get(key)
         if cached is not None:
             stay = Stay(**cached)
         else:
-            stay = await provider.lookup(room_id, check_in, check_out, guests, dog)
+            stay = await fetch(check_in, check_out)
             stay.badge = assign_badge(stay, dog)
             # A missing price may be a search hiccup: retry it sooner than a full day later.
             ttl = HOUR if check_in and stay.total_price is None else DAY

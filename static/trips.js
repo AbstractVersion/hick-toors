@@ -305,7 +305,7 @@ async function addAirbnbLink() {
     const { stay, warnings } = await api("/api/stays/lookup", { url, ...lookupFields() });
     // A save may have replaced trips.current meanwhile: merge into whatever is current for the same trip.
     if (!editorOpen(tripId)) {
-      showAirbnbInfo(["The trip was closed before Airbnb answered – not added"]);
+      showAirbnbInfo(["The trip was closed before the lookup finished – not added"]);
       return;
     }
     if (trips.current.stays.some((s) => s.id === stay.id)) {

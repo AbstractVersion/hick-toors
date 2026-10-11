@@ -10,8 +10,12 @@ from app.main import create_app
 from app.models import Stay, StayLookupResult
 from app.sources.stays.airbnb import AirbnbParseError, ListingNotFound
 from app.sources.stays.base import ProviderUnavailable
+from app.sources.stays.booking import HotelNotFound, HotelRef
 
 LINK = "https://www.airbnb.com/rooms/576031322358400592?adults=4&check_in=2026-11-06&pets=1"
+BOOKING_LINK = ("https://www.booking.com/hotel/gr/aenaon-guesthouse.el.html?aid=964694&app_hotel_id=5546346"
+                "&checkin=2026-10-28&checkout=2026-11-01&group_adults=6")
+BAD_LINK = "Paste an Airbnb room link (airbnb.com/rooms/…) or a Booking.com hotel link (booking.com/hotel/…)"
 
 
 class FakeEngine:
@@ -24,6 +28,13 @@ class FakeEngine:
             raise self.error
         stay = Stay(id=f"airbnb:{room_id}", source="airbnb", name="Bezeniko", url="u", lat=37.7, lon=22.2)
         return StayLookupResult(stay=stay, warnings=["Price not found for these dates – you can type it in"])
+
+    async def lookup_booking(self, ref, start, end, guests, dog):
+        self.calls.append((ref, start, end, guests, dog))
+        if self.error:
+            raise self.error
+        stay = Stay(id="booking:5546346", source="booking", name="Aenaon Guesthouse", url="u", lat=38.0, lon=22.5)
+        return StayLookupResult(stay=stay)
 
 
 class FakeAsk:
@@ -53,11 +64,12 @@ def test_lookup_defaults(tmp_path):
     assert engine.calls == [("123", None, None, 2, True)]
 
 
-@pytest.mark.parametrize("url", ["https://evil.com/rooms/1", "https://www.airbnb.com/s/homes", "hello"])
+@pytest.mark.parametrize("url", ["https://evil.com/rooms/1", "https://www.airbnb.com/s/homes", "hello",
+                                 "https://www.booking.com/searchresults.html", "https://evil.com/hotel/gr/x.html"])
 def test_bad_link_is_422_with_message(tmp_path, url):
     engine = FakeEngine()
     r = client(tmp_path, engine).post("/api/stays/lookup", json={"url": url})
-    assert r.status_code == 422 and r.json()["detail"] == "Paste an Airbnb room link (airbnb.com/rooms/…)"
+    assert r.status_code == 422 and r.json()["detail"] == BAD_LINK
     assert engine.calls == []
 
 
@@ -80,6 +92,24 @@ def test_lookup_errors(tmp_path, error, status, detail):
     assert (r.status_code, r.json()["detail"]) == (status, detail)
 
 
+def test_booking_link_uses_page_dates_and_hotel_id(tmp_path):
+    engine = FakeEngine()
+    r = client(tmp_path, engine).post("/api/stays/lookup", json={
+        "url": BOOKING_LINK, "start": "2026-10-28", "end": "2026-11-01", "guests": 4})
+    assert r.status_code == 200 and r.json()["stay"]["id"] == "booking:5546346"
+    assert engine.calls == [(HotelRef(page="aenaon-guesthouse", hotel_id="5546346"),
+                             date(2026, 10, 28), date(2026, 11, 1), 4, True)]
+
+
+@pytest.mark.parametrize("error,status,detail", [
+    (HotelNotFound("1"), 404, "That Booking.com property wasn't found for these dates and guests – check the link"),
+    (ProviderUnavailable("blocked"), 502, "Booking.com didn't answer – try again in a minute"),
+])
+def test_booking_lookup_errors(tmp_path, error, status, detail):
+    r = client(tmp_path, FakeEngine(error)).post("/api/stays/lookup", json={"url": BOOKING_LINK})
+    assert (r.status_code, r.json()["detail"]) == (status, detail)
+
+
 @pytest.fixture
 def engine(monkeypatch):
     fake = FakeEngine()
@@ -87,18 +117,23 @@ def engine(monkeypatch):
     return fake
 
 
-async def test_mcp_lookup_airbnb(engine):
-    out = json.loads(await tools.lookup_airbnb(LINK, start="2026-10-23", end="2026-10-25", guests=4))
+async def test_mcp_lookup_stay(engine):
+    out = json.loads(await tools.lookup_stay(LINK, start="2026-10-23", end="2026-10-25", guests=4))
     assert out["stay"]["id"] == "airbnb:576031322358400592" and out["warnings"]
     assert engine.calls == [("576031322358400592", date(2026, 10, 23), date(2026, 10, 25), 4, True)]
 
 
-async def test_mcp_lookup_airbnb_errors(engine, monkeypatch):
-    assert json.loads(await tools.lookup_airbnb("https://evil.com/rooms/1")) == {
-        "error": "Paste an Airbnb room link (airbnb.com/rooms/…)"}
-    assert "error" in json.loads(await tools.lookup_airbnb(LINK, start="2026-10-25", end="2026-10-23"))
+async def test_mcp_lookup_stay_errors(engine, monkeypatch):
+    assert json.loads(await tools.lookup_stay("https://evil.com/rooms/1")) == {"error": BAD_LINK}
+    assert "error" in json.loads(await tools.lookup_stay(LINK, start="2026-10-25", end="2026-10-23"))
     monkeypatch.setattr(tools, "_engine", FakeEngine(ListingNotFound("1")))
-    assert json.loads(await tools.lookup_airbnb(LINK)) == {
+    assert json.loads(await tools.lookup_stay(LINK)) == {
         "error": "That Airbnb listing wasn't found (removed or private)"}
     monkeypatch.setattr(tools, "_engine", FakeEngine(ProviderUnavailable("x")))
-    assert json.loads(await tools.lookup_airbnb(LINK)) == {"error": "Airbnb didn't answer – try again in a minute"}
+    assert json.loads(await tools.lookup_stay(LINK)) == {"error": "Airbnb didn't answer – try again in a minute"}
+
+
+async def test_mcp_lookup_stay_booking(engine):
+    out = json.loads(await tools.lookup_stay(BOOKING_LINK, start="2026-10-28", end="2026-11-01", guests=6))
+    assert out["stay"]["id"] == "booking:5546346"
+    assert engine.calls[0][0] == HotelRef(page="aenaon-guesthouse", hotel_id="5546346")

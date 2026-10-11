@@ -263,7 +263,7 @@ class TripSearch(BaseModel):
 
 
 class StayLookup(BaseModel):
-    """Body of POST /api/stays/lookup: a pasted Airbnb room link plus the trip's dates/guests/dog."""
+    """Body of POST /api/stays/lookup: a pasted Airbnb or Booking.com link plus the trip's dates/guests/dog."""
 
     url: str = Field(min_length=1, max_length=2000)
     start: date | None = None

@@ -129,24 +129,25 @@ async def plan_trip(start: str, end: str, dog: bool = True, guests: int = 2,
 
 
 @mcp.tool()
-async def lookup_airbnb(url: str, start: str | None = None, end: str | None = None, guests: int = 2,
-                        dog: bool = True) -> str:
-    """Look up one known Airbnb listing from its room link (airbnb.<tld>/rooms/<id>, or just the id).
-    Read-only. Dates/guests/dog in the link are ignored: pass start/end (YYYY-MM-DD) to get the total
-    price for those dates; without both dates no price is looked up.
+async def lookup_stay(url: str, start: str | None = None, end: str | None = None, guests: int = 2,
+                      dog: bool = True) -> str:
+    """Look up one known stay from its link: an Airbnb room link (airbnb.<tld>/rooms/<id>, or just the id)
+    or a Booking.com hotel link (booking.com/hotel/<country>/<name>.html). Read-only. Dates/guests/dog in
+    the link are ignored: pass start/end (YYYY-MM-DD) to get the total price for those dates; without both
+    dates no price is looked up.
 
     Returns JSON {stay: {id, source, name, url, lat, lon, total_price, currency, rating, photo,
     pets_allowed, has_garden, badge}, warnings}, or {"error": "..."} for a bad link, a removed
-    listing or when Airbnb doesn't answer.
+    listing or when the site doesn't answer.
     """
-    from app.engine import StayLookupFailed, lookup_airbnb_link
+    from app.engine import StayLookupFailed, lookup_stay_link
 
     try:
         q = StayLookup(url=url, start=start, end=end, guests=guests, dog=dog)
     except ValidationError as exc:
         return _error(exc)
     try:
-        return (await lookup_airbnb_link(engine(), q)).model_dump_json()
+        return (await lookup_stay_link(engine(), q)).model_dump_json()
     except StayLookupFailed as exc:
         return json.dumps({"error": exc.message})
 

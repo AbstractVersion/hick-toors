@@ -68,9 +68,10 @@ def airbnb_listing_html(titles):
     return f"<html><script>{blob}</script></html>"
 
 
-def booking_property(pid, name, lat, lon, score=9.6, amount=354.0, page="anna-villa"):
+def booking_property(pid, name, lat, lon, score=9.6, amount=354.0, page="anna-villa", pets_badge=False):
     return {
         "__typename": "SearchResultProperty",
+        "badges": [{"caption": {"translation": "This property allows pets!"}}] if pets_badge else [],
         "displayName": {"text": name},
         "basicPropertyData": {
             "id": pid,

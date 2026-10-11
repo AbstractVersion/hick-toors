@@ -8,6 +8,7 @@ from app.engine import NO_DATES, PRICE_NOT_FOUND, Engine
 from app.models import Stay
 from app.sources.stays.airbnb import ListingNotFound
 from app.sources.stays.base import ProviderUnavailable
+from app.sources.stays.booking import HotelNotFound, HotelRef
 from tests.test_engine import FakeGeocoder, FakeRouter, FakeWikiloc
 
 FRI, SUN = date(2026, 10, 23), date(2026, 10, 25)
@@ -35,8 +36,20 @@ class FakeAirbnb:
 class FakeBooking:
     name = "Booking.com"
 
+    def __init__(self, price=875.0, pets=None, error=None):
+        self.price, self.pets, self.error = price, pets, error
+        self.calls = []
+
     async def search(self, q):
         return []
+
+    async def lookup(self, ref, check_in, check_out, guests):
+        self.calls.append((ref, check_in, check_out, guests))
+        if self.error:
+            raise self.error
+        return Stay(id=f"booking:{ref.key}", source="booking", name="Aenaon Guesthouse", url="u", lat=38.0,
+                    lon=22.47, total_price=self.price if check_in else None, currency="EUR" if check_in else None,
+                    pets_allowed=self.pets)
 
 
 @pytest.fixture
@@ -110,3 +123,47 @@ async def test_no_airbnb_provider_is_unavailable(settings):
                     DiskCache(settings.cache_dir))
     with pytest.raises(ProviderUnavailable):
         await engine.lookup_airbnb("1", FRI, SUN, 2, True)
+
+
+REF = HotelRef(page="aenaon-guesthouse", hotel_id="5546346")
+
+
+def make_booking(settings, booking):
+    return Engine(settings, FakeWikiloc(), [booking, FakeAirbnb()], FakeRouter({}), FakeGeocoder(),
+                  DiskCache(settings.cache_dir))
+
+
+async def test_booking_lookup_badges_registers_and_uses_trip_window(settings):
+    booking = FakeBooking(pets=True)
+    engine = make_booking(settings, booking)
+    result = await engine.lookup_booking(REF, FRI, SUN, 6, True)
+    assert result.stay.id == "booking:5546346" and result.stay.total_price == 875.0
+    assert result.stay.badge == "pets" and result.warnings == []
+    assert booking.calls == [(REF, FRI, SUN, 6)]
+    assert engine.lookup("booking:5546346").name == "Aenaon Guesthouse"
+
+
+async def test_booking_lookup_warnings_and_cache(settings):
+    booking = FakeBooking(price=None)
+    engine = make_booking(settings, booking)
+    assert (await engine.lookup_booking(REF, FRI, SUN, 2, True)).warnings == [PRICE_NOT_FOUND]
+    assert (await engine.lookup_booking(REF, None, None, 2, True)).warnings == [NO_DATES]
+    await engine.lookup_booking(REF, None, None, 2, True)
+    assert len(booking.calls) == 2  # the second no-dates lookup came from the cache
+
+
+@pytest.mark.parametrize("error", [HotelNotFound("x"), ProviderUnavailable("blocked")])
+async def test_booking_lookup_errors_are_not_cached(settings, error):
+    booking = FakeBooking(error=error)
+    engine = make_booking(settings, booking)
+    for _ in range(2):
+        with pytest.raises(type(error)):
+            await engine.lookup_booking(REF, FRI, SUN, 2, True)
+    assert len(booking.calls) == 2
+
+
+async def test_no_booking_provider_is_unavailable(settings):
+    engine = Engine(settings, FakeWikiloc(), [FakeAirbnb()], FakeRouter({}), FakeGeocoder(),
+                    DiskCache(settings.cache_dir))
+    with pytest.raises(ProviderUnavailable):
+        await engine.lookup_booking(REF, FRI, SUN, 2, True)

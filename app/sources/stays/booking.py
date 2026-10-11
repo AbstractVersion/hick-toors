@@ -3,8 +3,10 @@ import json
 import random
 import re
 import sys
+from dataclasses import dataclass
+from datetime import date
 from typing import Any, Awaitable, Callable
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from app.models import Stay, StayFilters, StayQuery
 from app.sources.stays.base import ProviderUnavailable
@@ -22,11 +24,58 @@ BEACHFRONT = "hotelfacility=146"
 PHOTO_BASE = "https://cf.bstatic.com"
 JSON_SCRIPT_RE = re.compile(r'<script[^>]*type="application/json"[^>]*>(.*?)</script>', re.S)
 
+# Hotel links: booking.com/hotel/<country>/<page>[.<lang>].html (probed 2026-10-11). The hotel page itself is
+# always challenged, so a link is looked up through the search page: by hotel id when the link carries one
+# (app links have app_hotel_id), else by the page name as search text.
+HOTEL_HOST_RE = re.compile(r"(?:www\.|m\.)?booking\.com")
+HOTEL_PATH_RE = re.compile(r"/hotel/([a-z]{2})/([a-z0-9][a-z0-9-]{0,149}?)(?:\.[a-z]{2}(?:-[a-z]{2,4})?)?\.html")
+HOTEL_ID_RE = re.compile(r"[0-9]{1,12}")  # ASCII only
+PETS_BADGE_RE = re.compile(r"allows pets", re.I)
+NO_ANSWER = "Booking.com didn't answer – try again in a minute"
+
 FetchStatus = Callable[[str, dict], Awaitable[tuple[int, str]]]
 
 
 class BookingBlocked(Exception):
     pass
+
+
+class HotelNotFound(Exception):
+    """The search answered but the linked property was not among the results."""
+
+
+@dataclass(frozen=True)
+class HotelRef:
+    """A Booking.com hotel link reduced to what the lookup needs (nothing else of the link is used)."""
+
+    page: str  # e.g. "aenaon-guesthouse"
+    hotel_id: str | None = None  # e.g. "5546346"
+
+    @property
+    def key(self) -> str:
+        return self.hotel_id or self.page
+
+
+def hotel_ref_from_url(url: str) -> HotelRef | None:
+    """The page name (and hotel id, when the link has app_hotel_id / hotel_id) of a booking.com hotel link;
+    None for anything else."""
+    try:
+        parts = urlsplit((url or "").strip())
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or not HOTEL_HOST_RE.fullmatch(parts.hostname or ""):
+        return None
+    match = HOTEL_PATH_RE.fullmatch(parts.path.lower())
+    if not match:
+        return None
+    query = parse_qs(parts.query)
+    ids = [v for k in ("app_hotel_id", "hotel_id") for v in query.get(k, []) if HOTEL_ID_RE.fullmatch(v)]
+    return HotelRef(page=match.group(2), hotel_id=ids[0] if ids else None)
+
+
+def _page_name(url: str) -> str | None:
+    match = HOTEL_PATH_RE.fullmatch(urlsplit(url).path.lower())
+    return match.group(2) if match else None
 
 
 def _walk_properties(node: Any) -> list[dict]:
@@ -82,6 +131,9 @@ def parse_search(html: str) -> list[Stay]:
             currency=price.get("currency") or None,
             rating=round(score / 2, 2) if score else None,
             photo=f"{PHOTO_BASE}{photo}" if photo else None,
+            # "This property allows pets!" (shown with the pets filter); no badge means unknown, not "no"
+            pets_allowed=True if any(PETS_BADGE_RE.search(str(((b or {}).get("caption") or {}).get("translation")))
+                                     for b in prop.get("badges") or []) else None,
         ))
     return stays
 
@@ -158,6 +210,54 @@ class BookingProvider:
                 # AWS WAF challenges ~70% of requests at random: retry with jittered exponential backoff.
                 await self._sleep(min(1.0 * 2 ** attempt, 8) * self._rand(0.6, 1.2))
         return None
+
+    async def lookup(self, ref: HotelRef, check_in: date | None, check_out: date | None, guests: int) -> Stay:
+        """One property from its link, priced for the dates when both are given.
+
+        By hotel id: one search with the pets filter (its results carry the "allows pets" badge), then one
+        without. By name only: Booking's text search lists the property without a price, so once it is found
+        the lookup continues by its id. Raises HotelNotFound or ProviderUnavailable.
+        """
+        params: dict = {"group_adults": guests, "no_rooms": 1, "group_children": 0, "lang": "en-gb",
+                        "selected_currency": "EUR"}
+        if check_in and check_out:
+            params.update(checkin=check_in.isoformat(), checkout=check_out.isoformat())
+        answered = False
+        by_name = None
+        if not ref.hotel_id:
+            for extra in ({"nflt": PETS_FILTER}, {}):
+                found, by_name = await self._find(ref, {**params, "ss": ref.page.replace("-", " "), **extra})
+                answered |= found
+                if by_name is not None:
+                    break
+            if by_name is None:
+                if not answered:
+                    raise ProviderUnavailable(NO_ANSWER)
+                raise HotelNotFound(ref.key)
+            ref = HotelRef(page=ref.page, hotel_id=by_name.id.removeprefix("booking:"))
+        match = None
+        for extra in ({"nflt": PETS_FILTER}, {}):
+            found, match = await self._find(ref, {**params, "dest_id": ref.hotel_id, "dest_type": "hotel", **extra})
+            answered |= found
+            if match is not None:
+                break
+        match = match or by_name
+        if match is None:
+            if not answered:
+                raise ProviderUnavailable(NO_ANSWER)
+            raise HotelNotFound(ref.key)
+        if check_in and check_out:
+            match.url += "?" + urlencode({"checkin": check_in.isoformat(), "checkout": check_out.isoformat(),
+                                          "group_adults": guests})
+        return match
+
+    async def _find(self, ref: HotelRef, params: dict) -> tuple[bool, Stay | None]:
+        """(answered, the linked property among one search page's results)."""
+        stays = await self._page(params)
+        if stays is None:
+            return False, None
+        return True, next((s for s in stays if s.id == f"booking:{ref.hotel_id}" or _page_name(s.url) == ref.page),
+                          None)
 
     async def search(self, q: StayQuery) -> list[Stay]:
         params = {

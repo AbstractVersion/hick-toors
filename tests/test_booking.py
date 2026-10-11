@@ -5,7 +5,8 @@ import pytest
 from app.models import StayFilters, StayQuery
 from app.sources.stays.base import ProviderUnavailable
 from app.sources.stays.booking import (
-    BookingBlocked, BookingProvider, nflt_tokens, parse_search, review_score,
+    BookingBlocked, BookingProvider, HotelNotFound, HotelRef, hotel_ref_from_url, nflt_tokens, parse_search,
+    review_score,
 )
 from tests.builders import BOOKING_BLOCKED_HTML, booking_property, booking_search_html
 
@@ -166,3 +167,124 @@ async def test_gives_up_with_provider_unavailable():
 
     with pytest.raises(ProviderUnavailable, match="Booking.com unavailable"):
         await BookingProvider(fetch=fetch, retries=2, sleep=no_sleep).search(Q)
+
+
+APP_LINK = ("https://www.booking.com/hotel/gr/aenaon-guesthouse.el.html?aid=964694&app_hotel_id=5546346"
+            "&checkin=2026-10-28&checkout=2026-11-01&from_sn=android&group_adults=6&group_children=0"
+            "&label=hotel_details-Ykg6K3F%401791144453-QdJxjvg%401791566823&no_rooms=1&req_adults=6"
+            "&room1=A%2CA%2CA%2CA%2CA%2CA&chal_t=1791706667807&force_referer=")
+
+
+@pytest.mark.parametrize("url,ref", [
+    (APP_LINK, HotelRef(page="aenaon-guesthouse", hotel_id="5546346")),
+    ("https://www.booking.com/hotel/gr/aenaon-guesthouse.html", HotelRef(page="aenaon-guesthouse")),
+    ("https://booking.com/hotel/gr/aenaon-guesthouse.en-gb.html?hotel_id=12", HotelRef("aenaon-guesthouse", "12")),
+    ("  https://m.booking.com/hotel/gr/Aenaon-Guesthouse.EL.html  ", HotelRef(page="aenaon-guesthouse")),
+    ("https://www.booking.com/hotel/gr/x.html?app_hotel_id=12ab", HotelRef(page="x")),  # non-digit id ignored
+])
+def test_hotel_ref_from_url(url, ref):
+    assert hotel_ref_from_url(url) == ref
+
+
+@pytest.mark.parametrize("url", [
+    "https://evil.com/hotel/gr/x.html", "https://www.booking.com.evil.com/hotel/gr/x.html",
+    "https://www.booking.com/searchresults.html", "https://www.booking.com/hotel/gr/../x.html",
+    "ftp://www.booking.com/hotel/gr/x.html", "https://www.booking.com/hotel/gr/x", "aenaon-guesthouse", "",
+    "https://www.airbnb.com/rooms/1", "http://[::1/hotel/gr/x.html",
+])
+def test_hotel_ref_rejects_other_links(url):
+    assert hotel_ref_from_url(url) is None
+
+
+def test_parse_search_reads_pets_badge():
+    html = booking_search_html([booking_property(1, "A", 38.0, 22.4, pets_badge=True),
+                                booking_property(2, "B", 38.0, 22.4)])
+    assert [s.pets_allowed for s in parse_search(html)] == [True, None]
+
+
+REF = HotelRef(page="aenaon-guesthouse", hotel_id="5546346")
+CHECK_IN, CHECK_OUT = date(2026, 10, 30), date(2026, 11, 1)
+
+
+async def test_lookup_by_hotel_id_with_pets_filter_first():
+    calls = []
+
+    async def fetch(url, params):
+        calls.append(params)
+        return 200, booking_search_html([
+            booking_property(99, "Neighbour", 38.0, 22.4, page="other"),
+            booking_property(5546346, "Aenaon Guesthouse", 37.99, 22.46, amount=875.0, page="aenaon-guesthouse",
+                             pets_badge=True)])
+
+    stay = await BookingProvider(fetch=fetch, sleep=no_sleep).lookup(REF, CHECK_IN, CHECK_OUT, 6)
+    assert len(calls) == 1
+    assert calls[0]["dest_id"] == "5546346" and calls[0]["dest_type"] == "hotel" and "ss" not in calls[0]
+    assert calls[0]["nflt"] == "hotelfacility=4" and calls[0]["group_adults"] == 6
+    assert calls[0]["checkin"] == "2026-10-30" and calls[0]["checkout"] == "2026-11-01"
+    assert stay.id == "booking:5546346" and stay.total_price == 875.0 and stay.pets_allowed is True
+    assert stay.url == ("https://www.booking.com/hotel/gr/aenaon-guesthouse.html"
+                        "?checkin=2026-10-30&checkout=2026-11-01&group_adults=6")
+
+
+async def test_lookup_by_name_then_by_found_id_for_price_and_pets():
+    calls = []
+
+    async def fetch(url, params):
+        calls.append(params)
+        if "ss" in params:  # text search: listed without a price, and only without the pets filter
+            props = [booking_property(1, "Other", 38.0, 22.4, page="other")]
+            if "nflt" not in params:
+                props.append(booking_property(7, "Aenaon Guesthouse", 37.99, 22.46, amount=None,
+                                              page="aenaon-guesthouse"))
+            return 200, booking_search_html(props)
+        return 200, booking_search_html([booking_property(7, "Aenaon Guesthouse", 37.99, 22.46, amount=875.0,
+                                                          page="aenaon-guesthouse", pets_badge=True)])
+
+    stay = await BookingProvider(fetch=fetch, sleep=no_sleep).lookup(HotelRef(page="aenaon-guesthouse"),
+                                                                      CHECK_IN, CHECK_OUT, 2)
+    assert [(c.get("ss"), c.get("dest_id"), c.get("nflt")) for c in calls] == [
+        ("aenaon guesthouse", None, "hotelfacility=4"), ("aenaon guesthouse", None, None),
+        (None, "7", "hotelfacility=4")]
+    assert stay.id == "booking:7" and stay.total_price == 875.0 and stay.pets_allowed is True
+
+
+async def test_lookup_by_name_keeps_name_result_when_id_search_misses():
+    async def fetch(url, params):
+        if "ss" in params:
+            return 200, booking_search_html([booking_property(7, "Aenaon", 37.99, 22.46, amount=None,
+                                                              page="aenaon-guesthouse")])
+        return 200, booking_search_html([])
+
+    stay = await BookingProvider(fetch=fetch, sleep=no_sleep).lookup(HotelRef(page="aenaon-guesthouse"), None,
+                                                                      None, 2)
+    assert stay.id == "booking:7" and stay.total_price is None and stay.pets_allowed is None
+    assert stay.url == "https://www.booking.com/hotel/gr/aenaon-guesthouse.html"  # no dates: plain link
+
+
+async def test_lookup_by_id_falls_back_to_unfiltered_search():
+    calls = []
+
+    async def fetch(url, params):
+        calls.append(params.get("nflt"))
+        props = [] if "nflt" in params else [booking_property(5546346, "Aenaon", 37.99, 22.46,
+                                                                page="aenaon-guesthouse")]
+        return 200, booking_search_html(props)
+
+    stay = await BookingProvider(fetch=fetch, sleep=no_sleep).lookup(REF, None, None, 2)
+    assert calls == ["hotelfacility=4", None] and stay.pets_allowed is None
+
+
+async def test_lookup_not_in_results_is_not_found():
+    async def fetch(url, params):
+        return 200, booking_search_html([booking_property(1, "Other", 38.0, 22.4, page="other")])
+
+    with pytest.raises(HotelNotFound):
+        await BookingProvider(fetch=fetch, sleep=no_sleep).lookup(REF, CHECK_IN, CHECK_OUT, 2)
+
+
+async def test_lookup_blocked_every_time_is_unavailable():
+    async def fetch(url, params):
+        return 202, BOOKING_BLOCKED_HTML
+
+    with pytest.raises(ProviderUnavailable, match="Booking.com didn't answer"):
+        await BookingProvider(fetch=fetch, sleep=no_sleep, retries=2).lookup(REF, CHECK_IN, CHECK_OUT, 2)

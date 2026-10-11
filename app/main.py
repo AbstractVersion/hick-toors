@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from app.ask import AskRequest, AskResult, AskRunner
 from app.cache import DAY
 from app.config import BASE_DIR, Settings
-from app.engine import StayLookupFailed, lookup_airbnb_link, nature_box, nature_groups
+from app.engine import StayLookupFailed, lookup_stay_link, nature_box, nature_groups
 from app.filters import catalogue
 from app.models import (MAX_TRIP_SIGHTS, TRIP_TOO_LARGE, HikeQuery, HikeSearch, LatLon, NatureSearch, NearbySightsIn,
                         NearbySightsResult, SavedTrip, SavedTripIn,
@@ -130,7 +130,7 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
     @app.post("/api/stays/lookup", response_model=StayLookupResult)
     async def stay_lookup(q: StayLookup):
         try:
-            return await lookup_airbnb_link(engine, q)
+            return await lookup_stay_link(engine, q)
         except StayLookupFailed as exc:
             raise HTTPException(status_code=exc.status, detail=exc.message)
 
