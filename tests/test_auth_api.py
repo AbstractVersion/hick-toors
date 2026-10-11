@@ -146,6 +146,17 @@ def test_old_trip_json_loads_with_no_creator():
     assert SavedTrip.model_validate_json(doc).created_by is None
 
 
+def test_validation_errors_never_echo_the_password(tmp_path):
+    c = make(tmp_path)
+    secret = "s3cret-" + "x" * 200
+    r = c.post("/api/auth/signup", json={"password": "hunter2hunter2"})
+    assert r.status_code == 422 and "hunter2hunter2" not in r.text
+    r = c.post("/api/auth/login", json={"username": "nikos", "password": secret})
+    assert r.status_code == 422 and "s3cret" not in r.text
+    r = c.post("/api/auth/signup", json={"username": "nikos", "password": secret})
+    assert r.status_code == 422 and "s3cret" not in r.text
+
+
 def test_sessions_swept_at_startup(tmp_path):
     accounts = AccountStore(tmp_path / "a.db")
     called = []

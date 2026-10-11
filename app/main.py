@@ -103,7 +103,10 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
     @app.exception_handler(RequestValidationError)
     async def validation_error(request, exc: RequestValidationError):
         # Like FastAPI's default, but a NaN/Infinity echoed back in "input" must not turn the 422 into a 500.
-        return JSONResponse(status_code=422, content={"detail": _json_safe(jsonable_encoder(exc.errors()))})
+        errors = exc.errors()
+        if request.url.path.startswith("/api/auth/"):  # `input` / `ctx` could echo the password
+            errors = [{k: v for k, v in e.items() if k not in ("input", "ctx")} for e in errors]
+        return JSONResponse(status_code=422, content={"detail": _json_safe(jsonable_encoder(errors))})
 
     @app.get("/api/config")
     async def config():
