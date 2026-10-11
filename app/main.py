@@ -79,7 +79,7 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
     engine = engine or build_engine(settings)
     cache = getattr(engine, "cache", None)
     cache = cache if hasattr(cache, "sweep") else None
-    accounts = accounts or AccountStore(settings.trips_db)
+    accounts = accounts or AccountStore(settings.trips_db, signups_per_ip_hour=settings.signup_per_ip_hour)
 
     @asynccontextmanager
     async def lifespan(app):

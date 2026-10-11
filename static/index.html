@@ -105,6 +105,10 @@
     <div id="map-wrap"><div id="map"></div><div id="draw-hint" hidden></div>
       <div id="nature-hint" class="map-hint" role="status" hidden>Zoom in to see nature sights</div>
       <div id="map-busy" role="status" hidden>Searching… <i class="spinner"></i></div>
+      <div id="guide-pill" class="guide-pill" hidden>
+        <button type="button" id="guide-pill-back" class="guide-pill-back"></button>
+        <button type="button" id="guide-pill-close" class="guide-pill-close" aria-label="Hide">✕</button>
+      </div>
       <div id="nature-chips" role="group" aria-label="Nature sight categories" hidden>
         <button type="button" class="nature-chip" data-group="water" aria-pressed="true">💧 Water</button>
         <button type="button" class="nature-chip" data-group="landforms" aria-pressed="true">⛰️ Landforms</button>
@@ -191,6 +195,7 @@
       <div id="vote-pane" role="tabpanel" aria-labelledby="vote-tab-vote">
         <div id="vote-banner" class="vote-banner" hidden></div>
         <div id="vote-status" class="vote-status"></div>
+        <div id="vote-share" class="vote-share" hidden></div>
         <div id="vote-tools" class="vote-tools" hidden></div>
         <ol id="vote-trips" class="vote-trips"></ol>
       </div>
@@ -208,10 +213,35 @@
       <fieldset id="vote-start-fieldset"><legend>Trips</legend><div id="vote-start-trips"></div></fieldset>
       <div class="dlg-actions"><button type="submit" id="vote-start-submit" class="primary">Start the round</button></div>
     </form>
+    <div id="vote-invite" class="vote-invite" hidden>
+      <div class="invite-hero" aria-hidden="true">🎉</div>
+      <h3 id="vote-invite-title" class="invite-title">🎉 Round started – invite your friends</h3>
+      <p id="vote-invite-round" class="invite-round"></p>
+      <label class="invite-link">Link to the round <input id="vote-invite-url" readonly></label>
+      <div class="invite-actions">
+        <button type="button" id="vote-invite-share" class="tool-btn">📤 Share</button>
+        <button type="button" id="vote-invite-copy" class="tool-btn">📋 Copy link</button>
+      </div>
+      <div id="vote-invite-copied" class="share-out" role="status" hidden></div>
+      <p class="invite-hint">Send it to everyone who should vote – they can sign up from the link</p>
+      <div class="invite-go"><button type="button" id="vote-invite-start" class="primary">Start voting myself</button></div>
+    </div>
     <div id="vote-history-view" hidden>
       <h3>Past rounds</h3>
       <ul id="vote-history" class="vote-history"></ul>
       <p id="vote-history-empty" class="list-note" hidden>None yet.</p>
+    </div>
+  </dialog>
+  <!-- 🧭 the guided round (guide.js): the Join screen, one trip per step, the summary -->
+  <dialog id="guide" class="guide-dialog" aria-labelledby="guide-title">
+    <div class="dlg-head"><h2 id="guide-title">🗳️ Vote</h2>
+      <button type="button" id="guide-close" class="tool-btn" aria-label="Close">✕</button></div>
+    <div id="guide-error" class="notice" role="alert" hidden></div>
+    <div id="guide-toast" class="vote-toast" role="status" hidden></div>
+    <div id="guide-body" class="guide-body"></div>
+    <div id="guide-nav" class="guide-nav" hidden>
+      <button type="button" id="guide-back" class="tool-btn">← Back</button>
+      <button type="button" id="guide-next" class="primary">Next →</button>
     </div>
   </dialog>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -224,6 +254,7 @@
   <script src="/static/auth.js"></script>
   <script src="/static/trips.js"></script>
   <script src="/static/vote.js"></script>
+  <script src="/static/guide.js"></script>
   <script src="/static/banner.js"></script>
   <script src="/static/mobile.js"></script>
 </body>

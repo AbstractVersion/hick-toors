@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     trips_db: Path = BASE_DIR / "data" / "trips.db"  # TRIPS_DB: saved trips (SQLite), kept outside the cache
     claude_bin: str = "claude"
     ask_timeout_seconds: int = 120
+    signup_per_ip_hour: int = Field(default=10, ge=1)  # SIGNUP_PER_IP_HOUR: sign-ups per client IP per hour
 
     @property
     def weights(self) -> dict[str, float]:

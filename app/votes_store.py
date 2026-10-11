@@ -176,7 +176,7 @@ class RoundStore:
             counts = _counts(votes)
             standings.append((position, TripStanding(
                 trip_id=trip_id, name=trip.name, rank=0, score=score(counts), counts=counts, votes=votes,
-                stays=[s.model_copy(update={"rank": i}) for i, (_, s) in enumerate(ranked_stays, 1)])))
+                position=position, stays=[s.model_copy(update={"rank": i}) for i, (_, s) in enumerate(ranked_stays, 1)])))
         ranked = [t.model_copy(update={"rank": i}) for i, (_, t) in
                   enumerate(rank(standings, lambda t: t[1].counts, lambda t: t[0]), 1)]
 

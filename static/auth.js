@@ -5,13 +5,15 @@
 // The wall holds the one Log in / Sign up form (#auth-form). It shows a spinner until the page's first /api/auth/me
 // answer (no flash of the app), the form once nobody is logged in, and goes away after log in / sign up; log out
 // (or a 401) brings it back over whatever was open. Everything else on the page is inert while it shows.
-// #welcome-invite above the form is a slot for an invitation line (hidden by CSS while empty).
+// #welcome-invite above the form holds the invitation of a share link (auth.setInvite, called by guide.js; hidden by
+// CSS while empty).
 // Auth calls use their own fetch, not api(): a 401 "Wrong username or password" must not trigger onUnauthorized.
 // Emojis: every account has a unique emoji from the server's set; names are shown as auth.label(name) = "🤡 nikos"
 // ("👤 nikos" when it has none yet). The users map behind it is refreshed on load, after log in / sign up / emoji
 // change and by vote.js's polls; a change fires "users-changed" so open lists redraw their names.
 const auth = {
   user: null, emoji: null, mode: "login", pending: null, busy: false, ready: null,
+  invited: false,       // the wall shows an invitation (a share link): it opens on Sign up
   users: new Map(),     // lowercase username → emoji (null: none yet)
   signupEmoji: null,    // the emoji picked in the Sign up tab
   prompted: false,      // the "pick your emoji" prompt opens at most once per page load
@@ -107,8 +109,19 @@ function wallLoaded() {
   wall.classList.remove("loading");
   $("welcome-loading").hidden = true;
   $("auth-form").hidden = false;
-  if (!auth.user) openLoginForm("login");
+  if (!auth.user) openLoginForm(auth.invited ? "signup" : "login");
 }
+// The invitation line above the form (guide.js, for a ?round= share link): a node built with textContent, or null to
+// clear it. Someone who got a link is most likely new, so the form switches to Sign up – unless they already started
+// typing (an existing friend logging in).
+auth.setInvite = (node) => {
+  $("welcome-invite").replaceChildren(...(node ? [node] : []));
+  const first = node && !auth.invited;
+  auth.invited = Boolean(node);
+  if (first && !wall.hidden && !wall.classList.contains("loading") && !$("auth-username").value && auth.mode !== "signup") {
+    setAuthMode("signup");
+  }
+};
 
 // ---- phone top bar: the account button (your emoji) → a small menu: Change emoji / Log out ----
 function openAccountMenu() {

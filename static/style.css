@@ -161,7 +161,11 @@ main { flex: 1; display: flex; min-height: 0; }
 .vote-dialog h2 { margin: 0; font-size: 16px; }
 .vote-dialog h3 { margin: 10px 0 4px; font-size: 15px; }
 .vote-dialog .meta, .vote-dialog .list-note { color: #5d6b63; font-size: 12px; }
-.vote-toast { margin: 6px 0; padding: 6px 10px; border-radius: 6px; background: #e3efe7; border: 1px solid #b9d6c3; }
+/* Moved your Love…: floats at the bottom of the screen whatever the dialog's scroll, never takes a tap */
+.vote-toast { position: fixed; left: 50%; bottom: 24px; z-index: 20; transform: translateX(-50%); width: max-content;
+  max-width: min(480px, calc(100vw - 32px)); margin: 0; padding: 10px 14px; border-radius: 10px; background: #1d2b24; color: #fff;
+  box-shadow: 0 6px 20px rgba(0,0,0,.28); font-size: 14px; text-align: center; pointer-events: none; overflow-wrap: anywhere; }
+.vote-toast[hidden] { display: none; }
 .vote-banner { margin: 8px 0; padding: 10px 12px; border-radius: 8px; background: #fff4d6; border: 1px solid #f0d58a; font-size: 15px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .vote-status > div { margin: 2px 0; }
 .vote-tools { margin: 6px 0; }
@@ -221,6 +225,151 @@ main { flex: 1; display: flex; min-height: 0; }
 .ov-warn { color: #a8322d; }
 .ov-pop { position: fixed; z-index: 10; max-width: min(320px, calc(100vw - 16px)); padding: 8px 10px; border: 1px solid #c8d0c6; border-radius: 8px;
   background: #fff; box-shadow: 0 4px 16px rgba(0,0,0,.18); font-size: 14px; overflow-wrap: anywhere; }
+/* 🔗 share link (Vote dialog) and the 🎉 invite screen right after Start a round */
+.vote-share { margin: 6px 0; }
+.share-out { margin-top: 6px; }
+.share-msg { margin-bottom: 4px; color: #2f6f4e; font-weight: 600; }
+.share-url, #vote-invite-url { display: block; width: 100%; padding: 8px 10px; border: 1px solid #c8d0c6; border-radius: 8px; background: #f7f9f6;
+  font: inherit; font-size: 14px; color: #1d2b24; }
+.vote-invite { max-width: 460px; margin: 0 auto; padding: 8px 0 4px; text-align: center; }
+.invite-hero { font-size: 48px; line-height: 1.1; }
+.vote-dialog h3.invite-title { margin: 6px 0 4px; font-size: 20px; }
+.invite-round { margin: 0 0 14px; color: #5d6b63; overflow-wrap: anywhere; }
+.invite-link { display: block; text-align: left; font-size: 12px; color: #5d6b63; }
+.invite-link input { margin-top: 4px; }
+.invite-actions { display: flex; gap: 8px; margin-top: 10px; }
+.invite-actions .tool-btn { flex: 1; min-height: 44px; font-size: 15px; font-weight: 600; }
+.vote-invite .share-out { text-align: left; }
+.invite-hint { margin: 14px 0 0; color: #5d6b63; }
+.invite-go { margin-top: 18px; }
+.invite-go .primary { width: 100%; min-height: 48px; border: 0; border-radius: 10px; background: #2f6f4e; color: #fff; font: inherit; font-size: 16px;
+  font-weight: 600; cursor: pointer; }
+/* the wall's invitation line (a share link, logged out) */
+.invite-line { line-height: 1.45; overflow-wrap: anywhere; }
+.invite-what { color: #1d2b24; }
+.invite-when { color: #5d6b63; }
+
+/* ---- 🧭 the guided round: Join screen, one trip per step (dots, details, rating, stays), summary ---- */
+.guide-dialog { width: min(640px, calc(100vw - 32px)); max-height: calc(100vh - 32px); padding: 0 20px; border: 1px solid #dde3dc; border-radius: 12px;
+  overflow-y: auto; overscroll-behavior: contain; background: #fff; }
+.guide-dialog::backdrop { background: rgba(0,0,0,.4); }
+.guide-dialog [hidden] { display: none !important; }
+.guide-dialog .dlg-head { position: sticky; top: 0; z-index: 2; display: flex; gap: 8px; justify-content: space-between; align-items: center;
+  padding: 12px 0 8px; background: #fff; border-bottom: 1px solid #eef1ed; }
+.guide-dialog h2 { margin: 0; min-width: 0; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.guide-dialog .dlg-head .tool-btn { flex: none; min-width: 40px; min-height: 40px; }
+.guide-body { padding: 4px 0 12px; }
+.guide-dialog .list-note { color: #5d6b63; font-size: 13px; }
+.g-label { color: #5d6b63; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
+.g-section-title { margin: 14px 0 6px; font-size: 15px; }
+.g-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.g-chip { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 14px; background: #eef5f0; font-size: 13px; overflow-wrap: anywhere; }
+.g-big { min-height: 48px; padding: 8px 16px; border-radius: 10px; font: inherit; font-size: 16px; font-weight: 600; cursor: pointer; }
+.guide-dialog .primary { border: 0; background: #2f6f4e; color: #fff; cursor: pointer; }
+.guide-dialog .primary:disabled { opacity: .5; cursor: default; }
+/* Join */
+.g-join { max-width: 460px; margin: 0 auto; padding: 8px 0; text-align: center; }
+.g-hero { font-size: 46px; line-height: 1.1; }
+.g-join-title { margin: 6px 0 4px; font-size: 21px; overflow-wrap: anywhere; }
+.g-join-by { margin: 0; font-size: 15px; }
+.g-join-when { margin: 4px 0 14px; color: #5d6b63; }
+.g-who { margin: 0 0 14px; }
+.g-who .g-chips { justify-content: center; }
+.g-how { margin: 6px 0 10px; padding: 12px 14px 12px 34px; border-radius: 10px; background: #f4f6f3; text-align: left; line-height: 1.5; }
+.g-how li + li { margin-top: 4px; }
+.g-trips-count { margin: 0 0 14px; color: #5d6b63; }
+.g-join-actions { display: flex; flex-direction: column; gap: 8px; }
+.g-join .tool-btn.g-big { border: 1px solid #c8d0c6; background: #fff; font-weight: normal; }
+/* progress */
+.g-progress { margin: 6px 0 10px; }
+.g-step-label { font-size: 15px; }
+.g-step-rated { color: #5d6b63; font-size: 13px; }
+.g-dots { display: flex; flex-wrap: wrap; gap: 0; margin: 2px -8px 0; }
+.g-dot { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; padding: 0; border: 0; background: none;
+  cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.g-dot-mark { display: block; width: 14px; height: 14px; border: 2px solid #9fb3a7; border-radius: 50%; background: #fff; }
+.g-dot.rated .g-dot-mark { border-color: #2f6f4e; background: #2f6f4e; }
+.g-dot.current .g-dot-mark { box-shadow: 0 0 0 3px #fff, 0 0 0 5px #b5562f; }
+.g-dot-end { font-size: 18px; opacity: .55; }
+.g-dot-end.current { opacity: 1; }
+.g-dot:focus-visible { outline: 2px solid #1f4fa3; outline-offset: -4px; border-radius: 8px; }
+/* the trip */
+.g-trip-name { margin: 4px 0 6px; font-size: 21px; line-height: 1.25; overflow-wrap: anywhere; outline: none; }
+.g-facts { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 2px 0 8px; }
+.g-fact { padding: 2px 9px; border-radius: 12px; background: #f1f4f0; font-size: 13px; }
+.g-notes { margin: 8px 0; padding: 10px 12px; border-left: 3px solid #b5562f; border-radius: 0 8px 8px 0; background: #fbf5ef; }
+.g-notes-text { margin-top: 2px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.g-hikes, .g-stays, .g-sum-list { list-style: none; margin: 0; padding: 0; }
+.g-hike { padding: 8px 0; border-bottom: 1px solid #eef1ed; }
+.g-item-head { display: flex; gap: 6px; align-items: flex-start; justify-content: space-between; }
+.g-item-name { font-weight: 600; overflow-wrap: anywhere; }
+.g-item-meta { color: #5d6b63; font-size: 13px; }
+.g-out { flex: none; display: inline-flex; align-items: center; justify-content: center; min-width: 40px; min-height: 32px; margin: -6px -8px -6px 0;
+  color: #1f4fa3; font-size: 18px; text-decoration: none; }
+.g-nature { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 10px 0 0; }
+.g-map-btn { margin-top: 12px; min-height: 40px; font-weight: 600; }
+/* rate */
+.g-rate { margin: 16px 0 0; padding: 12px; border-radius: 12px; background: #f4f7f3; border: 1px solid #e1e8df; }
+.g-rate .g-section-title { margin: 0 0 8px; }
+.g-rate-buttons { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.g-rate-btn { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-height: 64px; padding: 6px 4px;
+  border: 2px solid #d3dbd1; border-radius: 12px; background: #fff; font: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.g-rate-emoji { font-size: 26px; line-height: 1; font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif; }
+.g-rate-label { font-size: 13px; font-weight: 600; color: #3c4a42; }
+@media (hover: hover) { .g-rate-btn:hover, .g-stay-btn:hover { border-color: #9fb3a7; } }
+.g-rate-btn[aria-pressed="true"] { border-color: #2f6f4e; background: #dcefe3; box-shadow: inset 0 0 0 1px #2f6f4e; }
+.g-rate-btn[data-rating="nogo"][aria-pressed="true"] { border-color: #a8322d; background: #fbe3e1; box-shadow: inset 0 0 0 1px #a8322d; }
+.g-love-note { margin: 8px 0; color: #5d6b63; font-size: 13px; overflow-wrap: anywhere; }
+.g-comment { display: block; width: 100%; padding: 8px 10px; border: 1px solid #c8d0c6; border-radius: 8px; font: inherit; background: #fff; }
+.g-comment:disabled { background: #f1f3f0; }
+/* stays */
+.g-sleep { margin: 16px 0 0; }
+.g-sleep .g-section-title { margin: 0 0 2px; }
+.g-hint { margin: 0 0 8px; color: #5d6b63; font-size: 13px; }
+.g-collapsed { padding: 10px 12px; border-radius: 10px; background: #fbe3e1; color: #7a2622; }
+.g-show-anyway { font-size: 14px; min-height: 40px; }
+.g-stay { padding: 10px; margin-bottom: 8px; border: 1px solid #e1e8df; border-radius: 12px; }
+.g-stay-top { display: flex; gap: 10px; }
+.g-stay-photo { flex: none; width: 76px; height: 76px; border-radius: 8px; object-fit: cover; background: #eef1ed; }
+.g-stay-nophoto { display: flex; align-items: center; justify-content: center; font-size: 30px; }
+.g-stay-info { flex: 1; min-width: 0; }
+.g-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.g-tag { padding: 1px 7px; border-radius: 10px; background: #eef1ed; color: #5d6b63; font-size: 11px; }
+.g-tag-dog { background: #e3efe7; color: #2f6f4e; }
+.g-stay-buttons { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 8px; }
+.g-stay-btn { min-height: 40px; padding: 4px 2px; border: 1px solid #d3dbd1; border-radius: 10px; background: #fff; font: inherit; font-size: 13px;
+  cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; -webkit-tap-highlight-color: transparent; }
+.g-stay-btn[aria-pressed="true"] { border-color: #2f6f4e; background: #2f6f4e; color: #fff; }
+.g-stay-btn[data-rating="nogo"][aria-pressed="true"] { border-color: #a8322d; background: #a8322d; }
+/* summary */
+.g-warn { margin: 6px 0; padding: 10px 12px; border-radius: 10px; background: #fff4d6; border: 1px solid #f0d58a; }
+.g-done { margin: 6px 0; padding: 10px 12px; border-radius: 10px; background: #e3efe7; border: 1px solid #b9d6c3; color: #1f5137; font-weight: 600; }
+.g-love-sum { margin: 8px 0 10px; font-size: 15px; overflow-wrap: anywhere; }
+.g-sum-row { display: flex; flex-direction: column; gap: 2px; width: 100%; min-height: 48px; margin-bottom: 8px; padding: 10px 12px; border: 1px solid #e1e8df;
+  border-radius: 12px; background: #fff; font: inherit; text-align: left; cursor: pointer; }
+@media (hover: hover) { .g-sum-row:hover { border-color: #9fb3a7; background: #fafcf9; } }
+.g-sum-row.unrated { border-color: #f0d58a; background: #fffbf0; }
+.g-sum-head { display: flex; gap: 8px; align-items: baseline; justify-content: space-between; }
+.g-sum-name { font-weight: 600; overflow-wrap: anywhere; }
+.g-sum-rating { flex: none; padding: 1px 8px; border-radius: 10px; background: #fff0cf; font-size: 13px; white-space: nowrap; }
+.g-sum-rating.r-love, .g-sum-rating.r-ok { background: #e3efe7; }
+.g-sum-rating.r-nogo { background: #fbe3e1; }
+.g-sum-line { color: #3c4a42; font-size: 13px; overflow-wrap: anywhere; }
+.g-sum-line.muted { color: #8a968f; }
+.g-sum-edit { align-self: flex-end; color: #1f4fa3; font-size: 12px; }
+/* the bottom bar: ← Back / Next → (sticky) */
+.guide-nav { position: sticky; bottom: 0; z-index: 2; display: flex; gap: 8px; padding: 10px 0 14px; background: #fff; border-top: 1px solid #eef1ed; }
+.guide-nav button { min-height: 44px; border-radius: 10px; font: inherit; font-size: 15px; -webkit-tap-highlight-color: transparent; }
+#guide-back { flex: 0 0 auto; padding: 0 14px; }
+#guide-next { flex: 1; padding: 0 16px; font-weight: 600; }
+/* ← Back to voting: desktop top centre of the map; phones just above the tab bar */
+.guide-pill { position: absolute; top: 10px; left: 50%; z-index: 1100; transform: translateX(-50%); display: flex; align-items: center;
+  max-width: calc(100% - 24px); border-radius: 24px; background: #2f6f4e; box-shadow: 0 4px 16px rgba(0,0,0,.3); }
+.guide-pill[hidden] { display: none; }
+.guide-pill button { min-height: 44px; border: 0; background: none; color: #fff; font: inherit; cursor: pointer; }
+.guide-pill-back { padding: 0 6px 0 18px; font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.guide-pill-close { flex: none; min-width: 44px; font-size: 16px; opacity: .8; }
+
 /* ---- welcome wall (login first): full screen over the app, the Log in / Sign up form on a card ---- */
 .welcome { position: fixed; inset: 0; z-index: 5000; display: flex; overflow-y: auto; overscroll-behavior: contain; padding: 24px 16px;
   background: linear-gradient(160deg, #2f6f4e 0%, #4f8f6a 55%, #b5562f 140%); }
@@ -441,4 +590,29 @@ main { flex: 1; display: flex; min-height: 0; }
   .ov-cell { min-width: 44px; height: 44px; }
   .ov-cell-btn { min-width: 40px; min-height: 40px; }
   .ov-trip, .ov-more { min-height: 40px; }
+  .share-btn { width: 100%; min-height: 44px; font-size: 15px; }
+
+  /* 🧭 the guide: full screen, the ✕ header and the ← Back / Next → bar sticky; the toast sits above that bar */
+  .guide-dialog { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0; padding: 0 16px; border: 0; border-radius: 0; }
+  .guide-dialog .dlg-head { padding: calc(8px + env(safe-area-inset-top)) 0 8px; }
+  .guide-dialog .dlg-head .tool-btn { min-width: 44px; min-height: 44px; }
+  .guide-dialog { display: none; }
+  .guide-dialog[open] { display: flex; flex-direction: column; }
+  .guide-body { flex: 1 0 auto; }
+  .guide-nav { padding: 10px 0 calc(10px + env(safe-area-inset-bottom)); }
+  .guide-nav button { min-height: 48px; font-size: 16px; }
+  .g-trip-name { font-size: 22px; }
+  .g-dots { margin: 2px -10px 0; }
+  #guide-toast { bottom: calc(84px + env(safe-area-inset-bottom)); }
+  .vote-toast { bottom: calc(16px + env(safe-area-inset-bottom)); }
+  .g-map-btn { width: 100%; min-height: 44px; font-size: 15px; }
+  .g-out { min-height: 40px; }
+  /* the pill floats above the tab bar, wherever the Map tab is */
+  .guide-pill { position: fixed; top: auto; bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 14px); max-width: calc(100vw - 24px); }
+  .vote-invite { padding-top: 16px; }
+  #vote-invite-url, .share-url { min-height: 44px; }
+  /* the emoji prompt's Skip bar: sticky with 44 px buttons like the sign-up form's */
+  .emoji-dialog .dlg-actions { position: sticky; bottom: 0; z-index: 1; margin: 0; padding: 10px 0 calc(10px + env(safe-area-inset-bottom));
+    background: #fff; border-top: 1px solid #eef1ed; }
+  .emoji-dialog .dlg-actions > * { flex: 1 1 40%; min-height: 44px; }
 }

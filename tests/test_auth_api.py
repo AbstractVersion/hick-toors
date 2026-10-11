@@ -247,3 +247,12 @@ def test_old_account_without_emoji(tmp_path):
     assert c.get("/api/users").json() == [{"username": "Old", "emoji": None}]
     assert c.put("/api/auth/emoji", json={"emoji": "🌶️"}).status_code == 200
     assert c.get("/api/auth/me").json()["emoji"] == "🌶️"
+
+
+def test_signup_per_ip_limit_comes_from_settings(tmp_path, monkeypatch):
+    assert Settings(_env_file=None).signup_per_ip_hour == 10  # production default unchanged
+    monkeypatch.setenv("SIGNUP_PER_IP_HOUR", "3")
+    settings = Settings(_env_file=None, cache_dir=tmp_path, trips_db=tmp_path / "trips.db")
+    assert settings.signup_per_ip_hour == 3
+    c = TestClient(create_app(engine=FakeEngine(), ask_runner=FakeAsk(), settings=settings))
+    assert [signup(c, name).status_code for name in ("aaa", "bbb", "ccc", "ddd")] == [201, 201, 201, 429]

@@ -539,6 +539,7 @@ class TripStanding(BaseModel):
     votes: list[VoteOut]
     my_rating: Rating | None = None
     stays: list[StayStanding]
+    position: int = 0  # the trip's place in the round (fixed: the guide walks everyone through the same order)
 
 
 class Me(BaseModel):

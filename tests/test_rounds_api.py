@@ -237,3 +237,12 @@ def test_join_route(env):
     env.nikos.post(f"/api/rounds/{rid}/close")
     r = env.maria.post(f"/api/rounds/{rid}/join")
     assert r.status_code == 409 and r.json()["detail"] == "This round is closed"
+
+
+def test_trips_carry_their_fixed_round_position(env):
+    rid = open_round(env, keys="ABC")["id"]
+    c = env.ids["C"]
+    view = env.maria.put(f"/api/rounds/{rid}/trips/{c}/vote", json={"rating": "love"}).json()["round"]
+    assert view["trips"][0]["trip_id"] == c  # ranked first …
+    by_position = sorted(view["trips"], key=lambda t: t["position"])
+    assert [t["trip_id"] for t in by_position] == [env.ids[k] for k in "ABC"]  # … but its position stays

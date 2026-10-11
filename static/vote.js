@@ -1,11 +1,12 @@
 "use strict";
 // 🗳️ Group voting: the header badge and the #vote-dialog (open round, closed round with its 🏆 winner, the Start a
-// round form, history). Loaded last; uses $, api, notices (app.js), auth / requireLogin (auth.js) and refreshTrips,
+// round form → the 🎉 invite screen with the share link, history). The guided round (guide.js, loaded next) reuses
+// its round state, polls, writes (castVote) and toast. Loaded after trips.js; uses $, api, notices (app.js), auth / requireLogin (auth.js) and refreshTrips,
 // tripPath, plural, showTripOnMap, openTrip, showTripsError (trips.js).
 // Every name, title and comment is user input: textContent only.
 const vote = {
   round: null,          // last applied answer of GET /api/rounds/current (or of a write)
-  mode: "current",      // "current" | "form" | "past"
+  mode: "current",      // "current" | "form" | "past" | "invite" (🎉 the link, right after Start a round)
   past: null,           // the read-only past round being looked at
   seq: 0, applied: 0,   // request numbers: an answer older than the newest applied one is dropped
   writing: 0, queue: Promise.resolve(),  // votes/opener actions run one after another; polls are ignored meanwhile
@@ -41,20 +42,26 @@ function vButton(text, className, onClick) {
   if (onClick) b.addEventListener("click", onClick);
   return b;
 }
+// The Vote dialog and the guide (guide.js) share the round, the writes and the polls, so an error shows in both.
 function showVoteError(message, fromPoll = false) {
   vote.pollError = Boolean(message) && fromPoll;
-  $("vote-error").textContent = message || "";
-  $("vote-error").hidden = !message;
+  for (const id of ["vote-error", "guide-error"]) {
+    const box = $(id);
+    if (!box) continue;
+    box.textContent = message || "";
+    box.hidden = !message;
+  }
 }
-// The toast floats over the top of the dialog instead of pushing everything below it down (and back up 6 s later)
-// right under the pointer of someone who is still voting.
-Object.assign($("vote-toast").style, { position: "absolute", left: "16px", right: "16px", top: "44px", zIndex: "3",
-  margin: "0", boxShadow: "0 2px 8px rgba(0, 0, 0, .18)" });
+// The toast (Moved your Love…) floats at the bottom of the screen (style.css: fixed, no pointer events), so it is seen
+// wherever the dialog is scrolled to and never covers a row or button someone is about to press. It shows in the
+// dialog that is open: the Vote dialog or the guide.
 function toast(message) {
   clearTimeout(vote.toastTimer);
-  $("vote-toast").textContent = message;
-  $("vote-toast").hidden = false;
-  vote.toastTimer = setTimeout(() => { $("vote-toast").hidden = true; }, 6000);
+  const id = $("guide")?.open ? "guide-toast" : "vote-toast";
+  for (const other of ["vote-toast", "guide-toast"]) if ($(other)) $(other).hidden = other !== id;
+  $(id).textContent = message;
+  $(id).hidden = false;
+  vote.toastTimer = setTimeout(() => { $(id).hidden = true; }, 6000);
 }
 // "YYYY-MM-DDTHH:MM" in local time, the value format of <input type=datetime-local>.
 function localInputValue(date) {
@@ -105,7 +112,7 @@ async function refreshVote() {
     if (vote.writing > 0) return;
     if (applyRound(round, seq) && vote.pollError) showVoteError("");
   } catch (err) {
-    if ($("vote-dialog").open && vote.mode === "current") showVoteError(err.message, true);
+    if (($("vote-dialog").open && vote.mode === "current") || $("guide")?.open) showVoteError(err.message, true);
   }
 }
 // Writes (votes, opener actions) run one at a time, in click order; each applies the round it returns.
@@ -117,9 +124,11 @@ function write(fn) {
 }
 
 // ---- opening / closing the dialog ----
-async function openVote(tripId) {
+// tab: "vote" | "overview" for this opening only (not remembered); default: a trip's row on the Vote tab, otherwise
+// the tab used last.
+async function openVote(tripId, tab) {
   vote.focusTrip = tripId || null;
-  setVoteTab(tripId ? "vote" : storedVoteTab(), false);  // "→ Vote" at a trip: its rating row, whatever tab was last used
+  setVoteTab(tab || (tripId ? "vote" : storedVoteTab()), false);
   vote.mode = "current";
   vote.panel = null;
   showVoteError("");
@@ -130,6 +139,12 @@ async function openVote(tripId) {
   clearInterval(vote.pollTimer);
   vote.pollTimer = setInterval(refreshVote, VOTE_POLL_MS);
   await refreshVote();  // its answer renders the dialog (the round, or the Start a round form)
+}
+// The 📊 Overview of the current round, or of the round roundId when that one is over (a closed round's share link,
+// the guide's Done, the banner's See results).
+async function openVoteOverview(roundId) {
+  await openVote(null, "overview");
+  if (roundId && vote.round?.id !== roundId) await openPast(roundId);
 }
 function onVoteClose() {
   clearInterval(vote.pollTimer);
@@ -144,7 +159,7 @@ function onVoteClose() {
 function render() {
   if (vote.pressed) { vote.deferred = true; return; }  // the release must land on the element that was pressed
   showViews();
-  if (vote.mode === "form") return;
+  if (vote.mode === "form" || vote.mode === "invite") return;
   const round = vote.mode === "past" ? vote.past : vote.round;
   if (!round) {
     vote.mode = "form";
@@ -155,9 +170,10 @@ function render() {
   renderRound(round, vote.mode === "past");
 }
 function showViews() {
-  $("vote-round-view").hidden = vote.mode === "form";
+  $("vote-round-view").hidden = vote.mode === "form" || vote.mode === "invite";
   $("vote-start").hidden = vote.mode !== "form";
   $("vote-history-view").hidden = vote.mode !== "form";
+  $("vote-invite").hidden = vote.mode !== "invite";
   $("vote-title").textContent = vote.mode === "form" ? "🗳️ Start a round" : "🗳️ Vote";
 }
 function isOpener(round) { return sameUser(round.opener, auth.user); }
@@ -198,6 +214,7 @@ function renderRound(round, readOnly) {
     line.append(vButton("log in to vote", "link-btn", () => requireLogin(() => {})));
     status.append(line);
   }
+  renderShare(round, open);
   renderTools(round, open);
   renderTrips(round, open);
   // Footer
@@ -209,7 +226,8 @@ function renderRound(round, readOnly) {
     footer.append(vButton("Start a new round", "primary", () => requireLogin(showForm)), " ",
       vButton("Past rounds", "tool-btn", showForm));
   }
-  renderOverview(round);
+  if (vote.tab === "overview") renderOverview(round);  // the hidden Overview is drawn when its tab is picked
+  else setVoteTab(vote.tab, false);
   focusTripRow();
 }
 function focusTripRow() {
@@ -222,6 +240,82 @@ function focusTripRow() {
     row.scrollIntoView({ block: "center" });
   }
 }
+
+// ---- 🔗 share link: <origin>/?round=<id> (guide.js handles opening it) ----
+const roundLink = (id) => `${location.origin}/?round=${enc(id)}`;
+const shareText = (round) => `Vote on '${round.title}' – closes ${localWhen(round.closes_at)}`;
+const canShare = () => typeof navigator.share === "function";
+// The native share sheet (WhatsApp, Viber, …). True when it was shown (also when the user just closed it).
+async function nativeShare(round) {
+  try {
+    await navigator.share({ title: round.title, text: shareText(round), url: roundLink(round.id) });
+    return true;
+  } catch (err) {
+    return err?.name === "AbortError";
+  }
+}
+// Copies the link (where the browser lets us) and shows it in a selectable field either way.
+async function copyLink(round, box) {
+  const url = roundLink(round.id);
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(url);
+    copied = true;
+  } catch { /* no clipboard (http, permissions): the field below is selected for a manual copy */ }
+  box.replaceChildren();
+  const input = vEl("input", "share-url");
+  input.readOnly = true;
+  input.value = url;
+  input.setAttribute("aria-label", "Link to this round");
+  input.addEventListener("focus", () => input.select());
+  box.append(vEl("div", "share-msg", copied ? "✓ Link copied" : "Copy this link:"), input);
+  box.hidden = false;
+  if (!copied) { input.focus({ preventScroll: true }); input.select(); }
+  return copied;
+}
+// 🔗 Share link in the Vote dialog (open round, everyone): phones with a share sheet use it, the rest copy.
+function renderShare(round, open) {
+  const box = $("vote-share");
+  const key = open ? round.id : "";
+  box.hidden = !key;
+  if (box.dataset.key === key) return;  // a poll keeps the copied-link field as it is
+  box.dataset.key = key;
+  box.replaceChildren();
+  if (!key) return;
+  const out = vEl("div", "share-out");
+  out.hidden = true;
+  box.append(vButton("🔗 Share link", "tool-btn share-btn", async () => {
+    const current = vote.round;
+    if (!current) return;
+    if (canShare() && window.mobile?.isPhone() && await nativeShare(current)) return;
+    copyLink(current, out);
+  }), out);
+}
+
+// ---- 🎉 Round started – invite your friends (right after Start a round) ----
+function showInvite(round) {
+  vote.mode = "invite";
+  vote.inviteRound = round;
+  showVoteError("");
+  showViews();
+  $("vote-invite-round").textContent = `${round.title} · ${closesIn(round.closes_at)} (${localWhen(round.closes_at)})`;
+  $("vote-invite-url").value = roundLink(round.id);
+  $("vote-invite-share").hidden = !canShare();
+  $("vote-invite-copied").replaceChildren();
+  $("vote-invite-copied").hidden = true;
+  $("vote-dialog").scrollTop = 0;
+  $("vote-invite-start").focus({ preventScroll: true });
+}
+$("vote-invite-url").addEventListener("focus", (event) => event.currentTarget.select());
+$("vote-invite-share").addEventListener("click", () => { if (vote.inviteRound) nativeShare(vote.inviteRound); });
+$("vote-invite-copy").addEventListener("click", () => {
+  if (vote.inviteRound) copyLink(vote.inviteRound, $("vote-invite-copied"));
+});
+$("vote-invite-start").addEventListener("click", () => {
+  const round = vote.round?.id === vote.inviteRound?.id ? vote.round : vote.inviteRound;
+  $("vote-dialog").close();
+  if (round) openGuide(round);
+});
 
 // Opener tools: built only when what they show changes, so a poll never resets a date being typed.
 function renderTools(round, open) {
@@ -661,11 +755,11 @@ function startRound() {
   return write(async () => {
     try {
       const round = await api("/api/rounds", { title, closes_at: at.toISOString(), trip_ids: ids });
-      vote.mode = "current";
       vote.past = null;
       vote.panel = null;
+      vote.mode = "invite";  // the opener gets the link first: 🎉 Round started – invite your friends
       applyRound(round, nextSeq());
-      render();
+      showInvite(round);
     } catch (err) {
       if (/already open/.test(err.message)) {  // someone was quicker: show their round
         vote.mode = "current";
@@ -689,6 +783,7 @@ function storedVoteTab() {
 vote.tab = storedVoteTab();
 vote.ovOpenStays = new Set();  // trips whose further stays are shown (kept across refreshes)
 vote.ovPopKey = null;          // the cell whose comment popover is open
+vote.ovScrollLeft = 0;         // the grid's sideways scroll (kept while hidden)
 
 function setVoteTab(tab, remember = true) {
   vote.tab = tab === "overview" ? "overview" : "vote";
@@ -799,9 +894,8 @@ function renderOverview(round) {
     }
   }
   table.append(thead, tbody);
-  const scrollLeft = box.scrollLeft;
   box.replaceChildren(table);
-  box.scrollLeft = scrollLeft;  // a poll must not jump a phone's sideways scroll back
+  box.scrollLeft = vote.ovScrollLeft || 0;  // a poll or a tab switch must not jump a phone's sideways scroll back
 }
 // One row: the name cell, a cell per participant (😍 / 🙂 / 🚫 or · ; a comment adds a dot + popover), the score.
 function ovRow(item, nameCell, columns, key, className) {
@@ -859,7 +953,7 @@ function hideOvPop() {
 // Trip name → the Vote tab at that trip.
 function goToTrip(tripId) {
   hideOvPop();
-  setVoteTab("vote");
+  setVoteTab("vote", false);  // a jump to one trip, not a choice of tab
   vote.focusTrip = tripId;
   focusTripRow();
 }
@@ -868,7 +962,11 @@ $("vote-tabs").addEventListener("click", (event) => {
   if (!b) return;
   hideOvPop();
   setVoteTab(b.dataset.vtab);
+  const round = vote.mode === "past" ? vote.past : vote.round;
+  if (vote.tab === "overview" && round && vote.mode !== "form" && vote.mode !== "invite") renderOverview(round);
 });
+// Its sideways scroll survives redraws and the hidden tab (a display: none box reads scrollLeft 0).
+$("vote-ov-scroll").addEventListener("scroll", (event) => { vote.ovScrollLeft = event.currentTarget.scrollLeft; });
 // Escape closes the popover (not the dialog); so do a press outside it (other than on a comment cell) and a scroll.
 $("vote-dialog").addEventListener("keydown", (event) => {
   if (event.key === "Escape" && vote.ovPopKey) { event.preventDefault(); event.stopPropagation(); hideOvPop(); }
@@ -916,7 +1014,7 @@ document.addEventListener("auth-changed", () => {
   else refreshBadge();
 });
 document.addEventListener("users-changed", () => {
-  if ($("vote-dialog").open && vote.mode !== "form") render();
+  if ($("vote-dialog").open && vote.mode !== "form" && vote.mode !== "invite") render();
 });
 setInterval(refreshBadge, BADGE_POLL_MS);
 refreshBadge();

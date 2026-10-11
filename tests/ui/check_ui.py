@@ -1,8 +1,10 @@
 """Headless-Chrome check of the filter popups, results, Trip picks, log in / sign up, saved trips and the
 🌿 Nature layer (not collected by pytest).
 
-Start the app first with a throwaway trips database, then run the check against it:
-    TRIPS_DB=$(mktemp -d)/trips.db env -u VIRTUAL_ENV uv run uvicorn app.main:app --port 8765
+Start the app first with a throwaway trips database and a high per-IP sign-up limit (the server allows 10 sign-ups
+per address and hour by default – SIGNUP_PER_IP_HOUR – and the whole check signs up more than that from 127.0.0.1),
+then run the check against it:
+    TRIPS_DB=$(mktemp -d)/trips.db SIGNUP_PER_IP_HOUR=1000 env -u VIRTUAL_ENV uv run uvicorn app.main:app --port 8765
     env -u VIRTUAL_ENV uv run --with playwright python tests/ui/check_ui.py http://127.0.0.1:8765
 
 The script talks only to the local server. Search endpoints are answered by Playwright with
@@ -13,7 +15,9 @@ The auth API is real too: the check signs up `nikos` (a fresh TRIPS_DB has no ac
 The 🗳️ voting scenario at the end uses the real rounds API with two browser contexts (`anna` opens a round,
 `bob` signs up and the round opens by itself, votes; anna closes the round) – it needs no open round.
 The 🥾 welcome scenario (no flash, auto-open once per round per session, the round banner, the phone top bar's account
-menu) logs in existing accounts: the server allows 10 sign-ups per address and hour, the whole check makes 8.
+menu) logs in existing accounts.
+The 🧭 guide scenario (share link, invite screen, Join screen, the guided steps, summary) signs up gina / pia / quin;
+GUIDE_SHOTS=<folder> (or UI_SHOTS) saves its phone screenshots.
 The 📱 phone scenarios (390×844 and landscape 844×390, touch) run last; set UI_SHOTS=<folder> to save screenshots there.
 Login first: every scenario starts on the welcome wall and signs up / logs in through it (wall_sign_up / wall_log_in).
 Every UI sign-up picks its emoji in the sign-up picker; the 😀 scenarios check taken emojis, the 409 race, Change emoji
@@ -1312,6 +1316,7 @@ def main() -> None:
         check_emojis(browser, errors)
         check_overview(browser, errors)  # leaves its round closed: the phone scenario starts a new one
         check_welcome(browser, errors)
+        check_guide(browser, errors)  # closes its round and deletes its trips again
         check_mobile(browser, errors)
         check_mobile_landscape(browser, errors)
         browser.close()
@@ -1359,6 +1364,9 @@ def check_voting(browser, errors: list[str]) -> None:
     assert 2.9 < in_days <= 3.01, in_days
     a.fill("#vote-start-title", "November 🥾")
     a.click("#vote-start-submit")
+    expect(a.locator("#vote-invite")).to_be_visible()  # 🎉 the opener gets the link first (check_guide covers it)
+    a.click("#vote-close")
+    a.click("#vote-btn")
     expect(a.locator("#vote-round-view")).to_be_visible()
     expect(a.locator("#vote-status")).to_contain_text("November 🥾")
     expect(a.locator("#vote-status")).to_contain_text("closes in 2 d 23 h")
@@ -1377,6 +1385,10 @@ def check_voting(browser, errors: list[str]) -> None:
     expect(a.locator("#vote-status")).to_contain_text("😍 Your Love: Vote trip one")
     rate(row(a, t2), "love").click()
     expect(a.locator("#vote-toast")).to_have_text("Moved your Love from Vote trip one to Vote trip two")
+    if not a.evaluate("""() => { const r = document.getElementById('vote-toast').getBoundingClientRect();
+            return r.top >= 0 && r.bottom <= innerHeight && getComputedStyle(document.getElementById('vote-toast'))
+                .pointerEvents === 'none'; }"""):
+        raise SystemExit("FAIL the Vote dialog's Love-move toast must be on screen and never take a click")
     expect(rate(row(a, t1), "ok")).to_have_attribute("aria-pressed", "true")
     expect(rate(row(a, t2), "love")).to_have_attribute("aria-pressed", "true")
     # A stay: ▸ Stays (1) on trip two stays open across the re-render the vote causes.
@@ -1421,6 +1433,9 @@ def check_voting(browser, errors: list[str]) -> None:
     # within one poll (10 s) without any click.
     ctx_b, b = new_page()
     sign_up(b, "bob", "🦖", {"🤡": "nikos", "🍕": "anna"})
+    expect(b.locator("#guide-join")).to_be_visible()  # not a participant: the Join screen opens by itself
+    b.click("#guide-later")
+    b.click("#vote-btn")
     expect(b.locator("#vote-round-view")).to_be_visible()
     expect(b.locator("#vote-left")).to_have_text(" · 2 left")
     expect(row(b, t2).locator(".count-btn").first).to_have_text("😍1")
@@ -1851,6 +1866,7 @@ def check_emojis(browser, errors: list[str]) -> None:
     expect(octopus).to_have_attribute("aria-pressed", "true")
     expect(octopus).not_to_have_attribute("aria-disabled", "true")  # your own one is not "taken"
     expect(z.locator('#emoji-grid .emoji-btn[data-emoji="🐸"]')).to_have_attribute("title", "taken by zoe")
+    z.wait_for_load_state("networkidle")  # the picker redraws once its fresh emoji list arrives: click after that
     z.locator('#emoji-grid .emoji-btn[data-emoji="🐸"]').click(force=True)
     expect(z.locator("#emoji-error")).to_have_text("🐸 is taken by zoe")
     expect(dlg).to_be_visible()
@@ -2402,6 +2418,9 @@ def check_mobile(browser, errors: list[str]) -> None:
     inputs_16("#vote-start")
     pg.fill("#vote-start-title", "Phone round 📱")
     pg.locator("#vote-start-submit").tap()
+    expect(pg.locator("#vote-invite")).to_be_visible()  # 🎉 the link first
+    pg.locator("#vote-close").tap()
+    tabs["vote"].tap()
     expect(pg.locator("#vote-round-view")).to_be_visible()
     mine = pg.locator("#vote-trips .vote-trip", has_text=new_name)
     buttons = mine.locator(".vote-buttons").first.locator(".vote-btn-rate")
@@ -2736,7 +2755,7 @@ def check_overview(browser, errors: list[str]) -> None:
 def check_welcome(browser, errors: list[str]) -> None:
     """🥾 Login first + active round: the wall shows a spinner until /api/auth/me answers (no flash of the app); an open
     round opens by itself once per round per browser session (reload: not again; a new round: again); the banner's
-    Join / Continue voting · N left / See results ✓ open the Vote dialog; on the phone: the wall full-screen, the
+    Join / Continue voting · N left / See results ✓ open the Join screen / the guide / the Overview; on the phone: the wall full-screen, the
     banner at the top of the Map tab, the top bar's emoji → Change emoji / Log out. Real rounds API, no mocks."""
     shots = os.environ.get("UI_SHOTS")
     seed = """(body) => fetch('/api/saved-trips', {method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -2793,36 +2812,43 @@ def check_welcome(browser, errors: list[str]) -> None:
         w.screenshot(path=os.path.join(shots, "banner-desktop.png"))
     print("PASS the banner shows the open round under the header: title, closes in…, Continue voting · 2 left")
 
-    # bob logs in: not a participant of this round → the Vote dialog opens by itself; the banner offers Join.
+    # bob logs in: not a participant of this round → the Join screen opens by itself; the banner offers Join.
     ctx_t, t = new_page()
     t.goto(BASE)
     wall_log_in(t, "bob")
-    expect(t.locator("#vote-dialog")).to_be_visible()
-    expect(t.locator("#vote-status")).to_contain_text("Welcome round")
-    t.click("#vote-close")
+    expect(t.locator("#guide-join")).to_be_visible()
+    expect(t.locator("#guide")).to_contain_text("Welcome round")
+    t.click("#guide-later")
     expect(t.locator("#round-banner-action")).to_have_text("Join")
     assert t.evaluate(f"sessionStorage.getItem('hick-toors:auto-opened:{first_round}')") == "1"
     t.reload()  # same browser session: not again
     expect(t.locator("#welcome")).to_be_hidden()
     expect(t.locator("#round-banner-action")).to_have_text("Join")
     t.wait_for_timeout(600)
-    expect(t.locator("#vote-dialog")).to_be_hidden()
-    print("PASS a non-participant's login opens the round by itself (banner: Join); a reload in the session doesn't")
+    expect(t.locator("#guide")).to_be_hidden()
+    print("PASS a non-participant's login opens the Join screen by itself (banner: Join); a reload in the session doesn't")
 
-    # The banner's action opens the Vote dialog; rating updates it: Continue voting · 1 left → See results ✓.
+    # Banner Join → the Join screen → the guide; rating updates it: Continue voting · 1 left (→ the guide at the
+    # unrated trip) → See results ✓ (→ the 📊 Overview).
     t.click("#round-banner-action")
-    expect(t.locator("#vote-dialog")).to_be_visible()
-    rows = t.locator("#vote-trips .vote-trip")
-    rows.filter(has_text="Welcome trip one").locator('.vote-buttons [data-rating="love"]').first.click()
+    expect(t.locator("#guide-join")).to_be_visible()
+    t.click("#guide-join")
+    expect(t.locator(".g-trip-name")).to_be_visible()
+    first_name = t.locator(".g-trip-name").text_content()
+    t.locator('.g-rate-btn[data-rating="love"]').click()
     expect(t.locator("#round-banner-action")).to_have_text("Continue voting · 1 left")
-    rows.filter(has_text="Welcome trip two").locator('.vote-buttons [data-rating="ok"]').first.click()
+    t.click("#guide-close")
+    t.click("#round-banner-action")  # Continue → the guide at the trip still to rate
+    expect(t.locator(".g-trip-name")).not_to_have_text(first_name)
+    t.locator('.g-rate-btn[data-rating="ok"]').click()
     expect(t.locator("#round-banner-action")).to_have_text("See results ✓")
-    t.click("#vote-close")
+    t.click("#guide-close")
     expect(t.locator("#round-banner-text")).to_contain_text("Voting open: Welcome round")
     t.click("#round-banner-action")
     expect(t.locator("#vote-dialog")).to_be_visible()
+    expect(t.locator("#vote-overview")).to_be_visible()
     t.click("#vote-close")
-    print("PASS banner → Vote; after rating: Continue voting · 1 left, then See results ✓ (still opens Vote)")
+    print("PASS banner Join → Join screen → guide; Continue voting · 1 left → the unrated trip; See results ✓ → Overview")
 
     # A new round opens by itself again (same session, new round id); the banner hides once no round is open.
     w.evaluate("(id) => fetch(`/api/rounds/${id}/cancel`, {method: 'POST'})", first_round)
@@ -2830,10 +2856,10 @@ def check_welcome(browser, errors: list[str]) -> None:
     expect(t.locator("#round-banner")).to_be_hidden()
     w.evaluate(open_round, ["Second round", [t1, t2]])
     t.reload()
-    expect(t.locator("#vote-dialog")).to_be_visible()
-    expect(t.locator("#vote-status")).to_contain_text("Second round")
+    expect(t.locator("#guide-join")).to_be_visible()
+    expect(t.locator("#guide")).to_contain_text("Second round")
     expect(t.locator("#round-banner-action")).to_have_text("Join")  # taking part in the last round doesn't carry over
-    t.click("#vote-close")
+    t.click("#guide-later")
     print("PASS no open round: no banner; a new round opens by itself again in the same session")
     ctx_t.close()
 
@@ -2861,8 +2887,8 @@ def check_welcome(browser, errors: list[str]) -> None:
         p.screenshot(path=os.path.join(shots, "wall-phone.png"))
     p.locator("#auth-tab-login").tap()
     wall_log_in(p, "zed")
-    expect(p.locator("#vote-dialog")).to_be_visible()
-    p.locator("#vote-close").tap()
+    expect(p.locator("#guide-join")).to_be_visible()
+    p.locator("#guide-later").tap()
     print("PASS phone: the wall is full-screen, 16 px inputs, ≥ 40 px targets, no side scroll; log in → round opens")
 
     # The banner sits at the top of the Map tab, below the top bar, above the map; hidden on the List tab.
@@ -2888,9 +2914,9 @@ def check_welcome(browser, errors: list[str]) -> None:
     p.locator('#tabbar button[data-tab="map"]').tap()
     expect(banner_p).to_be_visible()
     p.locator("#round-banner-action").tap()
-    expect(p.locator("#vote-dialog")).to_be_visible()
-    p.locator("#vote-close").tap()
-    print("PASS phone: banner between the top bar and the map on the Map tab (not on List), tap → Vote")
+    expect(p.locator("#guide-join")).to_be_visible()
+    p.locator("#guide-later").tap()
+    print("PASS phone: banner between the top bar and the map on the Map tab (not on List), tap → Join screen")
 
     # The top bar's account button: your emoji → Change emoji / Log out.
     account = p.locator("#account-btn")
@@ -2927,6 +2953,377 @@ def check_welcome(browser, errors: list[str]) -> None:
 
     cancel_open_round(w)
     ctx_w.close()
+
+
+def tiny_png(rgb: tuple[int, int, int], size: int = 8) -> bytes:
+    """A solid-colour PNG (stay photos for the guide; served by a route, no outside request)."""
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    raw = b"".join(b"\x00" + bytes(rgb) * size for _ in range(size))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+def check_guide(browser, errors: list[str]) -> None:
+    """🧭 The guided round (real rounds API): the opener's 🎉 invite screen (link, 📋 Copy → clipboard, 📤 Share →
+    navigator.share, Start voting myself → the guide); a brand-new friend on a phone opens the link logged out →
+    the invitation on the wall → signs up with an emoji → Join screen → the guide: trip step content, rate trip +
+    stay, No-go collapses the stays, Love move toast in view while scrolled, See on map → the map shows the trip + the
+    Back pill → the same step, dots jump, summary edit → back to the step, Done → 📊 Overview; reopening the link
+    resumes at the first unrated trip; unknown id → toast; closed round → Overview with the winner; desktop: 🔗 Share
+    link copies, the guide + the pill at the top centre. Phone: no side scroll, ≥ 40 px targets."""
+    shots = os.environ.get("UI_SHOTS")
+    shot_dir = os.environ.get("GUIDE_SHOTS") or shots
+    seed = """(body) => fetch('/api/saved-trips', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body)}).then((r) => r.json()).then((t) => t.id)"""
+    get_round = "fetch('/api/rounds/current').then((r) => r.json())"
+    share_stub = "navigator.share = (data) => { window.__shared = data; return Promise.resolve(); };"
+    photos = {"red": tiny_png((205, 120, 90)), "green": tiny_png((90, 150, 110)), "blue": tiny_png((90, 120, 190))}
+    phone = {"viewport": {"width": 390, "height": 844}, "has_touch": True, "is_mobile": True, "device_scale_factor": 3}
+
+    def new_page(stub_share=False, **kw):
+        kw.setdefault("viewport", {"width": 1400, "height": 900})
+        ctx = browser.new_context(**kw)
+        ctx.grant_permissions(["clipboard-read", "clipboard-write"], origin=BASE)
+        if stub_share:
+            ctx.add_init_script(share_stub)
+        ctx.route("https://img.test/**", lambda route: route.fulfill(
+            status=200, content_type="image/png", body=photos.get(route.request.url.rsplit("/", 1)[-1], photos["red"])))
+        pg = ctx.new_page()
+        pg.on("pageerror", lambda exc: errors.append(str(exc)))
+        return ctx, pg
+
+    def shot(pg, name: str) -> None:
+        if shot_dir:
+            os.makedirs(shot_dir, exist_ok=True)
+            pg.screenshot(path=os.path.join(shot_dir, name))
+
+    def no_side_scroll(pg, where: str) -> None:
+        bad = pg.evaluate("""() => {
+            const out = [];
+            if (document.documentElement.scrollWidth > innerWidth) out.push('page');
+            for (const d of document.querySelectorAll('dialog[open]')) if (d.scrollWidth > d.clientWidth + 1) out.push(d.id);
+            return out; }""")
+        if bad:
+            raise SystemExit(f"FAIL side scroll on the phone ({where}): {bad}")
+
+    def small_targets(pg, scope: str) -> list:
+        return pg.evaluate("""(scope) => [...document.querySelectorAll(`${scope} button, ${scope} input, ${scope} a`)]
+            .filter((el) => el.offsetParent && !el.closest('[hidden]'))
+            .filter((el) => { const r = el.getBoundingClientRect(); return r.height < 40 || r.width < 40; })
+            .map((el) => el.id || el.className || el.textContent)""", scope)
+
+    def check_targets(pg, scope: str, where: str) -> None:
+        bad = small_targets(pg, scope)
+        if bad:
+            raise SystemExit(f"FAIL targets under 40 px on the phone ({where}): {bad}")
+
+    def in_view(pg, selector: str) -> bool:
+        return pg.evaluate("""(sel) => { const r = document.querySelector(sel).getBoundingClientRect();
+            return r.height > 0 && r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth; }""",
+                           selector)
+
+    # ---- the opener (phone): Start a round → 🎉 Round started – invite your friends ----
+    ctx_o, o = new_page(stub_share=True, **phone)
+    o.goto(BASE)
+    wall_sign_up(o, "gina", "🦩", tap=True)
+    stay = lambda i, colour, **kw: {**STAY, "id": f"airbnb:g{i}", "name": kw.pop("name", f"Guide house {i}"),
+                                    "photo": f"https://img.test/{colour}", **kw}
+    # Seeded oldest first: the Start form lists the newest first, and the round keeps that order.
+    trip_c = o.evaluate(seed, {"name": "Parnitha day trip", "hikes": [{**HIKE, "id": "wikiloc:8", "name": "Bafi refuge"}],
+                               "stays": []})
+    trip_b = o.evaluate(seed, {
+        "name": "Pelion sea & forest", "start": "2026-11-13", "end": "2026-11-15", "guests": 4,
+        "notes": "Swim at Mylopotamos if it's warm.\nChestnuts are in season.\nTavern in Tsagarada on Saturday night.",
+        "hikes": [{**HIKE, "id": "wikiloc:7", "name": "Kalderimi to Damouchari"},
+                  {**HIKE2, "id": "wikiloc:17", "name": "Centaur path"},
+                  {**HIKE2, "id": "wikiloc:27", "name": "Agios Ioannis coast walk"}],
+        "stays": [stay(3, "blue", name="Tsagarada tower house", total_price=310)]})
+    trip_a = o.evaluate(seed, {
+        "name": "Zagori stone villages", "start": "2026-11-13", "end": "2026-11-15", "guests": 4, "dog": True,
+        "notes": "Vikos gorge on Saturday, <b>tsipouro</b> in Monodendri after.",
+        "hikes": [{**HIKE, "name": "Vikos Gorge traverse", "distance_km": 12.4, "elevation_gain_m": 750},
+                  {**HIKE2, "name": "Beloi viewpoint loop", "distance_km": 3.1, "elevation_gain_m": 120,
+                   "difficulty": "Easy"}],
+        "stays": [stay(1, "red", name="Archontiko Mikri Arktos", total_price=240, rating=4.9),
+                  stay(2, "green", name="Papigo stone guesthouse", total_price=180, rating=4.6, badge="garden",
+                       pets_allowed=False)],
+        "sights": [WATERFALL, {**WATERFALL, "id": "osm:node/9", "name": "Second falls"}, RIVER]})
+    o.locator('#tabbar button[data-tab="vote"]').tap()
+    start_new = o.locator("#vote-footer button", has_text="Start a new round")
+    expect(o.locator("#vote-start").or_(start_new).first).to_be_visible()
+    if start_new.is_visible():  # an earlier scenario's closed round is the current one
+        start_new.tap()
+    expect(o.locator("#vote-start")).to_be_visible()
+    expect(o.locator("#vote-start-trips input").first).to_be_visible()
+    for box in o.locator("#vote-start-trips input").all():  # only this scenario's trips
+        box.set_checked(box.get_attribute("value") in (trip_a, trip_b, trip_c))
+    o.fill("#vote-start-title", "Where in November?")
+    o.locator("#vote-start-submit").tap()
+    invite = o.locator("#vote-invite")
+    expect(invite).to_be_visible()
+    expect(o.locator("#vote-invite-title")).to_have_text("🎉 Round started – invite your friends")
+    expect(o.locator("#vote-round-view")).to_be_hidden()
+    rid = o.evaluate(get_round)["id"]
+    link = f"{BASE}/?round={rid}"
+    expect(o.locator("#vote-invite-url")).to_have_value(link)
+    expect(invite).to_contain_text("Send it to everyone who should vote – they can sign up from the link")
+    expect(o.locator("#vote-invite-share")).to_be_visible()
+    no_side_scroll(o, "invite screen")
+    check_targets(o, "#vote-invite", "invite screen")
+    shot(o, "guide-7-opener-invite.png")
+    o.locator("#vote-invite-copy").tap()
+    expect(o.locator("#vote-invite-copied")).to_contain_text("Link copied")
+    assert o.evaluate("navigator.clipboard.readText()") == link
+    o.locator("#vote-invite-share").tap()
+    o.wait_for_function("window.__shared")
+    shared = o.evaluate("window.__shared")
+    assert shared["url"] == link and shared["title"] == "Where in November?", shared
+    assert shared["text"].startswith("Vote on 'Where in November?' – closes "), shared
+    o.locator("#vote-invite-start").tap()
+    expect(o.locator("#vote-dialog")).to_be_hidden()
+    expect(o.locator("#guide")).to_be_visible()
+    expect(o.locator(".g-step-label")).to_contain_text("Trip 1 of 3")
+    expect(o.locator(".g-trip-name")).to_have_text("Zagori stone villages")
+    o.locator("#guide-close").tap()
+    print("PASS opener: 🎉 invite screen with the link, Copy → clipboard, Share → navigator.share, Start voting myself → guide")
+
+    # ---- a brand-new friend on a phone opens the link logged out ----
+    ctx_p, p = new_page(**phone)
+    p.goto(link)
+    expect(p.locator("#welcome-invite")).to_have_text(
+        re.compile(r"^🗳️ 🦩 gina invites you to vote: Where in November\? · closes .+"))
+    expect(p.locator("#auth-tab-signup")).to_have_attribute("aria-selected", "true")  # a link → most likely new
+    shot(p, "guide-1-wall-invite.png")
+    wall_sign_up(p, "pia", "🐝", tap=True)
+    guide = p.locator("#guide")
+    expect(guide).to_be_visible()
+    expect(p.locator("#guide-join")).to_be_visible()
+    assert "round=" not in p.url, p.url
+    expect(guide).to_contain_text("🦩 gina invites you to vote")
+    expect(p.locator(".g-who")).to_contain_text("🦩 gina")
+    expect(p.locator(".g-how li")).to_have_count(3)
+    expect(p.locator(".g-how li").first).to_have_text("Rate every trip: 😍 love it (one per round), 🙂 OK, 🚫 no-go")
+    no_side_scroll(p, "join screen")
+    check_targets(p, "#guide", "join screen")
+    shot(p, "guide-2-join.png")
+    p.locator("#guide-join").tap()
+    expect(p.locator(".g-step-label")).to_contain_text("Trip 1 of 3")
+    print("PASS new friend: link → invitation on the wall (Sign up) → signs up with emoji → Join screen → guide")
+
+    # Trip step content: name, dates/nights/guests/dog, the notes as text, hikes, nature counts, stays.
+    expect(p.locator(".g-trip-name")).to_have_text("Zagori stone villages")
+    facts = p.locator(".g-facts")
+    expect(facts).to_contain_text("2 nights")
+    expect(facts).to_contain_text("👥 4")
+    expect(facts).to_contain_text("🐕 dog")
+    expect(p.locator(".g-notes-text")).to_have_text("Vikos gorge on Saturday, <b>tsipouro</b> in Monodendri after.")
+    expect(p.locator("#guide b")).to_have_count(0)
+    expect(p.locator(".g-hike")).to_have_count(2)
+    expect(p.locator(".g-hike").first).to_contain_text("12.4 km · ≈ 3 h 45 min · +750 m · Moderate")
+    expect(p.locator(".g-nature")).to_contain_text("💧 2 waterfalls")
+    expect(p.locator(".g-nature")).to_contain_text("🌊 1 river")
+    stays = p.locator(".g-stay")
+    expect(stays).to_have_count(2)
+    expect(stays.first).to_contain_text("Archontiko Mikri Arktos")
+    expect(stays.first).to_contain_text("€240 total · €120/night · ★ 4.9")
+    expect(stays.first).to_contain_text("🐕 pets OK")
+    expect(p.locator("#guide-next")).to_have_text("Decide later →")
+    expect(p.locator("#guide-back")).to_be_disabled()
+    no_side_scroll(p, "trip step")
+    check_targets(p, "#guide", "trip step")
+    shot(p, "guide-3-trip-step.png")
+    print("PASS trip step: dates/nights/guests/🐕, notes as text, hikes with ≈ time, nature counts, stays with price/night")
+
+    # Rate the trip 😍 and a stay; the stays section scrolled into view.
+    p.locator('.g-rate-btn[data-rating="love"]').tap()
+    expect(p.locator('.g-rate-btn[data-rating="love"]')).to_have_attribute("aria-pressed", "true")
+    expect(p.locator(".g-love-note")).to_contain_text("This trip has your Love")
+    expect(p.locator("#guide-next")).to_have_text("Next →")
+    expect(p.locator('.g-dot[data-trip="%s"]' % trip_a)).to_have_class(re.compile(r"\brated\b"))
+    p.locator(".g-comment").fill("gorge! 🥾")
+    p.locator(".g-comment").press("Enter")
+    first_stay = stays.first
+    first_stay.locator('.g-stay-btn[data-rating="love"]').tap()
+    expect(first_stay.locator('.g-stay-btn[data-rating="love"]')).to_have_attribute("aria-pressed", "true")
+    stays.nth(1).locator('.g-stay-btn[data-rating="ok"]').tap()
+    expect(stays.nth(1).locator('.g-stay-btn[data-rating="ok"]')).to_have_attribute("aria-pressed", "true")
+    p.locator(".g-sleep").scroll_into_view_if_needed()
+    p.evaluate("document.getElementById('guide').scrollTop = document.querySelector('.g-sleep').offsetTop - 70")
+    shot(p, "guide-4-stays.png")
+    for _ in range(30):
+        mine = next(t for t in p.evaluate(get_round)["trips"] if t["trip_id"] == trip_a)
+        if [v["comment"] for v in mine["votes"] if v["username"] == "pia"] == ["gorge! 🥾"]:
+            break
+        p.wait_for_timeout(100)
+    else:
+        raise SystemExit(f"FAIL guide comment not saved: {mine}")
+    assert [s["my_rating"] for s in mine["stays"] if s["stay_id"] == "airbnb:g1"] == ["love"], mine
+    print("PASS rate trip 😍 + comment + stays 😍/🙂 (saved, dots filled, Next →)")
+
+    # 🗺️ See on map → the map shows the trip, the Back pill above the tab bar → the same step, ratings intact.
+    p.evaluate("document.getElementById('guide').scrollTop = 0")
+    p.locator(".g-map-btn").tap()
+    expect(guide).to_be_hidden()
+    pill = p.locator("#guide-pill")
+    expect(pill).to_be_visible()
+    expect(p.locator("#guide-pill-back")).to_have_text("← Back to voting (Trip 1 of 3)")
+    assert p.evaluate("state.hikes.size") == 2 and p.evaluate("state.stays.size") == 2
+    expect(p.locator("#stay-note")).to_have_text("in trip “Zagori stone villages”")
+    pill_box = pill.bounding_box()
+    tab_box = p.locator("#tabbar").bounding_box()
+    if not (pill_box["y"] + pill_box["height"] <= tab_box["y"] and pill_box["height"] >= 40):
+        raise SystemExit(f"FAIL the Back pill should sit above the tab bar: {pill_box} {tab_box}")
+    p.wait_for_timeout(200)
+    if p.evaluate("""() => { const s = map.getSize(), el = map.getContainer();
+            return s.x !== el.clientWidth || s.y !== el.clientHeight; }"""):
+        raise SystemExit("FAIL Leaflet wasn't re-measured after See on map (grey band)")
+    no_side_scroll(p, "map with the pill")
+    shot(p, "guide-5-map-pill.png")
+    p.locator("#guide-pill-back").tap()
+    expect(guide).to_be_visible()
+    expect(pill).to_be_hidden()
+    expect(p.locator(".g-trip-name")).to_have_text("Zagori stone villages")
+    expect(p.locator('.g-rate-btn[data-rating="love"]')).to_have_attribute("aria-pressed", "true")
+    expect(p.locator(".g-comment")).to_have_value("gorge! 🥾")
+    print("PASS See on map → the trip on the map + Back pill above the tab bar → the same step, ratings intact")
+
+    # Next → trip 2: 😍 here moves the Love – the toast is on screen although the dialog is scrolled down.
+    p.locator("#guide-next").tap()
+    expect(p.locator(".g-step-label")).to_contain_text("Trip 2 of 3")
+    expect(p.locator(".g-love-note")).to_contain_text("Your 😍 is on “Zagori stone villages”")
+    p.locator(".g-hike").last.wait_for()
+    p.evaluate("document.querySelector('.g-rate-buttons').scrollIntoView({block: 'center'})")
+    assert p.evaluate("document.getElementById('guide').scrollTop") > 100
+    p.locator('.g-rate-btn[data-rating="love"]').tap()
+    toast = p.locator("#guide-toast")
+    expect(toast).to_have_text("Moved your Love from Zagori stone villages to Pelion sea & forest")
+    if not in_view(p, "#guide-toast"):
+        raise SystemExit("FAIL the Love-move toast is not on screen in the scrolled guide")
+    if p.evaluate("getComputedStyle(document.getElementById('guide-toast')).pointerEvents") != "none":
+        raise SystemExit("FAIL the toast must not take taps")
+    # 🚫 collapses the stays; "show anyway" opens them.
+    p.locator('.g-rate-btn[data-rating="nogo"]').tap()
+    expect(p.locator('.g-rate-btn[data-rating="nogo"]')).to_have_attribute("aria-pressed", "true")
+    expect(p.locator(".g-collapsed")).to_be_visible()
+    expect(p.locator(".g-stays")).to_be_hidden()
+    p.locator(".g-show-anyway").tap()
+    expect(p.locator(".g-stays")).to_be_visible()
+    expect(p.locator(".g-collapsed")).to_be_hidden()
+    print("PASS Love move toast in view while scrolled; 🚫 collapses the stays, show anyway opens them")
+
+    # Dots jump; an unrated trip says Decide later; the last step leads to the summary.
+    p.locator(f'.g-dot[data-trip="{trip_c}"]').tap()
+    expect(p.locator(".g-step-label")).to_contain_text("Trip 3 of 3")
+    expect(p.locator(".g-sleep")).to_be_hidden()  # no stays: no "Where would you sleep?"
+    expect(p.locator("#guide-next")).to_have_text("Decide later →")
+    p.locator("#guide-next").tap()
+    summary = p.locator(".g-summary")
+    expect(summary).to_be_visible()
+    expect(p.locator(".g-warn")).to_have_text("⚠ 1 trip not rated yet – tap it to decide")
+    # The 🚫 on trip 2 replaced its 😍: no Love given now.
+    expect(p.locator(".g-love-sum")).to_have_text("😍 You haven't given your Love yet – one trip can get it")
+    rows = p.locator(".g-sum-row")
+    expect(rows).to_have_count(3)
+    expect(rows.nth(0)).to_contain_text("🙂 OK")  # the Love moved away from it
+    expect(rows.nth(0)).to_contain_text("💬 “gorge! 🥾”")
+    expect(rows.nth(0)).to_contain_text("🏡 😍 Archontiko Mikri Arktos")
+    expect(rows.nth(1)).to_contain_text("🚫 No-go")
+    expect(rows.nth(2)).to_contain_text("⚠ Not rated")
+    no_side_scroll(p, "summary")
+    check_targets(p, "#guide", "summary")
+    shot(p, "guide-6-summary.png")
+    rows.nth(2).tap()  # summary → that step
+    expect(p.locator(".g-step-label")).to_contain_text("Trip 3 of 3")
+    p.locator('.g-rate-btn[data-rating="ok"]').tap()
+    expect(p.locator("#guide-next")).to_have_text("Review my picks →")
+    p.locator("#guide-next").tap()
+    expect(p.locator(".g-done")).to_have_text("✓ You rated every trip – thank you!")
+    p.locator("#guide-next").tap()  # Done ✓
+    expect(guide).to_be_hidden()
+    expect(p.locator("#vote-dialog")).to_be_visible()
+    expect(p.locator("#vote-overview")).to_be_visible()
+    expect(p.locator("#vote-tab-overview")).to_have_attribute("aria-selected", "true")
+    assert p.evaluate("localStorage.getItem('hick-toors:vote-tab')") != "overview"  # Done doesn't pick the tab for later
+    p.locator("#vote-close").tap()
+    print("PASS dots jump; summary: warning, your 😍, rating/comment/stay per trip; tap → step; Done → 📊 Overview")
+
+    # Reopening the link resumes at the first unrated trip (pia clears trip 2's vote through the API).
+    status = p.evaluate("([r, t]) => fetch(`/api/rounds/${r}/trips/${t}/vote`, {method: 'DELETE'}).then((x) => x.status)",
+                        [rid, trip_b])
+    assert status == 200, status
+    p.goto(link)
+    expect(guide).to_be_visible()
+    expect(p.locator(".g-step-label")).to_contain_text("Trip 2 of 3")
+    assert "round=" not in p.url, p.url
+    p.locator('.g-rate-btn[data-rating="ok"]').tap()
+    expect(p.locator('.g-rate-btn[data-rating="ok"]')).to_have_attribute("aria-pressed", "true")
+    p.goto(link)  # everything rated: the summary
+    expect(p.locator(".g-summary")).to_be_visible()
+    p.locator("#guide-close").tap()
+    print("PASS reopening the link resumes at the first unrated trip (all rated: the summary)")
+
+    # Unknown round id → a toast and the normal app.
+    p.goto(f"{BASE}/?round=nope")
+    expect(p.locator("#notices")).to_contain_text("That voting round doesn't exist")
+    expect(guide).to_be_hidden()
+    expect(p.locator("#vote-dialog")).to_be_hidden()
+    assert "round=" not in p.url, p.url
+    print("PASS unknown round link → toast “That voting round doesn't exist”, parameter removed")
+
+    # ---- desktop: an existing account opens the link → Join → guide; 🔗 Share link copies; the pill at the top ----
+    ctx_d, d = new_page()
+    d.goto(BASE)
+    wall_sign_up(d, "quin", "🦒")
+    d.goto(link)
+    expect(d.locator("#guide-join")).to_be_visible()
+    d.click("#guide-join")
+    expect(d.locator(".g-step-label")).to_contain_text("Trip 1 of 3")
+    expect(d.locator(".g-stay")).to_have_count(2)
+    shot(d, "guide-8-desktop.png")
+    d.locator('.g-rate-btn[data-rating="ok"]').click()
+    d.click(".g-map-btn")
+    pill_d = d.locator("#guide-pill")
+    expect(pill_d).to_be_visible()
+    pd = pill_d.bounding_box()
+    md = d.locator("#map").bounding_box()
+    if not (abs((pd["x"] + pd["width"] / 2) - (md["x"] + md["width"] / 2)) < 4 and pd["y"] - md["y"] < 30):
+        raise SystemExit(f"FAIL desktop Back pill should be at the top centre of the map: {pd} {md}")
+    d.click("#guide-pill-back")
+    expect(d.locator(".g-trip-name")).to_have_text("Zagori stone villages")
+    expect(d.locator('.g-rate-btn[data-rating="ok"]')).to_have_attribute("aria-pressed", "true")
+    d.click("#guide-close")
+    d.click("#vote-btn")
+    d.click("#vote-tab-vote")
+    share = d.locator("#vote-share .share-btn")
+    expect(share).to_have_text("🔗 Share link")
+    share.click()  # desktop: no share sheet → copied + the link in a field
+    expect(d.locator("#vote-share .share-msg")).to_have_text("✓ Link copied")
+    expect(d.locator("#vote-share .share-url")).to_have_value(link)
+    assert d.evaluate("navigator.clipboard.readText()") == link
+    d.evaluate("refreshVote()")  # a poll keeps the field
+    expect(d.locator("#vote-share .share-url")).to_have_value(link)
+    d.click("#vote-close")
+    print("PASS desktop: link → Join → guide; See on map pill at the top centre → same step; 🔗 Share link copies")
+
+    # The round closes: the link shows the 📊 Overview of that round with its winner.
+    o.evaluate("(id) => fetch(`/api/rounds/${id}/close`, {method: 'POST'})", rid)
+    p.goto(link)
+    expect(p.locator("#vote-dialog")).to_be_visible()
+    expect(p.locator("#vote-overview")).to_be_visible()
+    expect(p.locator(".ov-winner")).to_contain_text("🏆")
+    expect(guide).to_be_hidden()
+    assert "round=" not in p.url, p.url
+    print("PASS closed round link → 📊 Overview with the winner")
+
+    for t in (trip_a, trip_b, trip_c):  # later scenarios start rounds from every saved trip
+        o.evaluate("(id) => fetch(`/api/saved-trips/${encodeURIComponent(id)}`, {method: 'DELETE'})", t)
+    ctx_d.close()
+    ctx_p.close()
+    ctx_o.close()
 
 
 if __name__ == "__main__":
