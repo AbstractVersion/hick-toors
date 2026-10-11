@@ -148,6 +148,7 @@ async function reloadTripList() {
 }
 async function openTripsDialog() {
   showTripsError("");
+  auth.refreshUsers();  // creators' emojis; "users-changed" redraws the names
   showTripList();
   if (!$("trips-dialog").open) $("trips-dialog").showModal();
   await reloadTripList();
@@ -169,12 +170,16 @@ function renderTripList(list) {
     const meta = document.createElement("div");
     meta.className = "meta";
     meta.textContent = `${tripDates(t)} · ${plural(t.hike_count, "hike")} · ${plural(t.stay_count, "stay")}${t.sight_count > 0 ? ` · ${plural(t.sight_count, "sight")}` : ""}${t.source === "suggested" ? " · ⭐" : ""}`;
-    if (t.created_by) meta.textContent += ` · by ${t.created_by}`;
+    if (t.created_by) meta.textContent += ` · by ${auth.label(t.created_by)}`;
     li.append(strong, meta);
     li.addEventListener("click", () => openTrip(t.id));
     li.addEventListener("keydown", (e) => { if (e.key === "Enter") openTrip(t.id); });
     ul.appendChild(li);
   }
+}
+function showCreatedBy(t) {
+  $("trip-created-by").textContent = t.created_by ? `Created by ${auth.label(t.created_by)}` : "";
+  $("trip-created-by").hidden = !t.created_by;
 }
 async function openTrip(id) {
   showTripsError("");
@@ -186,8 +191,7 @@ async function openTrip(id) {
   $("trip-guests").value = t.guests;
   $("trip-dog").checked = t.dog;
   $("trip-notes").value = t.notes || "";
-  $("trip-created-by").textContent = t.created_by ? `Created by ${t.created_by}` : "";
-  $("trip-created-by").hidden = !t.created_by;
+  showCreatedBy(t);
   showRoundLine(t.id);
   $("trip-airbnb-url").value = "";
   showAirbnbInfo([]);
@@ -394,7 +398,14 @@ async function findNearbySights() {
     renderTripItems();
     showSightsInfo([res.added > 0 ? `Added ${plural(res.added, "new sight")} (${res.found} found within ${NEARBY_KM} km)`
       : `No new named sights within ${NEARBY_KM} km`, ...(res.warnings || [])]);
-    refreshTrips().catch(() => {});  // only the list count: the sights are saved, don't report a failure here
+    // Names carry their emoji (auth.label): redraw them when the users map changes.
+document.addEventListener("users-changed", () => {
+  if (!$("trips-dialog").open) return;
+  if (!$("trip-editor").hidden && trips.current) showCreatedBy(trips.current);
+  else if ($("trips-list").contains(document.activeElement)) return;  // keep the keyboard focus; next open redraws
+  else renderTripList(trips.list);
+});
+refreshTrips().catch(() => {});  // only the list count: the sights are saved, don't report a failure here
   } catch (err) {
     if (editorOpen(tripId)) showTripsError(err.message);
   } finally {

@@ -13,7 +13,8 @@ The auth API is real too: the check signs up `nikos` (a fresh TRIPS_DB has no ac
 The 🗳️ voting scenario at the end uses the real rounds API with two browser contexts (`anna` opens a round,
 logged-out `bob` watches, signs up from a vote click, votes; anna closes the round) – it needs no open round.
 The 📱 phone scenarios (390×844 and landscape 844×390, touch) run last; set UI_SHOTS=<folder> to save screenshots there.
-UI sign-ups get an emoji added to their request (give_signups_an_emoji) until the sign-up form has its picker.
+Every UI sign-up picks its emoji in the sign-up picker; the 😀 scenarios check taken emojis, the 409 race, Change emoji
+and the first-login prompt (mocked /api/auth/me for an account from before emojis).
 """
 
 import json
@@ -53,21 +54,16 @@ RIVER = {"id": "osm:way/2", "name": "Test river", "kind": "river", "lat": 38.56,
 NATURE_DOWN = "Nature sights unavailable for part of the map – try again in a minute"
 # Set by the Load more step: hikes answers then carry a total and a next page.
 paging = {"on": False}
-# Sign-ups need an emoji now; the sign-up form gets its picker in the next task. Until then every UI sign-up gets a
-# fresh one from the set added to its request body (give_signups_an_emoji).
-SIGNUP_EMOJIS = ["🤡", "🐸", "🦄", "🐙", "🦖", "🍕", "🦥", "🐧", "🦉", "🦜", "🐼", "🐨", "🦘", "🦒", "🐘", "🦛",
-                 "🐢", "🦎", "🦋", "🐝"]
-signups = {"n": 0}
+EMOJI_COUNT = 110  # app/accounts.py EMOJIS
 
 
-def give_signups_an_emoji(ctx) -> None:
-    def add(route):
-        body = route.request.post_data_json or {}
-        if "emoji" not in body:
-            body["emoji"] = SIGNUP_EMOJIS[signups["n"] % len(SIGNUP_EMOJIS)]
-            signups["n"] += 1
-        route.continue_(post_data=json.dumps(body))
-    ctx.route("**/api/auth/signup", add)
+def pick_emoji(pg, emoji: str, tap: bool = False) -> None:
+    """Pick an emoji in the sign-up tab's picker (waits for the grid)."""
+    button = pg.locator(f'#auth-emoji-grid .emoji-btn[data-emoji="{emoji}"]')
+    expect(button).not_to_have_attribute("aria-disabled", "true")
+    button.tap() if tap else button.click()
+    expect(button).to_have_attribute("aria-pressed", "true")
+    expect(pg.locator("#auth-submit")).to_be_enabled()
 
 
 def canned_hikes(body: dict) -> dict:
@@ -97,7 +93,6 @@ def main() -> None:
         browser = p.chromium.launch(channel="chrome", headless=True)
         page = browser.new_page(viewport={"width": 1400, "height": 900})
         page.on("pageerror", lambda exc: errors.append(str(exc)))
-        give_signups_an_emoji(page.context)
 
         held: list = []  # (route, path, body) of requests kept in flight on purpose
         hold: set = set()
@@ -603,12 +598,22 @@ def main() -> None:
         expect(page.locator("#auth-username")).to_be_focused()
         page.click("#auth-tab-signup")
         expect(page.locator("#auth-repeat")).to_be_visible()
+        expect(page.locator("#auth-emoji-grid .emoji-btn")).to_have_count(EMOJI_COUNT)
+        expect(page.locator("#auth-submit")).to_be_disabled()  # Sign up waits for an emoji
         page.fill("#auth-username", "nikos")
         page.fill("#auth-password", "password1")
         page.fill("#auth-repeat", "password2")
+        page.press("#auth-repeat", "Enter")  # no emoji yet: Sign up is disabled, Enter sends nothing
+        page.wait_for_timeout(200)
+        expect(auth_dlg).to_be_visible()
+        expect(page.locator("#auth-error")).to_have_text("")
+        pick_emoji(page, "🤡")
+        expect(page.locator("#auth-emoji-picked")).to_have_text(": 🤡")
         page.press("#auth-repeat", "Enter")
         expect(page.locator("#auth-error")).to_have_text("The passwords don't match")
         page.fill("#auth-repeat", "password1")
+        if os.environ.get("UI_SHOTS"):
+            page.locator("#auth-dialog").screenshot(path=os.path.join(os.environ["UI_SHOTS"], "signup-picker-desktop.png"))
         page.press("#auth-repeat", "Enter")  # Enter submits
         expect(auth_dlg).to_be_hidden()
         expect(menu).to_be_visible()  # the ＋ Trip action continued after the sign-up
@@ -616,8 +621,10 @@ def main() -> None:
         expect(menu.locator("button").first).to_have_text("➕ New trip")
         page.keyboard.press("Escape")
         expect(menu).to_be_hidden()
-        expect(auth_area).to_have_text("👤 nikos · Log out", use_inner_text=True)
-        print("PASS logged out ＋ Trip opens the login dialog; Sign up (Enter) continues to the trip menu")
+        expect(auth_area).to_have_text("🤡 nikos · Log out", use_inner_text=True)
+        assert page.evaluate("fetch('/api/auth/me').then((r) => r.json())") == {"username": "nikos", "emoji": "🤡"}
+        expect(page.locator("#emoji-dialog")).to_be_hidden()  # has an emoji: no prompt
+        print("PASS logged out ＋ Trip opens the login dialog; Sign up (emoji picked, Enter) continues to the trip menu")
 
         page.click("#auth-logout")
         expect(auth_area).to_have_text("👤 Log in", use_inner_text=True)
@@ -633,6 +640,14 @@ def main() -> None:
         page.click("#auth-tab-signup")  # a taken name and a body-rule error are shown inline too
         page.fill("#auth-password", "password1")
         page.fill("#auth-repeat", "password1")
+        expect(page.locator("#auth-submit")).to_be_disabled()  # the last sign-up's pick is not kept
+        clown = page.locator('#auth-emoji-grid .emoji-btn[data-emoji="🤡"]')
+        expect(clown).to_have_attribute("aria-disabled", "true")
+        expect(clown).to_have_attribute("title", "taken by nikos")
+        clown.click(force=True)  # aria-disabled: Playwright would wait for it to be enabled
+        expect(page.locator("#auth-error")).to_have_text("🤡 is taken by nikos")
+        expect(page.locator("#auth-submit")).to_be_disabled()
+        pick_emoji(page, "🐸")
         page.click("#auth-submit")
         expect(page.locator("#auth-error")).to_have_text("That username is taken")
         page.fill("#auth-username", "x")
@@ -650,8 +665,10 @@ def main() -> None:
         page.press("#auth-password", "Enter")
         expect(auth_dlg).to_be_hidden()
         expect(menu).to_be_hidden()
-        expect(auth_area).to_have_text("👤 nikos · Log out", use_inner_text=True)
-        print("PASS Log out; wrong password / taken name shown inline; closing the dialog drops the action; Log in")
+        expect(auth_area).to_have_text("🤡 nikos · Log out", use_inner_text=True)
+        expect(page.locator("#emoji-dialog")).to_be_hidden()
+        print("PASS Log out; wrong password / taken name / taken emoji shown inline; closing the dialog drops the action; "
+              "Log in")
 
         # The cookie expires while the page still shows nikos: the 401 opens the dialog, no replay after login.
         page.context.clear_cookies()
@@ -665,7 +682,7 @@ def main() -> None:
         page.fill("#auth-password", "password1")
         page.press("#auth-password", "Enter")
         expect(auth_dlg).to_be_hidden()
-        expect(auth_area).to_have_text("👤 nikos · Log out", use_inner_text=True)
+        expect(auth_area).to_have_text("🤡 nikos · Log out", use_inner_text=True)
         page.wait_for_timeout(300)
         assert page.evaluate("fetch('/api/saved-trips').then((r) => r.json())") == []  # nothing replayed
         print("PASS an expired cookie (401) opens the login dialog; the user repeats the click")
@@ -738,10 +755,10 @@ def main() -> None:
         expect(dlg).to_be_visible()
         rows = page.locator("#trips-list li")
         expect(rows).to_have_count(1)
-        expect(rows.first).to_contain_text("2 hikes · 1 stay · ⭐ · by nikos")
+        expect(rows.first).to_contain_text("2 hikes · 1 stay · ⭐ · by 🤡 nikos")
         rows.first.click()
         expect(page.locator("#trip-editor")).to_be_visible()
-        expect(page.locator("#trip-created-by")).to_have_text("Created by nikos")
+        expect(page.locator("#trip-created-by")).to_have_text("Created by 🤡 nikos")
         hikes_ul = page.locator("#trip-hikes li")
         expect(hikes_ul).to_have_count(2)
         expect(hikes_ul.nth(1)).to_contain_text("Second hike")
@@ -1281,6 +1298,7 @@ def main() -> None:
         print("PASS nature toggle + chips persisted; corrupt storage falls back to all groups")
 
         check_voting(browser, errors)
+        check_emojis(browser, errors)
         check_mobile(browser, errors)
         check_mobile_landscape(browser, errors)
         browser.close()
@@ -1293,23 +1311,27 @@ def check_voting(browser, errors: list[str]) -> None:
     """🗳️ Voting round with two people in two browser contexts (real rounds API, no mocks)."""
     def new_page():
         ctx = browser.new_context(viewport={"width": 1400, "height": 900})
-        give_signups_an_emoji(ctx)
         pg = ctx.new_page()
         pg.on("pageerror", lambda exc: errors.append(str(exc)))
         pg.goto(BASE)
         pg.wait_for_function("typeof openVote === 'function' && auth.ready")
         return ctx, pg
 
-    def sign_up(pg, name: str) -> None:
+    def sign_up(pg, name: str, emoji: str, taken: dict | None = None) -> None:
         if not pg.locator("#auth-dialog").is_visible():
             pg.click("#auth-login-btn")
         pg.click("#auth-tab-signup")
+        for other, owner in (taken or {}).items():  # someone else's emoji: disabled, "taken by <name>"
+            button = pg.locator(f'#auth-emoji-grid .emoji-btn[data-emoji="{other}"]')
+            expect(button).to_have_attribute("aria-disabled", "true")
+            expect(button).to_have_attribute("title", f"taken by {owner}")
         pg.fill("#auth-username", name)
         pg.fill("#auth-password", "password1")
         pg.fill("#auth-repeat", "password1")
+        pick_emoji(pg, emoji)
         pg.press("#auth-repeat", "Enter")
         expect(pg.locator("#auth-dialog")).to_be_hidden()
-        expect(pg.locator("#auth-area")).to_have_text(f"👤 {name} · Log out", use_inner_text=True)
+        expect(pg.locator("#auth-area")).to_have_text(f"{emoji} {name} · Log out", use_inner_text=True)
 
     def row(pg, trip_id: str):
         return pg.locator(f'#vote-trips .vote-trip[data-trip="{trip_id}"]')
@@ -1318,7 +1340,7 @@ def check_voting(browser, errors: list[str]) -> None:
         return scope.locator(".vote-buttons").first.locator(f'[data-rating="{rating}"]')
 
     ctx_a, a = new_page()
-    sign_up(a, "anna")
+    sign_up(a, "anna", "🍕", {"🤡": "nikos"})
     seed = """(body) => fetch('/api/saved-trips', {method: 'POST', headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(body)}).then((r) => r.json())"""
     t1 = a.evaluate(seed, {"name": "Vote trip one", "hikes": [HIKE], "stays": [STAY, BSTAY]})["id"]
@@ -1339,7 +1361,8 @@ def check_voting(browser, errors: list[str]) -> None:
     expect(a.locator("#vote-round-view")).to_be_visible()
     expect(a.locator("#vote-status")).to_contain_text("November 🥾")
     expect(a.locator("#vote-status")).to_contain_text("closes in 2 d 23 h")
-    expect(a.locator("#vote-status")).to_contain_text(re.compile(r"Waiting for: .*\banna\b"))
+    expect(a.locator("#vote-status")).to_contain_text(re.compile(r"Waiting for: .*🍕 anna\b"))
+    expect(a.locator("#vote-status")).to_contain_text("opened by 🍕 anna")
     expect(a.locator("#vote-status")).to_contain_text("You: 0 of 2 trips rated")
     expect(a.locator("#vote-left")).to_have_text(" · 2 left")
     expect(a.locator("#vote-btn")).to_have_class(re.compile(r"\bhas-left\b"))
@@ -1371,7 +1394,7 @@ def check_voting(browser, errors: list[str]) -> None:
     expect(comment_a).to_be_enabled()
     comment_a.fill("can't wait 🥾")
     comment_a.press("Enter")
-    expect(row(a, t2).locator(".count-btn").first).to_have_attribute("title", "Love it: anna")
+    expect(row(a, t2).locator(".count-btn").first).to_have_attribute("title", "Love it: 🍕 anna")
     get_round = "fetch('/api/rounds/current').then((r) => r.json())"
     for _ in range(30):
         trip_two = next(t for t in a.evaluate(get_round)["trips"] if t["trip_id"] == t2)
@@ -1400,18 +1423,24 @@ def check_voting(browser, errors: list[str]) -> None:
     # B's No-go asks to log in first (sign up), then is cast; the comment is shown as text.
     rate(row(b, t1), "nogo").click()
     expect(b.locator("#auth-dialog")).to_be_visible()
-    sign_up(b, "bob")
+    sign_up(b, "bob", "🦖", {"🤡": "nikos", "🍕": "anna"})
     expect(rate(row(b, t1), "nogo")).to_have_attribute("aria-pressed", "true")
     comment_b = row(b, t1).locator(".vote-comment").first
     comment_b.fill("<b>no</b>")
     comment_b.press("Enter")
     nogo_line = row(b, t1).locator(".vote-nogo")
-    expect(nogo_line).to_have_text("⚠ bob: No-go – “<b>no</b>”")
+    expect(nogo_line).to_have_text("⚠ 🦖 bob: No-go – “<b>no</b>”")
     expect(b.locator("#vote-dialog b")).to_have_count(0)
     rate(row(b, t2), "ok").click()
     expect(rate(row(b, t2), "ok")).to_have_attribute("aria-pressed", "true")
     expect(b.locator("#vote-left")).to_have_text(" · 0 left")
-    expect(b.locator("#vote-status")).to_contain_text("Waiting for: nikos")  # every account; nikos never voted
+    expect(b.locator("#vote-status")).to_contain_text("Waiting for: 🤡 nikos")  # every account; nikos never voted
+    names_btn = row(b, t1).locator(".vote-counts").first.locator(".count-btn").nth(2)  # 🚫 count: the names box opens
+    names_btn.click()
+    expect(row(b, t1).locator(".vote-names").first).to_contain_text("🚫 No-go: 🦖 bob (“<b>no</b>”)")
+    if os.environ.get("UI_SHOTS"):
+        b.locator("#vote-dialog").screenshot(path=os.path.join(os.environ["UI_SHOTS"], "vote-names-emojis.png"))
+    names_btn.click()
     expect(b.locator("#vote-tools")).to_be_hidden()  # not the opener
     print("PASS B: No-go after sign-up carries on, comment <b>no</b> rendered as text, badge · 0 left")
 
@@ -1428,7 +1457,7 @@ def check_voting(browser, errors: list[str]) -> None:
 
     # A sees B's votes, closes the round with two clicks → 🏆 banner, buttons disabled, Start a new round.
     a.evaluate("refreshVote()")
-    expect(row(a, t1).locator(".vote-nogo")).to_have_text("⚠ bob: No-go – “<b>no</b>”")
+    expect(row(a, t1).locator(".vote-nogo")).to_have_text("⚠ 🦖 bob: No-go – “<b>no</b>”")
 
     # Changing a rating while typing a comment, the desktop Safari / macOS Firefox way: the button never takes the
     # focus (the press just blurs the comment) and the release comes later. One PUT, new rating + the typed text.
@@ -1507,11 +1536,142 @@ def check_voting(browser, errors: list[str]) -> None:
     ctx_a.close()
 
 
+def check_emojis(browser, errors: list[str]) -> None:
+    """😀 Emojis: two sign-ups race for one emoji (409 → fresh picker), Change emoji (names elsewhere follow), and an
+    account from before emojis (mocked /api/auth/me: emoji null) gets the skippable prompt once per page load."""
+    def new_page():
+        ctx = browser.new_context(viewport={"width": 1400, "height": 900})
+        pg = ctx.new_page()
+        pg.on("pageerror", lambda exc: errors.append(str(exc)))
+        pg.goto(BASE)
+        pg.wait_for_function("typeof openVote === 'function' && auth.ready")
+        return ctx, pg
+
+    def api_signup(ctx, name: str, emoji: str) -> None:  # sets that context's session cookie
+        res = ctx.request.post(f"{BASE}/api/auth/signup", data={"username": name, "password": "password1", "emoji": emoji})
+        assert res.status == 201, (res.status, res.text())
+
+    # zed picks 🐸 – zoe signs up with it first; zed's Sign up answers 409 and gets a fresh picker.
+    ctx_z, z = new_page()
+    z.click("#auth-login-btn")
+    z.click("#auth-tab-signup")
+    z.fill("#auth-username", "zed")
+    z.fill("#auth-password", "password1")
+    z.fill("#auth-repeat", "password1")
+    pick_emoji(z, "🐸")
+    ctx_o = browser.new_context(viewport={"width": 1400, "height": 900})
+    api_signup(ctx_o, "zoe", "🐸")
+    z.click("#auth-submit")
+    expect(z.locator("#auth-error")).to_have_text("That emoji is taken – pick another")
+    frog = z.locator('#auth-emoji-grid .emoji-btn[data-emoji="🐸"]')
+    expect(frog).to_have_attribute("aria-disabled", "true")
+    expect(frog).to_have_attribute("title", "taken by zoe")
+    expect(z.locator('#auth-emoji-grid .emoji-btn[aria-pressed="true"]')).to_have_count(0)
+    expect(z.locator("#auth-submit")).to_be_disabled()
+    expect(z.locator("#auth-dialog")).to_be_visible()
+    pick_emoji(z, "🐙")
+    z.click("#auth-submit")
+    expect(z.locator("#auth-dialog")).to_be_hidden()
+    expect(z.locator("#auth-area")).to_have_text("🐙 zed · Log out", use_inner_text=True)
+    print("PASS two sign-ups with one emoji: the second gets 409 'That emoji is taken – pick another', a refreshed "
+          "picker (🐸 taken by zoe) and picks again")
+
+    # zoe (logged in through the API) sees zed's trip as "by 🐙 zed"; zed changes to 🦄; zoe's next open shows it.
+    trip_id = z.evaluate("""() => fetch('/api/saved-trips', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: 'Emoji trip', hikes: [], stays: []})}).then((r) => r.json()).then((t) => t.id)""")
+    o = ctx_o.new_page()
+    o.on("pageerror", lambda exc: errors.append(str(exc)))
+    o.goto(BASE)
+    o.wait_for_function("typeof openVote === 'function' && auth.ready")
+    expect(o.locator("#auth-area")).to_have_text("🐸 zoe · Log out", use_inner_text=True)
+    o.click("#trips-btn")
+    zed_row = o.locator("#trips-list li", has_text="Emoji trip")
+    expect(zed_row).to_contain_text("by 🐙 zed")
+    o.click("#trips-close")
+
+    z.click("#auth-name")
+    dlg = z.locator("#emoji-dialog")
+    expect(dlg).to_be_visible()
+    expect(z.locator("#emoji-title")).to_have_text("Change emoji")
+    expect(z.locator("#emoji-skip")).to_be_hidden()
+    octopus = z.locator('#emoji-grid .emoji-btn[data-emoji="🐙"]')
+    expect(octopus).to_have_attribute("aria-pressed", "true")
+    expect(octopus).not_to_have_attribute("aria-disabled", "true")  # your own one is not "taken"
+    expect(z.locator('#emoji-grid .emoji-btn[data-emoji="🐸"]')).to_have_attribute("title", "taken by zoe")
+    z.locator('#emoji-grid .emoji-btn[data-emoji="🐸"]').click(force=True)
+    expect(z.locator("#emoji-error")).to_have_text("🐸 is taken by zoe")
+    expect(dlg).to_be_visible()
+    z.locator('#emoji-grid .emoji-btn[data-emoji="🦄"]').click()
+    expect(dlg).to_be_hidden()
+    expect(z.locator("#auth-area")).to_have_text("🦄 zed · Log out", use_inner_text=True)
+    assert z.evaluate("fetch('/api/auth/me').then((r) => r.json())") == {"username": "zed", "emoji": "🦄"}
+    z.click("#auth-name")
+    expect(z.locator('#emoji-grid .emoji-btn[data-emoji="🦄"]')).to_have_attribute("aria-pressed", "true")
+    expect(z.locator('#emoji-grid .emoji-btn[data-emoji="🐙"]')).not_to_have_attribute("aria-disabled", "true")
+    z.click("#emoji-close")
+    expect(dlg).to_be_hidden()
+    o.click("#trips-btn")
+    expect(zed_row).to_contain_text("by 🦄 zed")
+    o.click("#trips-close")
+    status = z.evaluate("(id) => fetch(`/api/saved-trips/${encodeURIComponent(id)}`, {method: 'DELETE'})"
+                        ".then((r) => r.status)", trip_id)
+    assert status in (200, 204), status
+    print("PASS Change emoji from the header name: own one highlighted, taken ones say who, 🦄 saved; "
+          "another browser's trips list shows the new emoji")
+
+    # An account from before emojis: /api/auth/me says emoji null → the prompt opens once per page load, skippable;
+    # it shows 👤 until it picks.
+    ctx_p = browser.new_context(viewport={"width": 1400, "height": 900})
+    api_signup(ctx_p, "olga", "🐢")
+    ctx_p.route("**/api/auth/me", lambda route: route.fulfill(
+        status=200, content_type="application/json", body=json.dumps({"username": "olga", "emoji": None})))
+
+    def users_without_olgas(route):
+        res = route.fetch()
+        users = [{**u, "emoji": None} if u["username"] == "olga" else u for u in res.json()]
+        route.fulfill(response=res, body=json.dumps(users))
+    ctx_p.route("**/api/users", users_without_olgas)
+    p = ctx_p.new_page()
+    p.on("pageerror", lambda exc: errors.append(str(exc)))
+    p.goto(BASE)
+    p.wait_for_function("typeof openVote === 'function' && auth.ready")
+    prompt = p.locator("#emoji-dialog")
+    expect(prompt).to_be_visible()
+    expect(p.locator("#emoji-title")).to_have_text("Pick your emoji")
+    expect(p.locator("#emoji-skip")).to_be_visible()
+    expect(p.locator("#auth-area")).to_have_text("👤 olga · Log out", use_inner_text=True)
+    expect(p.locator('#emoji-grid .emoji-btn[aria-pressed="true"]')).to_have_count(0)
+    p.click("#emoji-skip")
+    expect(prompt).to_be_hidden()
+    p.wait_for_timeout(500)
+    expect(prompt).to_be_hidden()  # once per page load
+    assert p.evaluate("[auth.label('olga'), auth.label('zed'), auth.label('nobody')]") == ["👤 olga", "🦄 zed", "👤 nobody"]
+    p.click("#trips-btn")  # names render without an emoji too
+    expect(p.locator("#trips-dialog")).to_be_visible()
+    p.click("#trips-close")
+    p.reload()
+    p.wait_for_function("typeof openVote === 'function' && auth.ready")
+    expect(prompt).to_be_visible()  # a new page load asks again
+    p.keyboard.press("Escape")
+    expect(prompt).to_be_hidden()
+    ctx_p.unroute("**/api/auth/me")
+    ctx_p.unroute("**/api/users")
+    p.click("#auth-name")
+    expect(p.locator("#emoji-title")).to_have_text("Change emoji")
+    p.locator('#emoji-grid .emoji-btn[data-emoji="🐼"]').click()
+    expect(prompt).to_be_hidden()
+    expect(p.locator("#auth-area")).to_have_text("🐼 olga · Log out", use_inner_text=True)
+    print("PASS an account without an emoji gets the 'Pick your emoji' prompt once per page load, can skip it, shows 👤 "
+          "until it picks one")
+    ctx_p.close()
+    ctx_o.close()
+    ctx_z.close()
+
+
 def check_mobile(browser, errors: list[str]) -> None:
     """📱 Phone shell at 390×844: tab bar, ☰ panel, List / Map tabs, full-screen Trips / Vote dialogs."""
     ctx = browser.new_context(viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True,
                               device_scale_factor=3)
-    give_signups_an_emoji(ctx)
     pg = ctx.new_page()
     pg.on("pageerror", lambda exc: errors.append(str(exc)))
 
@@ -1807,11 +1967,41 @@ def check_mobile(browser, errors: list[str]) -> None:
     pg.fill("#auth-password", "password1")
     pg.fill("#auth-repeat", "password1")
     shot("login-dialog")
+    expect(pg.locator("#auth-emoji-grid .emoji-btn")).to_have_count(EMOJI_COUNT)
+    tall("#auth-emoji-grid .emoji-btn")
+    narrow = pg.evaluate("""() => [...document.querySelectorAll('#auth-emoji-grid .emoji-btn')]
+        .filter((b) => b.getBoundingClientRect().width < 40).length""")
+    if narrow:
+        raise SystemExit(f"FAIL {narrow} picker buttons narrower than 40 px on the phone")
+    no_side_scroll("sign-up picker")
+    pg.locator('#auth-emoji-grid .emoji-btn[data-emoji="🐔"]').scroll_into_view_if_needed()
+    pick_emoji(pg, "🐔", tap=True)
+    shot("signup-picker-phone")
     pg.locator("#auth-submit").tap()
     expect(pg.locator("#auth-dialog")).to_be_hidden()
-    expect(pg.locator("#auth-name")).to_have_text("mia")
+    expect(pg.locator("#auth-name")).to_have_text("🐔 mia")
     no_side_scroll("login")
-    print("PASS login dialog on the phone: 16 px fields, 40 px buttons, sign up works")
+    print("PASS login dialog on the phone: 16 px fields, 40 px buttons, picker ≥ 40 px wraps without side scroll, "
+          "sign up works")
+
+    # Change emoji on the phone: the ☰ panel (still open) → tap your name → full-screen picker.
+    expect(pg.locator("#controls-more")).to_be_visible()
+    tall("#auth-name")
+    pg.locator("#auth-name").tap()
+    expect(pg.locator("#emoji-dialog")).to_be_visible()
+    fills_viewport("#emoji-dialog")
+    expect(pg.locator('#emoji-grid .emoji-btn[data-emoji="🐔"]')).to_have_attribute("aria-pressed", "true")
+    tall("#emoji-grid .emoji-btn")
+    tall("#emoji-close")
+    no_side_scroll("change emoji")
+    shot("change-emoji-phone")
+    sloth = pg.locator('#emoji-grid .emoji-btn[data-emoji="🦥"]')
+    sloth.scroll_into_view_if_needed()
+    sloth.tap()
+    expect(pg.locator("#emoji-dialog")).to_be_hidden()
+    expect(pg.locator("#auth-name")).to_have_text("🦥 mia")
+    expect(pg.locator("#controls-more")).to_be_visible()  # back in the panel it was opened from
+    print("PASS Change emoji on the phone: full-screen picker from the ☰ panel's name, 40 px buttons, no side scroll")
 
     # Draw by touch (a one-finger drag, no mouse events): circle first, cancel by tapping the hint, then a rectangle.
     cdp = ctx.new_cdp_session(pg)

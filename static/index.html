@@ -47,7 +47,7 @@
       </div>
       <span id="auth-area" class="auth-area">
         <button type="button" id="auth-login-btn" class="tool-btn">👤 Log in</button>
-        <span id="auth-user" hidden>👤 <span id="auth-name"></span> · <button type="button" id="auth-logout" class="link-btn">Log out</button></span>
+        <span id="auth-user" hidden><button type="button" id="auth-name" class="link-btn name-btn" title="Change your emoji"></button> · <button type="button" id="auth-logout" class="link-btn">Log out</button></span>
       </span>
     </div>
   </header>
@@ -146,9 +146,21 @@
       <label>Username <input id="auth-username" autocomplete="username" maxlength="20" spellcheck="false" autocapitalize="off"></label>
       <label>Password <input id="auth-password" type="password" autocomplete="current-password" maxlength="200"></label>
       <label id="auth-repeat-row" hidden>Repeat password <input id="auth-repeat" type="password" autocomplete="new-password" maxlength="200"></label>
+      <div id="auth-emoji-row" class="emoji-row" hidden>
+        <div id="auth-emoji-label" class="emoji-label">Your emoji<span id="auth-emoji-picked"></span></div>
+        <div id="auth-emoji-grid" class="emoji-grid" role="group" aria-labelledby="auth-emoji-label"></div>
+      </div>
       <p id="auth-error" class="form-error" role="alert"></p>
       <div class="dlg-actions"><button type="submit" id="auth-submit" class="primary">Log in</button></div>
     </form>
+  </dialog>
+  <dialog id="emoji-dialog" class="auth-dialog emoji-dialog" aria-labelledby="emoji-title">
+    <div class="dlg-head"><h2 id="emoji-title">Change emoji</h2>
+      <button type="button" id="emoji-close" class="tool-btn" aria-label="Close">✕</button></div>
+    <p id="emoji-note" class="list-note"></p>
+    <div id="emoji-grid" class="emoji-grid" role="group" aria-labelledby="emoji-title"></div>
+    <p id="emoji-error" class="form-error" role="alert"></p>
+    <div class="dlg-actions" hidden><button type="button" id="emoji-skip" class="tool-btn">Skip for now</button></div>
   </dialog>
   <dialog id="vote-dialog" class="vote-dialog" aria-labelledby="vote-title">
     <div class="dlg-head"><h2 id="vote-title">🗳️ Vote</h2>

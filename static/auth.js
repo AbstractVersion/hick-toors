@@ -1,26 +1,122 @@
 "use strict";
-// Log in / sign up: the header's 👤 area, the #auth-dialog and requireLogin(then). Loaded after app.js (uses $,
+// Log in / sign up: the header's account area, the #auth-dialog and requireLogin(then). Loaded after app.js (uses $,
 // notices) and before trips.js / vote.js, which wrap every action that changes shared data in requireLogin.
 // Auth calls use their own fetch, not api(): a 401 "Wrong username or password" must not trigger onUnauthorized.
-const auth = { user: null, mode: "login", pending: null, busy: false, ready: null };
+// Emojis: every account has a unique emoji from the server's set; names are shown as auth.label(name) = "🤡 nikos"
+// ("👤 nikos" when it has none yet). The users map behind it is refreshed on load, after log in / sign up / emoji
+// change and by vote.js's polls; a change fires "users-changed" so open lists redraw their names.
+const auth = {
+  user: null, emoji: null, mode: "login", pending: null, busy: false, ready: null,
+  users: new Map(),     // lowercase username → emoji (null: none yet)
+  signupEmoji: null,    // the emoji picked in the Sign up tab
+  prompted: false,      // the "pick your emoji" prompt opens at most once per page load
+  emojiBusy: false,
+};
 const AUTH_BODY_ERROR = "Check the username (3–20 letters, digits, _ . -) and password (1–200 characters)";
+const NO_EMOJI = "👤";
+const EMOJI_TAKEN = "That emoji is taken – pick another";
+const EMOJIS_GONE = "All emojis are taken";
+const EMOJIS_DOWN = "Couldn't load the emojis – try again";
 
-function setAuthUser(user) {
-  const changed = auth.user !== user;
-  auth.user = user;
-  $("auth-login-btn").hidden = Boolean(user);
-  $("auth-user").hidden = !user;
-  $("auth-name").textContent = user || "";
-  if (changed) document.dispatchEvent(new CustomEvent("auth-changed"));
+auth.emojiOf = (name) => (name ? auth.users.get(String(name).toLowerCase()) || null : null);
+auth.label = (name) => `${auth.emojiOf(name) || NO_EMOJI} ${name}`;
+
+let usersSeq = 0;
+function setUsers(list) {
+  const next = new Map(list.map((u) => [String(u.username).toLowerCase(), u.emoji || null]));
+  if (auth.user) next.set(auth.user.toLowerCase(), auth.emoji);  // our own emoji is known first-hand
+  const same = next.size === auth.users.size && [...next].every(([name, emoji]) => auth.users.get(name) === emoji);
+  auth.users = next;
+  if (!same) document.dispatchEvent(new CustomEvent("users-changed"));
 }
-auth.refresh = async () => {
+// GET /api/users → the map; an answer older than a newer request's is dropped.
+auth.refreshUsers = async () => {
+  const seq = ++usersSeq;
   try {
-    const res = await fetch("/api/auth/me");
-    if (res.ok) setAuthUser((await res.json()).username ?? null);
-  } catch { /* offline: keep what we have */ }
-  return auth.user;
+    const res = await fetch("/api/users");
+    if (!res.ok) return;
+    const list = await res.json();
+    if (seq === usersSeq && Array.isArray(list)) setUsers(list);
+  } catch { /* offline: keep the map we have */ }
 };
 
+function setAuthUser(user, emoji = null) {
+  emoji = (user && emoji) || null;
+  const changed = auth.user !== user || auth.emoji !== emoji;
+  auth.user = user;
+  auth.emoji = emoji;
+  if (user && auth.users.get(user.toLowerCase()) !== emoji) {
+    auth.users.set(user.toLowerCase(), emoji);
+    if (!changed) document.dispatchEvent(new CustomEvent("users-changed"));
+  }
+  $("auth-login-btn").hidden = Boolean(user);
+  $("auth-user").hidden = !user;
+  $("auth-name").textContent = user ? `${emoji || NO_EMOJI} ${user}` : "";
+  if (changed) document.dispatchEvent(new CustomEvent("auth-changed"));
+}
+// GET /api/auth/me. prompt: an account without an emoji gets the picker (once per page load).
+auth.refresh = async (prompt = true) => {
+  try {
+    const res = await fetch("/api/auth/me");
+    if (res.ok) {
+      const me = await res.json();
+      setAuthUser(me.username ?? null, me.emoji ?? null);
+    }
+  } catch { /* offline: keep what we have */ }
+  if (prompt) promptForEmoji();
+  return auth.user;
+};
+function promptForEmoji() {
+  if (!auth.user || auth.emoji || auth.prompted) return;
+  auth.prompted = true;
+  openEmojiDialog(true);
+}
+
+// ---- the emoji picker: a grid of buttons, taken ones disabled ("taken by <name>"), the picked one pressed ----
+const picker = { emojis: [], owners: new Map() };  // owners: taken emoji → username (null if unknown)
+async function loadEmojis() {
+  const [res, usersRes] = await Promise.all([fetch("/api/auth/emojis"), fetch("/api/users").catch(() => null)]);
+  if (!res.ok) throw new Error(EMOJIS_DOWN);
+  const data = await res.json();
+  const users = usersRes && usersRes.ok ? await usersRes.json().catch(() => []) : [];
+  if (Array.isArray(users) && users.length) {
+    usersSeq += 1;  // fresher than any /api/users request still on its way
+    setUsers(users);
+  }
+  const byEmoji = new Map((Array.isArray(users) ? users : []).filter((u) => u.emoji).map((u) => [u.emoji, u.username]));
+  picker.emojis = data.emojis;
+  picker.owners = new Map(data.taken.map((emoji) => [emoji, byEmoji.get(emoji) || null]));
+}
+// own: the user's current emoji (theirs, so not "taken"); selected: the pressed one. onTaken(message) for a tap on
+// a taken emoji – phones have no tooltip, so the dialog says who has it.
+function renderPicker(grid, { own = null, selected = null, onPick, onTaken }) {
+  grid.replaceChildren();
+  for (const emoji of picker.emojis) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "emoji-btn";
+    b.textContent = emoji;
+    b.dataset.emoji = emoji;
+    const taken = picker.owners.has(emoji) && emoji !== own;
+    const owner = picker.owners.get(emoji);
+    b.setAttribute("aria-pressed", String(emoji === selected));
+    if (taken) {
+      b.setAttribute("aria-disabled", "true");
+      b.title = owner ? `taken by ${owner}` : "taken";
+      b.setAttribute("aria-label", `${emoji} ${b.title}`);
+    }
+    b.addEventListener("click", () => (taken ? onTaken(`${emoji} is ${b.title}`) : onPick(emoji)));
+    grid.append(b);
+  }
+}
+function pickerMessage(grid, message) {
+  const p = document.createElement("p");
+  p.className = "list-note";
+  p.textContent = message;
+  grid.replaceChildren(p);
+}
+
+// ---- the dialog ----
 function setAuthMode(mode) {
   auth.mode = mode;
   const signup = mode === "signup";
@@ -29,10 +125,42 @@ function setAuthMode(mode) {
   $("auth-tab-login").setAttribute("aria-selected", String(!signup));
   $("auth-tab-signup").setAttribute("aria-selected", String(signup));
   $("auth-repeat-row").hidden = !signup;
+  $("auth-emoji-row").hidden = !signup;
   $("auth-password").autocomplete = signup ? "new-password" : "current-password";
   showAuthError("");
+  updateAuthSubmit();
+  if (signup) loadSignupPicker();
 }
 function showAuthError(message) { $("auth-error").textContent = message || ""; }
+// Sign up stays disabled until an emoji is picked.
+function updateAuthSubmit() {
+  $("auth-submit").disabled = auth.busy || (auth.mode === "signup" && !auth.signupEmoji);
+  $("auth-emoji-picked").textContent = auth.signupEmoji ? `: ${auth.signupEmoji}` : "";
+}
+function renderSignupPicker() {
+  renderPicker($("auth-emoji-grid"), {
+    selected: auth.signupEmoji,
+    onPick: (emoji) => {
+      auth.signupEmoji = emoji;
+      showAuthError("");
+      for (const b of $("auth-emoji-grid").children) b.setAttribute("aria-pressed", String(b.dataset.emoji === emoji));
+      updateAuthSubmit();
+    },
+    onTaken: showAuthError,
+  });
+}
+async function loadSignupPicker() {
+  if (!picker.emojis.length) pickerMessage($("auth-emoji-grid"), "Loading…");
+  try {
+    await loadEmojis();
+  } catch {
+    if (!picker.emojis.length) pickerMessage($("auth-emoji-grid"), EMOJIS_DOWN);
+    return;
+  }
+  if (picker.owners.has(auth.signupEmoji)) auth.signupEmoji = null;  // someone took it meanwhile
+  renderSignupPicker();
+  updateAuthSubmit();
+}
 function openAuthDialog(mode = "login") {
   setAuthMode(mode);
   $("auth-password").value = "";
@@ -65,41 +193,57 @@ function requireLogin(then) {
 window.onUnauthorized = () => {
   setAuthUser(null);
   auth.pending = null;  // no automatic replay: the user repeats the click after logging in
+  if ($("emoji-dialog").open) $("emoji-dialog").close();
   openAuthDialog("login");
 };
 
 async function submitAuth(event) {
   event.preventDefault();
   if (auth.busy) return;
+  const signup = auth.mode === "signup";
   const username = $("auth-username").value.trim();
   const password = $("auth-password").value;
   if (!username || !password) return showAuthError("Enter a username and a password");
-  if (auth.mode === "signup" && password !== $("auth-repeat").value) return showAuthError("The passwords don't match");
+  if (signup && password !== $("auth-repeat").value) return showAuthError("The passwords don't match");
+  if (signup && !auth.signupEmoji) return showAuthError("Pick an emoji from the list");
   showAuthError("");
   auth.busy = true;
-  $("auth-submit").disabled = true;
+  updateAuthSubmit();
   try {
-    const res = await fetch(`/api/auth/${auth.mode === "signup" ? "signup" : "login"}`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password }),
+    const body = signup ? { username, password, emoji: auth.signupEmoji } : { username, password };
+    const res = await fetch(`/api/auth/${signup ? "signup" : "login"}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
+      if (signup && res.status === 409 && (data.detail === EMOJI_TAKEN || data.detail === EMOJIS_GONE)) {
+        auth.signupEmoji = null;  // someone was quicker: fresh taken list, pick again
+        await loadSignupPicker();
+      }
       showAuthError(typeof data.detail === "string" ? data.detail
         : Array.isArray(data.detail) ? AUTH_BODY_ERROR : `Request failed (${res.status})`);
       return;
     }
     const then = auth.pending;
     auth.pending = null;
-    setAuthUser(data.username);
+    if (signup) {
+      setAuthUser(data.username, auth.signupEmoji);
+      auth.signupEmoji = null;
+    } else {
+      await auth.refresh(false);  // the account's emoji (none: the prompt below)
+      if (auth.user !== data.username) setAuthUser(data.username);  // /me failed: name only
+    }
+    auth.refreshUsers();
     $("auth-password").value = "";
     $("auth-repeat").value = "";
     $("auth-dialog").close();
     if (then) then();
+    promptForEmoji();
   } catch {
     showAuthError("Couldn't reach the server – try again");
   } finally {
     auth.busy = false;
-    $("auth-submit").disabled = false;
+    updateAuthSubmit();
   }
 }
 
@@ -113,6 +257,66 @@ async function logout() {
   }
 }
 
+// ---- Change emoji (click your name) / the first-login prompt (prompt: "Skip for now" shown) ----
+function showEmojiError(message) { $("emoji-error").textContent = message || ""; }
+function renderEmojiDialogPicker() {
+  renderPicker($("emoji-grid"), { own: auth.emoji, selected: auth.emoji, onPick: saveEmoji, onTaken: showEmojiError });
+}
+async function openEmojiDialog(prompt = false) {
+  if (!auth.user) return;
+  $("emoji-title").textContent = prompt ? "Pick your emoji" : "Change emoji";
+  $("emoji-note").textContent = prompt
+    ? "Friends recognise each other by emoji + name – pick one that's yours alone."
+    : "Friends see it next to your name. Taken ones are greyed out.";
+  $("emoji-skip").parentElement.hidden = !prompt;  // the whole (phone: sticky) actions bar
+  showEmojiError("");
+  const dlg = $("emoji-dialog");
+  if (!dlg.open) dlg.showModal();
+  if (picker.emojis.length) renderEmojiDialogPicker(); else pickerMessage($("emoji-grid"), "Loading…");
+  try {
+    await loadEmojis();
+    renderEmojiDialogPicker();
+  } catch {
+    if (!picker.emojis.length) pickerMessage($("emoji-grid"), EMOJIS_DOWN);
+  }
+}
+async function saveEmoji(emoji) {
+  if (auth.emojiBusy) return;
+  if (emoji === auth.emoji) {
+    $("emoji-dialog").close();
+    return;
+  }
+  auth.emojiBusy = true;
+  showEmojiError("");
+  $("emoji-grid").setAttribute("aria-busy", "true");
+  try {
+    const res = await fetch("/api/auth/emoji", {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ emoji }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401) {
+      window.onUnauthorized();
+      return;
+    }
+    if (!res.ok) {
+      if (res.status === 409) {
+        await loadEmojis().catch(() => {});
+        renderEmojiDialogPicker();
+      }
+      showEmojiError(typeof data.detail === "string" ? data.detail : `Request failed (${res.status})`);
+      return;
+    }
+    setAuthUser(data.username || auth.user, data.emoji || emoji);
+    auth.refreshUsers();
+    $("emoji-dialog").close();
+  } catch {
+    showEmojiError("Couldn't reach the server – try again");
+  } finally {
+    auth.emojiBusy = false;
+    $("emoji-grid").removeAttribute("aria-busy");
+  }
+}
+
 $("auth-form").addEventListener("submit", submitAuth);
 $("auth-tab-login").addEventListener("click", () => { setAuthMode("login"); $("auth-username").focus(); });
 $("auth-tab-signup").addEventListener("click", () => { setAuthMode("signup"); $("auth-username").focus(); });
@@ -120,4 +324,8 @@ $("auth-close").addEventListener("click", () => $("auth-dialog").close());
 $("auth-dialog").addEventListener("close", () => { auth.pending = null; });
 $("auth-login-btn").addEventListener("click", () => { auth.pending = null; openAuthDialog("login"); });
 $("auth-logout").addEventListener("click", logout);
+$("auth-name").addEventListener("click", () => openEmojiDialog(false));
+$("emoji-close").addEventListener("click", () => $("emoji-dialog").close());
+$("emoji-skip").addEventListener("click", () => $("emoji-dialog").close());
 auth.ready = auth.refresh();
+auth.refreshUsers();

@@ -87,6 +87,7 @@ function applyRound(round, seq) {
 // was sent (its answer is newer).
 async function refreshVote() {
   const seq = nextSeq();
+  auth.refreshUsers();  // a friend who just signed up or changed emoji: "users-changed" redraws the names
   try {
     const round = await api("/api/rounds/current");
     if (vote.writing > 0) return;
@@ -165,9 +166,9 @@ function renderRound(round, readOnly) {
   const when = round.status === "open"
     ? `${closesIn(round.closes_at)} (${localWhen(round.closes_at)})`
     : `${round.status === "closed" ? "Closed" : "Cancelled"} ${localWhen(round.closed_at || round.closes_at)}`;
-  status.append(vEl("div", "meta", `${when} · opened by ${round.opener}`));
+  status.append(vEl("div", "meta", `${when} · opened by ${auth.label(round.opener)}`));
   if (round.status === "open") {
-    status.append(vEl("div", null, round.waiting_for.length ? `Waiting for: ${round.waiting_for.join(", ")}`
+    status.append(vEl("div", null, round.waiting_for.length ? `Waiting for: ${round.waiting_for.map(auth.label).join(", ")}`
       : "Everyone has rated every trip ✓"));
   }
   if (round.me && open) {
@@ -346,7 +347,7 @@ function voteControls(round, item, target, open, key) {
   const frag = document.createDocumentFragment();
   const counts = vEl("div", "vote-counts");
   for (const [rating, emoji, label] of RATINGS) {
-    const names = item.votes.filter((v) => v.rating === rating).map((v) => v.username);
+    const names = item.votes.filter((v) => v.rating === rating).map((v) => auth.label(v.username));
     const c = vButton(`${emoji}${item.counts[rating]}`, "count-btn", () => {
       vote.openNames.has(key) ? vote.openNames.delete(key) : vote.openNames.add(key);
       namesBox.hidden = !vote.openNames.has(key);
@@ -360,12 +361,12 @@ function voteControls(round, item, target, open, key) {
   for (const [rating, emoji, label] of RATINGS) {
     const votes = item.votes.filter((v) => v.rating === rating);
     if (!votes.length) continue;
-    namesBox.append(vEl("div", null, `${emoji} ${label}: ${votes.map((v) => v.username + (v.comment ? ` (“${v.comment}”)` : "")).join(", ")}`));
+    namesBox.append(vEl("div", null, `${emoji} ${label}: ${votes.map((v) => auth.label(v.username) + (v.comment ? ` (“${v.comment}”)` : "")).join(", ")}`));
   }
   if (!item.votes.length) namesBox.append(vEl("div", null, "No votes yet"));
   frag.append(namesBox);
   for (const v of item.votes.filter((x) => x.rating === "nogo")) {
-    frag.append(vEl("div", "vote-nogo", `⚠ ${v.username}: No-go${v.comment ? ` – “${v.comment}”` : ""}`));
+    frag.append(vEl("div", "vote-nogo", `⚠ ${auth.label(v.username)}: No-go${v.comment ? ` – “${v.comment}”` : ""}`));
   }
   const mine = myVote(item.votes);
   const row = vEl("div", "vote-buttons");
@@ -618,6 +619,9 @@ $("vote-trips").addEventListener("focusout", (event) => {
 document.addEventListener("auth-changed", () => {
   if ($("vote-dialog").open && vote.mode === "current") refreshVote();
   else refreshBadge();
+});
+document.addEventListener("users-changed", () => {
+  if ($("vote-dialog").open && vote.mode !== "form") render();
 });
 setInterval(refreshBadge, BADGE_POLL_MS);
 refreshBadge();
