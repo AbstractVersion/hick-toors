@@ -222,6 +222,7 @@
         <button type="button" id="vote-invite-share" class="tool-btn">📤 Share</button>
         <button type="button" id="vote-invite-copy" class="tool-btn">📋 Copy link</button>
       </div>
+      <div id="vote-invite-apps" class="invite-actions share-apps" hidden></div>
       <div id="vote-invite-copied" class="share-out" role="status" hidden></div>
       <p class="invite-hint">Send it to everyone who should vote – they can sign up from the link</p>
       <div class="invite-go"><button type="button" id="vote-invite-start" class="primary">Start voting myself</button></div>
@@ -234,9 +235,12 @@
   </dialog>
   <!-- 🧭 the guided round (guide.js): the Join screen, one trip per step, the summary -->
   <dialog id="guide" class="guide-dialog" aria-labelledby="guide-title">
-    <div class="dlg-head"><h2 id="guide-title">🗳️ Vote</h2>
-      <button type="button" id="guide-close" class="tool-btn" aria-label="Close">✕</button></div>
-    <div id="guide-error" class="notice" role="alert" hidden></div>
+    <!-- the header and an error stick to the top together: an error shows wherever the guide is scrolled to -->
+    <div class="guide-top">
+      <div class="dlg-head"><h2 id="guide-title">🗳️ Vote</h2>
+        <button type="button" id="guide-close" class="tool-btn" aria-label="Close">✕</button></div>
+      <div id="guide-error" class="notice" role="alert" hidden></div>
+    </div>
     <div id="guide-toast" class="vote-toast" role="status" hidden></div>
     <div id="guide-body" class="guide-body"></div>
     <div id="guide-nav" class="guide-nav" hidden>

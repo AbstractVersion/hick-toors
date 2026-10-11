@@ -240,6 +240,10 @@ main { flex: 1; display: flex; min-height: 0; }
 .invite-actions { display: flex; gap: 8px; margin-top: 10px; }
 .invite-actions .tool-btn { flex: 1; min-height: 44px; font-size: 15px; font-weight: 600; }
 .vote-invite .share-out { text-align: left; }
+/* no share sheet (plain http): 💬 WhatsApp / 🟣 Viber links */
+.share-apps { display: flex; gap: 8px; margin-top: 8px; }
+.share-app { flex: 1; display: inline-flex; align-items: center; justify-content: center; min-height: 40px; color: #1d2b24;
+  font-size: 15px; font-weight: 600; text-decoration: none; }
 .invite-hint { margin: 14px 0 0; color: #5d6b63; }
 .invite-go { margin-top: 18px; }
 .invite-go .primary { width: 100%; min-height: 48px; border: 0; border-radius: 10px; background: #2f6f4e; color: #fff; font: inherit; font-size: 16px;
@@ -254,6 +258,8 @@ main { flex: 1; display: flex; min-height: 0; }
   overflow-y: auto; overscroll-behavior: contain; background: #fff; }
 .guide-dialog::backdrop { background: rgba(0,0,0,.4); }
 .guide-dialog [hidden] { display: none !important; }
+.guide-top { position: sticky; top: 0; z-index: 3; background: #fff; }
+.guide-top #guide-error { margin: 6px 0 8px; }
 .guide-dialog .dlg-head { position: sticky; top: 0; z-index: 2; display: flex; gap: 8px; justify-content: space-between; align-items: center;
   padding: 12px 0 8px; background: #fff; border-bottom: 1px solid #eef1ed; }
 .guide-dialog h2 { margin: 0; min-width: 0; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -366,6 +372,8 @@ main { flex: 1; display: flex; min-height: 0; }
 .guide-pill { position: absolute; top: 10px; left: 50%; z-index: 1100; transform: translateX(-50%); display: flex; align-items: center;
   max-width: calc(100% - 24px); border-radius: 24px; background: #2f6f4e; box-shadow: 0 4px 16px rgba(0,0,0,.3); }
 .guide-pill[hidden] { display: none; }
+/* desktop: the pill sits at the top of the map – the draw / nature hints move below it while it shows */
+#map-wrap:has(#guide-pill:not([hidden])) #draw-hint, #map-wrap:has(#guide-pill:not([hidden])) #nature-hint { top: 64px; }
 .guide-pill button { min-height: 44px; border: 0; background: none; color: #fff; font: inherit; cursor: pointer; }
 .guide-pill-back { padding: 0 6px 0 18px; font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .guide-pill-close { flex: none; min-width: 44px; font-size: 16px; opacity: .8; }
@@ -493,6 +501,8 @@ main { flex: 1; display: flex; min-height: 0; }
   #draw-hint, #nature-hint { width: max-content; max-width: calc(100vw - 32px); text-align: center; }
   #draw-hint { top: 58px; pointer-events: auto; cursor: pointer; }
   #nature-hint { top: 104px; }
+  #map-wrap:has(#guide-pill:not([hidden])) #draw-hint { top: 58px; }  /* the phone pill is at the bottom */
+  #map-wrap:has(#guide-pill:not([hidden])) #nature-hint { top: 104px; }
   .leaflet-draw-tooltip { display: none; }  /* it follows a mouse pointer; our #draw-hint says what to do on phones */
   /* "Searching…" while a search loads (the sidebar's spinners are on the List tab); below the hints when they show */
   #map-busy:not([hidden]) { display: block; position: absolute; top: 58px; left: 50%; transform: translateX(-50%); z-index: 1000;

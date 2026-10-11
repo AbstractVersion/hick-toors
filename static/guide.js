@@ -573,14 +573,22 @@ async function seeOnMap(tripId) {
     const index = order.findIndex((t) => t.trip_id === tripId);
     guide.back = { roundId: guide.roundId, tripId };
     closeGuide();
-    showTripOnMap(trip, trip.name);
     $("guide-pill-back").textContent = `← Back to voting (Trip ${index + 1} of ${order.length})`;
+    // Shown before the map: mobile.js's history (synced by showTripOnMap and below) gets a "guide" entry, so the
+    // back gesture / button reopens the guide at this step (guideHistoryBack) instead of leaving the site.
     $("guide-pill").hidden = false;
+    showTripOnMap(trip, trip.name);
+    window.mobile?.syncHistory();
   } catch (err) {
     showVoteError(err.message);
   }
 }
-function hidePill() { $("guide-pill").hidden = true; }
+// Hiding the pill (← Back to voting, ✕, the guide opened another way) steps back over its history entry.
+function hidePill() {
+  if ($("guide-pill").hidden) return;
+  $("guide-pill").hidden = true;
+  window.mobile?.syncHistory();
+}
 function backToVoting() {
   const back = guide.back;
   hidePill();
@@ -588,6 +596,9 @@ function backToVoting() {
   if (!back || !round || round.id !== back.roundId || round.status !== "open") return openVoteOverview(back?.roundId);
   openGuide(round, { tripId: back.tripId });
 }
+
+// The back gesture / button left the pill's history entry (mobile.js): back to the guide at the same step.
+window.guideHistoryBack = () => { if (!$("guide-pill").hidden) backToVoting(); };
 
 // ---- live updates ----
 document.addEventListener("round-changed", () => {
@@ -641,11 +652,16 @@ function clearLinkParam() {
   url.searchParams.delete("round");
   history.replaceState(history.state, "", `${url.pathname}${url.search}${url.hash}`);
 }
-function guideLinkPending() { return Boolean(guide.link); }
+// True until the link has been handled (also while its round loads): the banner's auto-open waits for it.
+function guideLinkPending() { return Boolean(guide.link) || guide.linkBusy; }
 // Logged out: the wall shows "🗳️ 🍕 anna invites you to vote: <title> · closes <date>" above Sign up / Log in.
 function inviteLine(round) {
   const box = vEl("div", "invite-line");
   const open = round.status === "open";
+  if (round.status === "cancelled") {
+    box.append(vEl("span", "invite-who", "🗳️ This round was cancelled: "), vEl("strong", "invite-what", round.title));
+    return box;
+  }
   box.append(vEl("span", "invite-who", `🗳️ ${auth.label(round.opener)} invites you to ${open ? "vote" : "see the results"}: `),
     vEl("strong", "invite-what", round.title),
     vEl("span", "invite-when", open ? ` · closes ${localWhen(round.closes_at)}` : " · voting is over"));
@@ -663,37 +679,47 @@ async function showLinkInvite() {
   } catch { /* offline: no invitation line */ }
 }
 // Logged in with a link: not joined → the Join screen; joined → the guide where you left off; over → the Overview;
-// unknown → a toast and the normal app. The ?round= parameter goes once it is handled.
+// unknown → a toast and the normal app. guide.link (and so guideLinkPending) stays set until the round is parsed and
+// marked auto-opened, so the banner can't open it a second time meanwhile. The ?round= parameter goes once the link
+// is handled; a failure (server error, offline) keeps it, so a reload tries again.
 async function handleLink() {
   const id = guide.link;
   if (!id || !auth.user || guide.linkBusy) return;
   guide.linkBusy = true;
+  const done = () => {
+    guide.link = null;
+    auth.setInvite(null);
+    guide.inviteRound = null;
+  };
   try {
     const res = await fetch(`/api/rounds/${enc(id)}`);
     if (!auth.user) return;  // logged out meanwhile: the wall keeps the link
-    guide.link = null;
-    clearLinkParam();
-    auth.setInvite(null);
-    guide.inviteRound = null;
     if (res.status === 404) {
+      done();
+      clearLinkParam();
       notices(["That voting round doesn't exist"]);
       return;
     }
     if (!res.ok) {
+      done();
       notices([`Couldn't open the voting round (${res.status}) – try the link again`]);
       return;
     }
     const round = await res.json();
+    if (!auth.user) return;
+    if (round.status === "open") markAutoOpened(round.id);  // the link opens it: nothing left for the banner
+    done();
+    clearLinkParam();
     for (const dlg of document.querySelectorAll("dialog[open]")) if (dlg.id !== "guide" && dlg.id !== "emoji-dialog") dlg.close();
     if (round.status !== "open") {
       openVoteOverview(round.id);
       return;
     }
-    markAutoOpened(round.id);  // the link opened it: the banner's auto-open has nothing left to do
     applyRound(round, nextSeq());
     if (round.me?.joined) openGuide(round);
     else openJoin(round);
   } catch {
+    if (guide.link === id) done();
     notices(["Couldn't reach the server – open the link again"]);
   } finally {
     guide.linkBusy = false;

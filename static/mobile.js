@@ -6,7 +6,8 @@
 // so those dialogs keep all their own code; trips.js / vote.js call mobile.dialogClosed() when their dialog closes.
 // Body classes: phone-tab-map | phone-tab-list (the view under any dialog) and menu-open. Desktop CSS ignores them.
 // Back gesture / button: opening the ☰ panel or going Map → List pushes a history entry (phone only), so back closes
-// the panel / returns to the Map tab instead of leaving the site.
+// the panel / returns to the Map tab instead of leaving the site. The guide's ← Back to voting pill (guide.js, also on
+// desktop) adds a "guide" entry: back reopens the guide at the step it came from (window.guideHistoryBack).
 window.mobile = (() => {
   // The single source of truth in JS; style.css's phone @media line must be this same query.
   const PHONE_QUERY = "(max-width: 760px), (pointer: coarse) and (max-height: 500px)";
@@ -76,13 +77,15 @@ window.mobile = (() => {
     if (view === "map") window.mapShown?.();
   }
 
-  // ---- back gesture: our history entries carry {phone: [...]} – what is open, bottom up ("list", then "menu") ----
+  // ---- back gesture: our history entries carry {phone: [...]} – what is open, bottom up ("guide", "list", "menu") ----
   const entries = () => (Array.isArray(history.state?.phone) ? history.state.phone : []);
   let ownStepBack = false;
   // Runs after every UI change: pushes an entry for what was opened (phone only) and steps back over the entries of
   // what was closed from the UI, so they never pile up. The popstate of our own step back just catches up.
   function syncHistory() {
     const want = [];
+    // The guide's ← Back to voting pill first: it stays while the List tab / ☰ panel open and close over the map.
+    if (!$("guide-pill").hidden) want.push("guide");
     if (view === "list") want.push("list");
     if (body.classList.contains("menu-open")) want.push("menu");
     const have = entries();
@@ -92,7 +95,7 @@ window.mobile = (() => {
       history.go(want.length - have.length);
       return;
     }
-    if (!isPhone()) return;  // never push on desktop
+    if (!isPhone() && want.some((kind) => kind !== "guide")) return;  // desktop: only the guide pill's entry
     if (have.length) history.replaceState({ ...history.state, phone: want.slice(0, have.length) }, "");
     for (let i = have.length; i < want.length; i += 1) history.pushState({ phone: want.slice(0, i + 1) }, "");
   }
@@ -105,6 +108,7 @@ window.mobile = (() => {
     const open = entries();  // back (or forward): close what the entry we landed on does not have open
     if (!open.includes("menu")) closeMenu();
     if (!open.includes("list") && view === "list") setView("map");
+    if (!open.includes("guide")) window.guideHistoryBack?.();  // the guide again, at the step See on map left
   });
 
   // Tab badges mirror the existing counters: (12) hikes, (3) trips, " · 2 left" votes; no badge for 0.
@@ -170,5 +174,5 @@ window.mobile = (() => {
   });
 
   setView("map");
-  return { PHONE_QUERY, isPhone, showTab, showMap, openMenu, closeMenu, dialogClosed };
+  return { PHONE_QUERY, isPhone, showTab, showMap, openMenu, closeMenu, dialogClosed, syncHistory };
 })();

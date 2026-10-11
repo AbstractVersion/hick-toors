@@ -18,6 +18,8 @@ The 🥾 welcome scenario (no flash, auto-open once per round per session, the r
 menu) logs in existing accounts.
 The 🧭 guide scenario (share link, invite screen, Join screen, the guided steps, summary) signs up gina / pia / quin;
 GUIDE_SHOTS=<folder> (or UI_SHOTS) saves its phone screenshots.
+The 🔗 plain-http scenario launches a second Chrome that maps hick.test to the server's address
+(--host-resolver-rules) – a non-secure origin like the public VM, without navigator.share / navigator.clipboard.
 The 📱 phone scenarios (390×844 and landscape 844×390, touch) run last; set UI_SHOTS=<folder> to save screenshots there.
 Login first: every scenario starts on the welcome wall and signs up / logs in through it (wall_sign_up / wall_log_in).
 Every UI sign-up picks its emoji in the sign-up picker; the 😀 scenarios check taken emojis, the 409 race, Change emoji
@@ -28,7 +30,7 @@ import json
 import os
 import re
 import sys
-from urllib.parse import parse_qs, quote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from playwright.sync_api import expect, sync_playwright
 
@@ -1317,6 +1319,7 @@ def main() -> None:
         check_overview(browser, errors)  # leaves its round closed: the phone scenario starts a new one
         check_welcome(browser, errors)
         check_guide(browser, errors)  # closes its round and deletes its trips again
+        check_insecure_share(p, errors)  # plain http on hick.test; cancels its round, deletes its trip
         check_mobile(browser, errors)
         check_mobile_landscape(browser, errors)
         browser.close()
@@ -3164,6 +3167,21 @@ def check_guide(browser, errors: list[str]) -> None:
     assert [s["my_rating"] for s in mine["stays"] if s["stay_id"] == "airbnb:g1"] == ["love"], mine
     print("PASS rate trip 😍 + comment + stays 😍/🙂 (saved, dots filled, Next →)")
 
+    # A failed stay vote while scrolled down: the error sticks under the header, on screen.
+    p.route("**/stays/*/vote", lambda route: route.fulfill(
+        status=500, content_type="application/json", body=json.dumps({"detail": "Stay vote failed (test)"})))
+    p.evaluate("document.getElementById('guide').scrollTop = 1e6")
+    assert p.evaluate("document.getElementById('guide').scrollTop") > 100
+    stays.nth(1).locator('.g-stay-btn[data-rating="nogo"]').tap()
+    expect(p.locator("#guide-error")).to_have_text("Stay vote failed (test)")
+    if not in_view(p, "#guide-error"):
+        raise SystemExit("FAIL the guide's error is not on screen in the scrolled guide")
+    assert p.evaluate("document.getElementById('guide').scrollTop") > 100  # still where the user was
+    p.unroute("**/stays/*/vote")
+    p.evaluate("refreshVote()")
+    expect(stays.nth(1).locator('.g-stay-btn[data-rating="ok"]')).to_have_attribute("aria-pressed", "true")
+    print("PASS a failed stay vote while scrolled down: the error is on screen (sticky under the header)")
+
     # 🗺️ See on map → the map shows the trip, the Back pill above the tab bar → the same step, ratings intact.
     p.evaluate("document.getElementById('guide').scrollTop = 0")
     p.locator(".g-map-btn").tap()
@@ -3189,7 +3207,26 @@ def check_guide(browser, errors: list[str]) -> None:
     expect(p.locator(".g-trip-name")).to_have_text("Zagori stone villages")
     expect(p.locator('.g-rate-btn[data-rating="love"]')).to_have_attribute("aria-pressed", "true")
     expect(p.locator(".g-comment")).to_have_value("gorge! 🥾")
+    p.wait_for_function("!(history.state?.phone || []).includes('guide')")  # the pill's entry stepped back over
     print("PASS See on map → the trip on the map + Back pill above the tab bar → the same step, ratings intact")
+
+    # The back gesture after See on map reopens the guide at the same step (still on the site); entries don't pile up.
+    depth = p.evaluate("history.length")
+    p.locator(".g-map-btn").tap()
+    expect(pill).to_be_visible()
+    p.wait_for_function("(history.state?.phone || []).includes('guide')")
+    p.go_back()
+    expect(guide).to_be_visible()
+    expect(pill).to_be_hidden()
+    expect(p.locator(".g-trip-name")).to_have_text("Zagori stone villages")
+    assert p.url.startswith(BASE), p.url
+    p.locator(".g-map-btn").tap()  # again, then ← Back to voting: the history stays as deep as one entry
+    expect(pill).to_be_visible()
+    p.locator("#guide-pill-back").tap()
+    expect(guide).to_be_visible()
+    p.wait_for_function("!(history.state?.phone || []).includes('guide')")
+    assert p.evaluate("history.length") <= depth + 1, (depth, p.evaluate("history.length"))
+    print("PASS back gesture after See on map → the guide at the same step, on the site; no piled-up entries")
 
     # Next → trip 2: 😍 here moves the Love – the toast is on screen although the dialog is scrolled down.
     p.locator("#guide-next").tap()
@@ -3274,6 +3311,20 @@ def check_guide(browser, errors: list[str]) -> None:
     assert "round=" not in p.url, p.url
     print("PASS unknown round link → toast “That voting round doesn't exist”, parameter removed")
 
+    # A server error on the link keeps ?round= (a reload tries again); the reload then opens it and removes it.
+    p.route(f"**/api/rounds/{rid}", lambda route: route.fulfill(
+        status=500, content_type="application/json", body=json.dumps({"detail": "boom"})))
+    p.goto(link)
+    expect(p.locator("#notices")).to_contain_text("Couldn't open the voting round (500) – try the link again")
+    assert "round=" in p.url, p.url
+    expect(guide).to_be_hidden()
+    p.unroute(f"**/api/rounds/{rid}")
+    p.reload()
+    expect(p.locator(".g-summary")).to_be_visible()
+    p.wait_for_function("!location.search.includes('round=')")
+    p.locator("#guide-close").tap()
+    print("PASS a failed link keeps ?round=; the reload opens the round and removes it")
+
     # ---- desktop: an existing account opens the link → Join → guide; 🔗 Share link copies; the pill at the top ----
     ctx_d, d = new_page()
     d.goto(BASE)
@@ -3292,6 +3343,20 @@ def check_guide(browser, errors: list[str]) -> None:
     md = d.locator("#map").bounding_box()
     if not (abs((pd["x"] + pd["width"] / 2) - (md["x"] + md["width"] / 2)) < 4 and pd["y"] - md["y"] < 30):
         raise SystemExit(f"FAIL desktop Back pill should be at the top centre of the map: {pd} {md}")
+    for hint in ("draw-hint", "nature-hint"):  # the map hints move below the pill while it shows
+        box = d.evaluate("""(id) => { const el = document.getElementById(id); const was = el.hidden, text = el.textContent;
+            el.hidden = false; el.textContent = text || 'Hint';
+            const r = el.getBoundingClientRect(); el.hidden = was; el.textContent = text;
+            return {y: r.y, height: r.height}; }""", hint)
+        if box["y"] < pd["y"] + pd["height"]:
+            raise SystemExit(f"FAIL desktop #{hint} overlaps the Back pill: {box} {pd}")
+    d.go_back()  # the back button reopens the guide at the same step
+    expect(d.locator("#guide")).to_be_visible()
+    expect(pill_d).to_be_hidden()
+    expect(d.locator(".g-trip-name")).to_have_text("Zagori stone villages")
+    assert d.url.startswith(BASE), d.url
+    d.click(".g-map-btn")
+    expect(pill_d).to_be_visible()
     d.click("#guide-pill-back")
     expect(d.locator(".g-trip-name")).to_have_text("Zagori stone villages")
     expect(d.locator('.g-rate-btn[data-rating="ok"]')).to_have_attribute("aria-pressed", "true")
@@ -3324,6 +3389,122 @@ def check_guide(browser, errors: list[str]) -> None:
     ctx_d.close()
     ctx_p.close()
     ctx_o.close()
+
+
+def check_insecure_share(pw, errors: list[str]) -> None:
+    """🔗 Sharing on a plain-http origin that isn't localhost (like the public VM): no navigator.share /
+    navigator.clipboard there. A separate Chrome maps hick.test to 127.0.0.1 (--host-resolver-rules). The invite
+    screen and the Vote dialog's 🔗 Share link show 💬 WhatsApp / 🟣 Viber links (no 📤 Share) with the encoded text +
+    link; 📋 Copy copies with execCommand (spied) or leaves the field selected with "Long-press to copy". Then the
+    round is cancelled and its link, logged out, says "This round was cancelled"."""
+    split = urlsplit(BASE)
+    base = f"http://hick.test:{split.port or 80}"
+    browser = pw.chromium.launch(channel="chrome", headless=True,
+                                 args=[f"--host-resolver-rules=MAP hick.test {split.hostname}"])
+    spy = """(() => {
+        const real = document.execCommand.bind(document);
+        document.execCommand = (cmd, ...rest) => {
+            const ok = real(cmd, ...rest);
+            if (cmd === 'copy') {
+                const el = document.activeElement;
+                window.__copied = {ok, text: el && 'value' in el ? el.value.slice(el.selectionStart, el.selectionEnd) : ''};
+            }
+            return ok;
+        };
+    })();"""
+    phone = {"viewport": {"width": 390, "height": 844}, "has_touch": True, "is_mobile": True}
+
+    def new_page():
+        ctx = browser.new_context(**phone)
+        ctx.add_init_script(spy)
+        pg = ctx.new_page()
+        pg.on("pageerror", lambda exc: errors.append(str(exc)))
+        return ctx, pg
+
+    def assert_apps(pg, scope: str, link: str, title: str) -> None:
+        apps = pg.locator(f"{scope} .share-app")
+        expect(apps).to_have_count(2)
+        expect(apps.nth(0)).to_have_text("💬 WhatsApp")
+        expect(apps.nth(1)).to_have_text("🟣 Viber")
+        for i, prefix in ((0, "https://wa.me/?text="), (1, "viber://forward?text=")):
+            href = apps.nth(i).get_attribute("href")
+            assert href.startswith(prefix), href
+            encoded = href[len(prefix):]
+            assert quote(link, safe="") in encoded, href  # the link itself is fully encoded
+            text = unquote(encoded)
+            assert text.startswith(f"Vote on '{title}' – closes ") and text.endswith(" " + link), text
+            assert apps.nth(i).get_attribute("rel") == "noopener"
+        assert apps.nth(0).get_attribute("target") == "_blank"
+        small = pg.evaluate("""(scope) => [...document.querySelectorAll(`${scope} .share-app`)]
+            .filter((el) => { const r = el.getBoundingClientRect(); return r.height < 40 || r.width < 40; }).length""", scope)
+        assert small == 0, f"share links under 40 px in {scope}"
+
+    def assert_copied(pg, box: str, link: str) -> str:
+        msg = pg.locator(f"{box} .share-msg")
+        expect(msg).to_have_text(re.compile(r"^(✓ Link copied|Long-press to copy)$"))
+        expect(pg.locator(f"{box} .share-url")).to_have_value(link)
+        if msg.inner_text() == "✓ Link copied":
+            copied = pg.evaluate("window.__copied")
+            assert copied and copied["ok"] is True and copied["text"] == link, copied
+        else:  # nothing could copy: the field is focused with the whole link selected
+            sel = pg.evaluate("""(box) => { const el = document.querySelector(`${box} .share-url`);
+                return [document.activeElement === el, el.selectionStart, el.selectionEnd]; }""", box)
+            assert sel == [True, 0, len(link)], sel
+        return msg.inner_text()
+
+    ctx, pg = new_page()
+    pg.goto(base)
+    assert pg.evaluate("window.isSecureContext") is False
+    assert pg.evaluate("typeof navigator.share") == "undefined"
+    assert pg.evaluate("typeof navigator.clipboard") == "undefined"
+    wall_sign_up(pg, "sam", "🦉", tap=True)
+    trip = pg.evaluate("""(body) => fetch('/api/saved-trips', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)}).then((r) => r.json()).then((t) => t.id)""",
+                       {"name": "Plain http trip", "hikes": [{**HIKE, "id": "wikiloc:41", "name": "Http hike"}], "stays": []})
+    pg.locator('#tabbar button[data-tab="vote"]').tap()
+    start_new = pg.locator("#vote-footer button", has_text="Start a new round")
+    expect(pg.locator("#vote-start").or_(start_new).first).to_be_visible()
+    if start_new.is_visible():
+        start_new.tap()
+    expect(pg.locator("#vote-start-trips input").first).to_be_visible()
+    for box in pg.locator("#vote-start-trips input").all():
+        box.set_checked(box.get_attribute("value") == trip)
+    pg.fill("#vote-start-title", "Insecure share")
+    pg.locator("#vote-start-submit").tap()
+    expect(pg.locator("#vote-invite")).to_be_visible()
+    rid = pg.evaluate("fetch('/api/rounds/current').then((r) => r.json())")["id"]
+    link = f"{base}/?round={rid}"
+    expect(pg.locator("#vote-invite-url")).to_have_value(link)
+    expect(pg.locator("#vote-invite-share")).to_be_hidden()  # no share sheet on http
+    expect(pg.locator("#vote-invite-apps")).to_be_visible()
+    assert_apps(pg, "#vote-invite-apps", link, "Insecure share")
+    pg.locator("#vote-invite-copy").tap()
+    how = assert_copied(pg, "#vote-invite-copied", link)
+    print(f"PASS http invite screen: no 📤 Share, 💬 WhatsApp / 🟣 Viber links with the encoded link; Copy → {how}")
+
+    pg.locator("#vote-invite-start").tap()
+    expect(pg.locator("#guide")).to_be_visible()
+    pg.locator("#guide-close").tap()
+    pg.locator('#tabbar button[data-tab="vote"]').tap()
+    pg.locator("#vote-tab-vote").tap()
+    share = pg.locator("#vote-share .share-btn")
+    expect(share).to_have_text("🔗 Share link")
+    assert_apps(pg, "#vote-share", link, "Insecure share")
+    pg.evaluate("window.__copied = null")
+    share.tap()
+    how = assert_copied(pg, "#vote-share", link)
+    pg.locator("#vote-close").tap()
+    print(f"PASS http 🔗 Share link: WhatsApp / Viber links; tap → {how}")
+
+    cancel_open_round(pg)
+    ctx2, anon = new_page()
+    anon.goto(link)
+    expect(anon.locator("#welcome-invite")).to_have_text("🗳️ This round was cancelled: Insecure share")
+    print("PASS a cancelled round's link (logged out) says “This round was cancelled”")
+    pg.evaluate("(id) => fetch(`/api/saved-trips/${encodeURIComponent(id)}`, {method: 'DELETE'})", trip)
+    ctx2.close()
+    ctx.close()
+    browser.close()
 
 
 if __name__ == "__main__":

@@ -242,6 +242,8 @@ function focusTripRow() {
 }
 
 // ---- 🔗 share link: <origin>/?round=<id> (guide.js handles opening it) ----
+// The public site is plain http: no navigator.share / navigator.clipboard there (not a secure context), so the link
+// is copied with execCommand and shared through 💬 WhatsApp / 🟣 Viber links instead of the share sheet.
 const roundLink = (id) => `${location.origin}/?round=${enc(id)}`;
 const shareText = (round) => `Vote on '${round.title}' – closes ${localWhen(round.closes_at)}`;
 const canShare = () => typeof navigator.share === "function";
@@ -254,26 +256,66 @@ async function nativeShare(round) {
     return err?.name === "AbortError";
   }
 }
-// Copies the link (where the browser lets us) and shows it in a selectable field either way.
+// No share sheet: 💬 WhatsApp / 🟣 Viber links with the text + link (getRound: the round as it is when tapped).
+function shareApps(getRound) {
+  const box = vEl("div", "share-apps");
+  const apps = [
+    ["💬 WhatsApp", "share-whatsapp", "https://wa.me/?text=", "_blank"],
+    ["🟣 Viber", "share-viber", "viber://forward?text=", "_self"],  // an app link: a new tab would stay blank
+  ];
+  for (const [label, cls, base, target] of apps) {
+    const a = vEl("a", `tool-btn share-app ${cls}`, label);
+    a.target = target;
+    a.rel = "noopener";
+    const update = () => {
+      const round = getRound();
+      if (round) a.href = base + encodeURIComponent(`${shareText(round)} ${roundLink(round.id)}`);
+    };
+    update();
+    a.addEventListener("click", update);  // before the browser follows it: a renamed round, a newer closing time
+    box.append(a);
+  }
+  return box;
+}
+// No navigator.clipboard (http): the field made editable for a moment, selected and copied with execCommand.
+function execCopy(input) {
+  input.readOnly = false;
+  input.focus({ preventScroll: true });
+  input.setSelectionRange(0, input.value.length);
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch { ok = false; }
+  input.readOnly = true;
+  return ok;
+}
+// Copies the link and shows it in a field; when nothing could copy it the field stays selected for a long-press.
 async function copyLink(round, box) {
   const url = roundLink(round.id);
-  let copied = false;
-  try {
-    await navigator.clipboard.writeText(url);
-    copied = true;
-  } catch { /* no clipboard (http, permissions): the field below is selected for a manual copy */ }
   box.replaceChildren();
+  const msg = vEl("div", "share-msg");
   const input = vEl("input", "share-url");
   input.readOnly = true;
   input.value = url;
   input.setAttribute("aria-label", "Link to this round");
   input.addEventListener("focus", () => input.select());
-  box.append(vEl("div", "share-msg", copied ? "✓ Link copied" : "Copy this link:"), input);
+  box.append(msg, input);
   box.hidden = false;
-  if (!copied) { input.focus({ preventScroll: true }); input.select(); }
+  let copied = false;
+  if (typeof navigator.clipboard?.writeText === "function") {
+    try {
+      await navigator.clipboard.writeText(url);
+      copied = true;
+    } catch { /* permissions: execCommand below */ }
+  }
+  if (!copied) copied = execCopy(input);
+  msg.textContent = copied ? "✓ Link copied" : "Long-press to copy";
+  if (!copied) {
+    input.focus({ preventScroll: true });
+    input.setSelectionRange(0, url.length);
+  }
   return copied;
 }
-// 🔗 Share link in the Vote dialog (open round, everyone): phones with a share sheet use it, the rest copy.
+// 🔗 Share link in the Vote dialog (open round, everyone): phones with a share sheet use it, the rest copy; without
+// a share sheet the WhatsApp / Viber links sit under the button.
 function renderShare(round, open) {
   const box = $("vote-share");
   const key = open ? round.id : "";
@@ -289,7 +331,9 @@ function renderShare(round, open) {
     if (!current) return;
     if (canShare() && window.mobile?.isPhone() && await nativeShare(current)) return;
     copyLink(current, out);
-  }), out);
+  }));
+  if (!canShare()) box.append(shareApps(() => vote.round));
+  box.append(out);
 }
 
 // ---- 🎉 Round started – invite your friends (right after Start a round) ----
@@ -301,6 +345,10 @@ function showInvite(round) {
   $("vote-invite-round").textContent = `${round.title} · ${closesIn(round.closes_at)} (${localWhen(round.closes_at)})`;
   $("vote-invite-url").value = roundLink(round.id);
   $("vote-invite-share").hidden = !canShare();
+  const apps = $("vote-invite-apps");
+  apps.replaceChildren();
+  apps.hidden = canShare();
+  if (!apps.hidden) apps.append(...shareApps(() => vote.inviteRound).children);
   $("vote-invite-copied").replaceChildren();
   $("vote-invite-copied").hidden = true;
   $("vote-dialog").scrollTop = 0;
