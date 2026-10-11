@@ -24,7 +24,9 @@ from app.models import (MAX_TRIP_SIGHTS, TRIP_TOO_LARGE, HikeQuery, HikeSearch, 
 from app.nearby_limits import NearbyBusy, NearbyLimits
 from app.trip_markdown import content_disposition, trip_markdown
 from app.trip_print import CSP, trip_print_html
+from app.rounds_routes import rounds_router
 from app.trips_store import TooManyTrips, TripConflict, TripFull, TripStore, TripTooLarge
+from app.votes_store import RoundStore
 from app.wiring import build_engine
 
 STATIC_DIR = BASE_DIR / "static"
@@ -71,7 +73,8 @@ async def sweep_cache_daily(cache, interval: float = DAY, accounts=None) -> None
 
 
 def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
-               trip_store: TripStore | None = None, accounts: AccountStore | None = None) -> FastAPI:
+               trip_store: TripStore | None = None, accounts: AccountStore | None = None,
+               rounds: RoundStore | None = None) -> FastAPI:
     settings = settings or Settings()
     engine = engine or build_engine(settings)
     cache = getattr(engine, "cache", None)
@@ -96,7 +99,10 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
     trip_store = trip_store or TripStore(settings.trips_db)
     app.state.trips = trip_store
     app.state.accounts = accounts
+    rounds = rounds or RoundStore(settings.trips_db, trip_store, accounts)
+    app.state.rounds = rounds
     app.include_router(auth_router(accounts))
+    app.include_router(rounds_router(rounds))
     nearby_limits = NearbyLimits()
     app.state.nearby = nearby_limits
 

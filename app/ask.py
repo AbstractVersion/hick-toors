@@ -22,6 +22,7 @@ Use the hicktoors tools (search_hikes, search_stays, plan_trip) to find real opt
 hikes, stays, prices or coordinates. Dates are YYYY-MM-DD.
 For questions about the user's saved trips, use list_saved_trips and get_saved_trip (read-only; you
 cannot change trips).
+For "what's winning / who hasn't voted", use vote_standings.
 When the user gives an Airbnb room link or a Booking.com hotel link, use lookup_stay (with the trip dates) to get that stay.
 For natural sights (waterfalls, springs, gorges, viewpoints…) near a place, use nature_sights.
 Finish with a short friendly plan, then a final fenced JSON block exactly like:

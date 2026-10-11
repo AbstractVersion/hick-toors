@@ -33,6 +33,21 @@ def trip_store():
     return _trip_store
 
 
+_round_store = None
+
+
+def round_store():
+    global _round_store
+    if _round_store is None:
+        from app.accounts import AccountStore
+        from app.config import Settings
+        from app.votes_store import RoundStore
+
+        settings = Settings()
+        _round_store = RoundStore(settings.trips_db, trip_store(), AccountStore(settings.trips_db))
+    return _round_store
+
+
 def _limit(max_drive_minutes: int | None, unlimited: bool):
     if unlimited:
         return "unlimited"
@@ -205,6 +220,25 @@ async def get_saved_trip(trip_id: str) -> str:
     if trip is None:
         return json.dumps({"error": "Trip not found"})
     return trip_markdown(trip, date.today())
+
+
+@mcp.tool()
+async def vote_standings() -> str:
+    """Current group-voting standings (read-only): who is winning and who has not voted yet.
+
+    Returns JSON {"round": {id, title, opener, status, closes_at, trips: [{trip_id, name, rank, score,
+    counts, votes, stays}], waiting_for: [username], winner}} for the open round (or the one that closed
+    in the last 7 days), or {"round": null} when there is none.
+    """
+    view = round_store().current(None)
+    if view is None:
+        return json.dumps({"round": None})
+    data = view.model_dump(mode="json", exclude={"me"})
+    for trip in data["trips"]:
+        trip["my_rating"] = None
+        for stay in trip["stays"]:
+            stay["my_rating"] = None
+    return json.dumps({"round": data})
 
 
 if __name__ == "__main__":
