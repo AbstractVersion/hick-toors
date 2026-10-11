@@ -126,14 +126,14 @@ main { flex: 1; display: flex; min-height: 0; }
 .auth-dialog::backdrop { background: rgba(0,0,0,.35); }
 .auth-dialog .dlg-head { display: flex; justify-content: space-between; align-items: center; }
 .auth-dialog h2 { margin: 0; font-size: 16px; }
-.auth-dialog label { display: block; margin: 8px 0; }
-.auth-dialog label[hidden] { display: none; }
-.auth-dialog input { display: block; width: 100%; margin-top: 2px; padding: 5px 7px; border: 1px solid #c8d0c6; border-radius: 6px; font: inherit; }
+.auth-form label { display: block; margin: 8px 0; }
+.auth-form label[hidden], .auth-form[hidden] { display: none; }
+.auth-form input { display: block; width: 100%; margin-top: 2px; padding: 5px 7px; border: 1px solid #c8d0c6; border-radius: 6px; font: inherit; }
 .auth-tabs { display: flex; gap: 4px; margin: 10px 0 4px; border-bottom: 1px solid #dde3dc; }
 .auth-tabs button { padding: 5px 12px; border: 0; border-bottom: 2px solid transparent; background: none; font: inherit; cursor: pointer; color: #5d6b63; }
 .auth-tabs button[aria-selected="true"] { border-bottom-color: #2f6f4e; color: #1d2b24; font-weight: 600; }
-.auth-dialog .form-error { margin: 4px 0 0; min-height: 18px; color: #a8322d; }
-.auth-dialog .dlg-actions .primary:disabled { opacity: .5; cursor: not-allowed; }
+.auth-dialog .form-error, .auth-form .form-error { margin: 4px 0 0; min-height: 18px; color: #a8322d; }
+.auth-form .dlg-actions .primary:disabled { opacity: .5; cursor: not-allowed; }
 /* emoji picker (sign-up tab and the Change emoji dialog): 40 px buttons that wrap, taken ones greyed out */
 .auth-area .name-btn { color: inherit; text-decoration: none; border-bottom: 1px dashed #8a968f; }
 .emoji-row { margin: 8px 0; }
@@ -221,6 +221,25 @@ main { flex: 1; display: flex; min-height: 0; }
 .ov-warn { color: #a8322d; }
 .ov-pop { position: fixed; z-index: 10; max-width: min(320px, calc(100vw - 16px)); padding: 8px 10px; border: 1px solid #c8d0c6; border-radius: 8px;
   background: #fff; box-shadow: 0 4px 16px rgba(0,0,0,.18); font-size: 14px; overflow-wrap: anywhere; }
+/* ---- welcome wall (login first): full screen over the app, the Log in / Sign up form on a card ---- */
+.welcome { position: fixed; inset: 0; z-index: 5000; display: flex; overflow-y: auto; overscroll-behavior: contain; padding: 24px 16px;
+  background: linear-gradient(160deg, #2f6f4e 0%, #4f8f6a 55%, #b5562f 140%); }
+.welcome[hidden] { display: none; }
+.welcome-card { width: min(400px, 100%); margin: auto; padding: 20px 20px 16px; border-radius: 12px; background: #fff;
+  box-shadow: 0 10px 40px rgba(0,0,0,.25); }
+.welcome-brand { margin: 0; font-size: 26px; }
+.welcome-tagline { margin: 4px 0 12px; color: #5d6b63; font-size: 15px; }
+.welcome-invite { margin: 0 0 10px; padding: 10px 12px; border-radius: 8px; background: #fff4d6; border: 1px solid #f0d58a; font-size: 15px; }
+.welcome-invite:empty, .welcome-invite[hidden] { display: none; }
+.welcome-loading { display: flex; gap: 8px; align-items: center; min-height: 120px; justify-content: center; color: #5d6b63; }
+.welcome-loading[hidden] { display: none; }
+/* active-round banner: a strip under the header (phone: at the top of the Map tab) */
+.round-banner { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; padding: 6px 16px; background: #fff4d6;
+  border-bottom: 1px solid #f0d58a; font-size: 14px; }
+.round-banner[hidden] { display: none; }
+.round-banner-text { overflow-wrap: anywhere; }
+.round-banner .primary { padding: 5px 12px; border: 0; border-radius: 6px; background: #2f6f4e; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+#account-btn, #account-menu { display: none; }  /* phone top bar only */
 /* ---- phone layout shell: one DOM; on desktop the wrappers vanish and the header looks as before ---- */
 #controls-more, #controls .search-row { display: contents; }
 #menu-btn, #controls .panel-head, #tabbar { display: none; }
@@ -245,6 +264,26 @@ main { flex: 1; display: flex; min-height: 0; }
   .goto { flex: 1; min-width: 0; }
   #goto-input { flex: 1; width: auto; min-width: 0; }
   #menu-btn { display: inline-block; min-width: 44px; min-height: 44px; font-size: 20px; line-height: 1; }
+  /* your emoji next to ☰ → Change emoji / Log out */
+  #account-btn:not([hidden]) { display: inline-flex; align-items: center; justify-content: center; flex: none; min-width: 44px; min-height: 44px;
+    padding: 0; font-size: 22px; line-height: 1; font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif; }
+  #account-menu:not([hidden]) { display: block; position: fixed; z-index: 3500; top: calc(54px + env(safe-area-inset-top)); right: 10px;
+    min-width: 200px; max-width: calc(100vw - 20px); padding: 4px; background: #fff; border: 1px solid #dde3dc; border-radius: 10px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.18); }
+  .account-menu-name { padding: 8px 12px; color: #5d6b63; overflow-wrap: anywhere; border-bottom: 1px solid #eef1ed; }
+  #account-menu button { display: block; width: 100%; min-height: 44px; padding: 8px 12px; border: 0; border-radius: 6px; background: none;
+    font: inherit; font-size: 15px; text-align: left; cursor: pointer; }
+  #account-menu button:active, #account-menu button:focus-visible { background: #e7f1ea; }
+  /* the round banner: a card at the top of the Map tab, below the top bar */
+  .round-banner { margin: 6px 10px 0; padding: 6px 8px 6px 12px; border: 1px solid #f0d58a; border-radius: 10px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.12); font-size: 13px; }
+  body:not(.phone-tab-map) .round-banner { display: none; }
+  .round-banner-text { flex: 1 1 180px; }
+  .round-banner .primary { min-height: 40px; margin-left: auto; }
+  /* the welcome wall: the card fills the screen */
+  .welcome { padding: 0; }
+  .welcome-card { width: 100%; min-height: 100%; margin: 0; padding: calc(20px + env(safe-area-inset-top)) 16px 0; border-radius: 0;
+    box-shadow: none; }
 
   /* ☰ controls panel: full screen, search buttons sticky at the bottom */
   #controls-more { display: none; }
@@ -364,19 +403,19 @@ main { flex: 1; display: flex; min-height: 0; }
   .trip-items li > a, .trip-items li > span:first-child { flex: 1 1 100%; overflow-wrap: anywhere; }
   .trip-items .item-tools { margin-left: auto; }
   .trip-items .item-tools .link-btn { min-width: 40px; min-height: 40px; font-size: 16px; }
-  #trip-editor .dlg-actions > *, .auth-dialog .dlg-actions > *, .vote-start .dlg-actions > * { flex: 1 1 40%; min-height: 44px; }
+  #trip-editor .dlg-actions > *, .auth-form .dlg-actions > *, .vote-start .dlg-actions > * { flex: 1 1 40%; min-height: 44px; }
   #trip-editor .link-btn#trip-back, #trip-round button { min-height: 40px; font-size: 14px; }
   .trips-list li { padding: 12px 8px; }
 
   /* login dialog */
   .auth-tabs button { flex: 1; min-height: 44px; }
-  .auth-dialog input { min-height: 44px; }
+  .auth-form input { min-height: 44px; }
   .emoji-grid { max-height: none; overflow: visible; grid-template-columns: repeat(auto-fill, minmax(42px, 1fr)); }
   .emoji-btn { height: 44px; font-size: 24px; }
   #controls-more .auth-area .name-btn { min-height: 40px; font-size: 16px; }
   /* the long sign-up picker: Sign up (and its message) stay on screen at the bottom */
   .auth-dialog { padding-bottom: 0; }  /* the sticky bar below carries the bottom inset, nothing shows under it */
-  .auth-dialog .dlg-actions { position: sticky; bottom: 0; z-index: 1; margin: 0; padding: 10px 0 calc(10px + env(safe-area-inset-bottom));
+  .auth-form .dlg-actions { position: sticky; bottom: 0; z-index: 1; margin: 0; padding: 10px 0 calc(10px + env(safe-area-inset-bottom));
     background: #fff; border-top: 1px solid #eef1ed; }
   .emoji-dialog .emoji-grid { padding-bottom: 16px; }
   #auth-error:not(:empty) { position: sticky; bottom: 65px; z-index: 1; margin: 0; padding: 6px 0; background: #fff; }

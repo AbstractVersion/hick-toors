@@ -11,8 +11,11 @@ asserted instead. The saved-trips API (/api/saved-trips...) is NOT mocked: the t
 creates, edits, exports and deletes a real trip, so it refuses to run unless the trips list is empty.
 The auth API is real too: the check signs up `nikos` (a fresh TRIPS_DB has no accounts).
 The 🗳️ voting scenario at the end uses the real rounds API with two browser contexts (`anna` opens a round,
-logged-out `bob` watches, signs up from a vote click, votes; anna closes the round) – it needs no open round.
+`bob` signs up and the round opens by itself, votes; anna closes the round) – it needs no open round.
+The 🥾 welcome scenario (no flash, auto-open once per round per session, the round banner, the phone top bar's account
+menu) logs in existing accounts: the server allows 10 sign-ups per address and hour, the whole check makes 8.
 The 📱 phone scenarios (390×844 and landscape 844×390, touch) run last; set UI_SHOTS=<folder> to save screenshots there.
+Login first: every scenario starts on the welcome wall and signs up / logs in through it (wall_sign_up / wall_log_in).
 Every UI sign-up picks its emoji in the sign-up picker; the 😀 scenarios check taken emojis, the 409 race, Change emoji
 and the first-login prompt (mocked /api/auth/me for an account from before emojis).
 """
@@ -64,6 +67,40 @@ def pick_emoji(pg, emoji: str, tap: bool = False) -> None:
     button.tap() if tap else button.click()
     expect(button).to_have_attribute("aria-pressed", "true")
     expect(pg.locator("#auth-submit")).to_be_enabled()
+
+
+def wall_sign_up(pg, name: str, emoji: str, tap: bool = False, taken: dict | None = None) -> None:
+    """Sign up through the welcome wall's form (picking an emoji); the wall goes away."""
+    expect(pg.locator("#auth-form")).to_be_visible(timeout=15000)
+    press = (lambda selector: pg.locator(selector).tap()) if tap else pg.click
+    press("#auth-tab-signup")
+    for other, owner in (taken or {}).items():  # someone else's emoji: disabled, "taken by <name>"
+        button = pg.locator(f'#auth-emoji-grid .emoji-btn[data-emoji="{other}"]')
+        expect(button).to_have_attribute("aria-disabled", "true")
+        expect(button).to_have_attribute("title", f"taken by {owner}")
+    pg.fill("#auth-username", name)
+    pg.fill("#auth-password", "password1")
+    pg.fill("#auth-repeat", "password1")
+    pick_emoji(pg, emoji, tap)
+    press("#auth-submit")
+    expect(pg.locator("#welcome")).to_be_hidden()
+
+
+def wall_log_in(pg, name: str, password: str = "password1") -> None:
+    """Log in through the welcome wall's form; the wall goes away."""
+    expect(pg.locator("#auth-form")).to_be_visible(timeout=15000)
+    pg.click("#auth-tab-login")
+    pg.fill("#auth-username", name)
+    pg.fill("#auth-password", password)
+    pg.press("#auth-password", "Enter")
+    expect(pg.locator("#welcome")).to_be_hidden()
+
+
+def cancel_open_round(pg) -> None:
+    """Cancel the open round, if any, with this page's session (it must be the opener's)."""
+    status = pg.evaluate("""() => fetch('/api/rounds/current').then((r) => r.json()).then((r) => r && r.status === 'open'
+        ? fetch(`/api/rounds/${encodeURIComponent(r.id)}/cancel`, {method: 'POST'}).then((x) => x.status) : 200)""")
+    assert status == 200, status
 
 
 def canned_hikes(body: dict) -> dict:
@@ -154,6 +191,8 @@ def main() -> None:
                 page.evaluate("localStorage.clear()")
                 page.reload()
             expect(page.locator("#hike-filters-btn")).to_be_enabled(timeout=15000)
+            if not clear:  # still logged in: the wall goes once /api/auth/me answers
+                expect(page.locator("#welcome")).to_be_hidden()
 
         def last_request(wanted: str) -> tuple[str, dict]:
             return [r for r in requests if r[0] == wanted][-1]
@@ -170,6 +209,48 @@ def main() -> None:
         load(clear=True)
         if page.evaluate("fetch('/api/saved-trips').then((r) => r.json())"):
             raise SystemExit("FAIL start the server with a throwaway TRIPS_DB")  # never touch real trips
+
+        # ---- login first (real auth API): logged out, the welcome wall covers the app; sign up through it ----
+        wall = page.locator("#welcome")
+        expect(wall).to_be_visible()
+        expect(page.locator("#welcome-title")).to_have_text("🥾 hick-toors")
+        expect(wall).to_contain_text("Plan hikes and vote on trips with your friends")
+        expect(page.locator("#welcome-invite")).to_be_hidden()  # the invitation slot is empty
+        expect(page.locator("#welcome-loading")).to_be_hidden()
+        expect(page.locator("#auth-username")).to_be_focused()
+        expect(wall.locator("button[aria-label=Close]")).to_have_count(0)  # no ✕ on the wall
+        covered = page.evaluate("""() => ['search', 'goto-input', 'map', 'hike-list'].every((id) => {
+            const el = document.getElementById(id), r = el.getBoundingClientRect();
+            const top = document.elementFromPoint(r.x + r.width / 2, r.y + Math.max(1, r.height / 2));
+            return el.closest('[inert]') && (!top || document.getElementById('welcome').contains(top)); })""")
+        if not covered:
+            raise SystemExit("FAIL the welcome wall should cover the app (map / search inert and unreachable)")
+        page.click("#auth-tab-signup")
+        expect(page.locator("#auth-repeat")).to_be_visible()
+        expect(page.locator("#auth-emoji-grid .emoji-btn")).to_have_count(EMOJI_COUNT)
+        expect(page.locator("#auth-submit")).to_be_disabled()  # Sign up waits for an emoji
+        page.fill("#auth-username", "nikos")
+        page.fill("#auth-password", "password1")
+        page.fill("#auth-repeat", "password2")
+        page.press("#auth-repeat", "Enter")  # no emoji yet: Sign up is disabled, Enter sends nothing
+        page.wait_for_timeout(200)
+        expect(wall).to_be_visible()
+        expect(page.locator("#auth-error")).to_have_text("")
+        pick_emoji(page, "🤡")
+        expect(page.locator("#auth-emoji-picked")).to_have_text(": 🤡")
+        page.press("#auth-repeat", "Enter")
+        expect(page.locator("#auth-error")).to_have_text("The passwords don't match")
+        page.fill("#auth-repeat", "password1")
+        if os.environ.get("UI_SHOTS"):
+            page.screenshot(path=os.path.join(os.environ["UI_SHOTS"], "signup-picker-desktop.png"))
+        page.press("#auth-repeat", "Enter")  # Enter submits
+        expect(wall).to_be_hidden()
+        expect(page.locator("#auth-area")).to_have_text("🤡 nikos · Log out", use_inner_text=True)
+        assert page.evaluate("fetch('/api/auth/me').then((r) => r.json())") == {"username": "nikos", "emoji": "🤡"}
+        assert not page.evaluate("document.querySelector('main').inert || document.getElementById('controls').inert")
+        expect(page.locator("#emoji-dialog")).to_be_hidden()  # has an emoji: no prompt
+        print("PASS login first: the wall covers the app (no ✕, invitation slot empty); Sign up through it (emoji "
+              "picked, Enter) opens the app")
         expect(page.locator("#hike-filter-count")).to_be_hidden()
         expect(page.locator("#stay-filter-count")).to_be_hidden()
         print("PASS buttons enabled, no badges on defaults")
@@ -587,56 +668,21 @@ def main() -> None:
         assert page.evaluate("placeLayer.getLayers().length") == 1
         print("PASS Go to place: pin + fly, no search fired, warning, pin survives a new search")
 
-        # ---- log in / sign up (real API): logged out, ＋ Trip asks to log in first, then carries on ----
-        auth_dlg = page.locator("#auth-dialog")
+        # ---- log out → the wall again; wrong password / taken name / taken emoji inline on it; log in ----
         auth_area = page.locator("#auth-area")
         menu = page.locator("#trip-menu")
-        expect(auth_area).to_have_text("👤 Log in", use_inner_text=True)
-        page.locator("#hike-list li", has_text="Test hike").locator(".add-trip").click()
-        expect(auth_dlg).to_be_visible()
-        expect(menu).to_be_hidden()
-        expect(page.locator("#auth-username")).to_be_focused()
-        page.click("#auth-tab-signup")
-        expect(page.locator("#auth-repeat")).to_be_visible()
-        expect(page.locator("#auth-emoji-grid .emoji-btn")).to_have_count(EMOJI_COUNT)
-        expect(page.locator("#auth-submit")).to_be_disabled()  # Sign up waits for an emoji
-        page.fill("#auth-username", "nikos")
-        page.fill("#auth-password", "password1")
-        page.fill("#auth-repeat", "password2")
-        page.press("#auth-repeat", "Enter")  # no emoji yet: Sign up is disabled, Enter sends nothing
-        page.wait_for_timeout(200)
-        expect(auth_dlg).to_be_visible()
-        expect(page.locator("#auth-error")).to_have_text("")
-        pick_emoji(page, "🤡")
-        expect(page.locator("#auth-emoji-picked")).to_have_text(": 🤡")
-        page.press("#auth-repeat", "Enter")
-        expect(page.locator("#auth-error")).to_have_text("The passwords don't match")
-        page.fill("#auth-repeat", "password1")
-        if os.environ.get("UI_SHOTS"):
-            page.locator("#auth-dialog").screenshot(path=os.path.join(os.environ["UI_SHOTS"], "signup-picker-desktop.png"))
-        page.press("#auth-repeat", "Enter")  # Enter submits
-        expect(auth_dlg).to_be_hidden()
-        expect(menu).to_be_visible()  # the ＋ Trip action continued after the sign-up
-        expect(menu.locator("button")).to_have_count(1)
-        expect(menu.locator("button").first).to_have_text("➕ New trip")
-        page.keyboard.press("Escape")
-        expect(menu).to_be_hidden()
         expect(auth_area).to_have_text("🤡 nikos · Log out", use_inner_text=True)
-        assert page.evaluate("fetch('/api/auth/me').then((r) => r.json())") == {"username": "nikos", "emoji": "🤡"}
-        expect(page.locator("#emoji-dialog")).to_be_hidden()  # has an emoji: no prompt
-        print("PASS logged out ＋ Trip opens the login dialog; Sign up (emoji picked, Enter) continues to the trip menu")
-
         page.click("#auth-logout")
-        expect(auth_area).to_have_text("👤 Log in", use_inner_text=True)
+        expect(wall).to_be_visible()
+        expect(page.locator("#auth-username")).to_be_focused()
+        assert page.evaluate("document.querySelector('main').inert")
         assert page.evaluate("fetch('/api/auth/me').then((r) => r.json())") == {"username": None, "emoji": None}
-        page.click("#auth-login-btn")
-        expect(auth_dlg).to_be_visible()
-        expect(page.locator("#auth-repeat")).to_be_hidden()
+        expect(page.locator("#auth-repeat")).to_be_hidden()  # the Log in tab
         page.fill("#auth-username", "nikos")
         page.fill("#auth-password", "wrong-password")
         page.click("#auth-submit")
         expect(page.locator("#auth-error")).to_have_text("Wrong username or password")
-        expect(auth_dlg).to_be_visible()
+        expect(wall).to_be_visible()
         page.click("#auth-tab-signup")  # a taken name and a body-rule error are shown inline too
         page.fill("#auth-password", "password1")
         page.fill("#auth-repeat", "password1")
@@ -653,39 +699,28 @@ def main() -> None:
         page.fill("#auth-username", "x")
         page.click("#auth-submit")
         expect(page.locator("#auth-error")).not_to_have_text("")
-        page.click("#auth-close")
-        expect(auth_dlg).to_be_hidden()
-        page.locator("#hike-list li", has_text="Test hike").locator(".add-trip").click()
-        expect(auth_dlg).to_be_visible()
-        page.keyboard.press("Escape")  # closed without logging in: the ＋ Trip action is dropped
-        expect(auth_dlg).to_be_hidden()
-        page.click("#auth-login-btn")
-        page.fill("#auth-username", "nikos")
-        page.fill("#auth-password", "password1")
-        page.press("#auth-password", "Enter")
-        expect(auth_dlg).to_be_hidden()
+        expect(wall).to_be_visible()
+        wall_log_in(page, "nikos")
         expect(menu).to_be_hidden()
         expect(auth_area).to_have_text("🤡 nikos · Log out", use_inner_text=True)
         expect(page.locator("#emoji-dialog")).to_be_hidden()
-        print("PASS Log out; wrong password / taken name / taken emoji shown inline; closing the dialog drops the action; "
-              "Log in")
+        expect(page.locator("#hike-list li")).to_have_count(1)  # the page behind the wall kept its results
+        print("PASS Log out → the wall again; wrong password / taken name / taken emoji shown inline; Log in through it")
 
-        # The cookie expires while the page still shows nikos: the 401 opens the dialog, no replay after login.
+        # The cookie expires while the page still shows nikos: the 401 brings the wall back, no replay after login.
         page.context.clear_cookies()
         page.locator("#hike-list li", has_text="Test hike").locator(".add-trip").click()
         expect(menu).to_be_visible()  # the page still thinks we are logged in
         menu.locator("button", has_text="New trip").click()
-        expect(auth_dlg).to_be_visible()
+        expect(wall).to_be_visible()
+        expect(menu).to_be_hidden()
         expect(auth_area).to_have_text("👤 Log in", use_inner_text=True)
         expect(page.locator("#notices")).to_contain_text("Log in first")
-        page.fill("#auth-username", "nikos")
-        page.fill("#auth-password", "password1")
-        page.press("#auth-password", "Enter")
-        expect(auth_dlg).to_be_hidden()
+        wall_log_in(page, "nikos")
         expect(auth_area).to_have_text("🤡 nikos · Log out", use_inner_text=True)
         page.wait_for_timeout(300)
         assert page.evaluate("fetch('/api/saved-trips').then((r) => r.json())") == []  # nothing replayed
-        print("PASS an expired cookie (401) opens the login dialog; the user repeats the click")
+        print("PASS an expired cookie (401) brings the wall back over the page; the user repeats the click")
 
         # ---- saved trips (real API, throwaway TRIPS_DB) ----
         saved_name = "Test hike + Area house"
@@ -1018,42 +1053,18 @@ def main() -> None:
         page.unroute(nearby_re)
         print("PASS 🌿 Find nearby sights: nothing new, API error and a stale answer are handled")
 
-        # Logged out: ⬇ Export and 🖨️ PDF of the stored trip work with no login dialog and no save (PUT).
-        page.click("#trips-close")
-        page.click("#auth-logout")
-        expect(auth_area).to_have_text("👤 Log in", use_inner_text=True)
+        # Log out with the trip editor open: the wall closes the dialog and covers the page; after logging in again
+        # Delete needs two clicks.
+        rows.first.click()
+        expect(page.locator("#trip-editor")).to_be_visible()
+        page.evaluate("logout()")  # the header's Log out is behind the open dialog
+        expect(wall).to_be_visible()
+        expect(dlg).to_be_hidden()
+        wall_log_in(page, "nikos")
         page.click("#trips-btn")
         rows.first.click()
         expect(page.locator("#trip-editor")).to_be_visible()
-        writes: list[str] = []
-
-        def on_write(req) -> None:
-            if req.method in ("PUT", "POST", "DELETE") and "/api/saved-trips" in req.url:
-                writes.append(f"{req.method} {req.url}")
-
-        page.on("request", on_write)
-        with page.expect_download() as download_info:
-            page.click("#trip-export")
-        assert download_info.value.suggested_filename.endswith(".md"), download_info.value.suggested_filename
-        with page.context.expect_page() as pdf_info:
-            page.click("#trip-pdf")
-        pdf_tab = pdf_info.value
-        pdf_tab.wait_for_url(re.compile(r"/api/saved-trips/[^/?]+/print$"))
-        expect(pdf_tab.locator("h1")).to_be_visible()
-        pdf_tab.close()
-        expect(auth_dlg).to_be_hidden()
-        expect(page.locator("#trips-error")).to_be_hidden()
-        page.remove_listener("request", on_write)
-        assert not writes, writes
-        print("PASS logged out: ⬇ Export downloads the .md and 🖨️ PDF opens …/print, no login dialog, no save")
-
-        # Logged-out Delete asks to log in first, then carries on (arms the two-click confirm).
         page.click("#trip-delete")
-        expect(auth_dlg).to_be_visible()
-        page.fill("#auth-username", "nikos")
-        page.fill("#auth-password", "password1")
-        page.press("#auth-password", "Enter")
-        expect(auth_dlg).to_be_hidden()
         expect(page.locator("#trip-delete")).to_have_text("Confirm delete")
         page.click("#trip-delete")
         expect(rows).to_have_count(0)
@@ -1061,7 +1072,7 @@ def main() -> None:
         expect(page.locator("#trips-count")).to_have_text("(0)")
         page.click("#trips-close")
         expect(dlg).to_be_hidden()
-        print("PASS logged-out Delete asks to log in, then needs two clicks; list empty, count (0)")
+        print("PASS log out over an open trip editor → the wall closes it; Delete needs two clicks; list empty, count (0)")
 
         # ---- 🌿 Nature layer (canned /api/nature; the trip part uses the real saved-trips API) ----
         def nature_settle(ms: int = 900) -> None:
@@ -1300,6 +1311,7 @@ def main() -> None:
         check_voting(browser, errors)
         check_emojis(browser, errors)
         check_overview(browser, errors)  # leaves its round closed: the phone scenario starts a new one
+        check_welcome(browser, errors)
         check_mobile(browser, errors)
         check_mobile_landscape(browser, errors)
         browser.close()
@@ -1319,19 +1331,7 @@ def check_voting(browser, errors: list[str]) -> None:
         return ctx, pg
 
     def sign_up(pg, name: str, emoji: str, taken: dict | None = None) -> None:
-        if not pg.locator("#auth-dialog").is_visible():
-            pg.click("#auth-login-btn")
-        pg.click("#auth-tab-signup")
-        for other, owner in (taken or {}).items():  # someone else's emoji: disabled, "taken by <name>"
-            button = pg.locator(f'#auth-emoji-grid .emoji-btn[data-emoji="{other}"]')
-            expect(button).to_have_attribute("aria-disabled", "true")
-            expect(button).to_have_attribute("title", f"taken by {owner}")
-        pg.fill("#auth-username", name)
-        pg.fill("#auth-password", "password1")
-        pg.fill("#auth-repeat", "password1")
-        pick_emoji(pg, emoji)
-        pg.press("#auth-repeat", "Enter")
-        expect(pg.locator("#auth-dialog")).to_be_hidden()
+        wall_sign_up(pg, name, emoji, taken=taken)
         expect(pg.locator("#auth-area")).to_have_text(f"{emoji} {name} · Log out", use_inner_text=True)
 
     def row(pg, trip_id: str):
@@ -1417,24 +1417,22 @@ def check_voting(browser, errors: list[str]) -> None:
         raise SystemExit(f"FAIL comment not saved: {mine}")
     print("PASS votes: Love moves with a toast, stay vote, rank order, badge · 0 left, comment saved on Enter")
 
-    # B (logged out) watches; A's next vote shows up within one poll (10 s) without any click.
+    # B signs up through the wall: the open round opens by itself (not a participant yet); A's next vote shows up
+    # within one poll (10 s) without any click.
     ctx_b, b = new_page()
-    b.click("#vote-btn")
+    sign_up(b, "bob", "🦖", {"🤡": "nikos", "🍕": "anna"})
     expect(b.locator("#vote-round-view")).to_be_visible()
-    expect(b.locator("#vote-left")).to_be_hidden()
+    expect(b.locator("#vote-left")).to_have_text(" · 2 left")
     expect(row(b, t2).locator(".count-btn").first).to_have_text("😍1")
-    expect(b.locator("#vote-status")).to_contain_text("log in to vote")
     bstay_count = row(b, t1).locator(f'.vote-stay[data-stay="{BSTAY["id"]}"] .count-btn').nth(1)
     expect(bstay_count).to_have_text("🙂0")
     row(a, t1).locator("button", has_text="Stays (2)").click()
     rate(row(a, t1).locator(f'.vote-stay[data-stay="{BSTAY["id"]}"]'), "ok").click()
     expect(bstay_count).to_have_text("🙂1", timeout=12000)
-    print("PASS logged-out B sees the ranking; A's new vote appears in B's dialog within one poll")
+    print("PASS B signs up → the round opens by itself, B sees the ranking; A's new vote appears within one poll")
 
-    # B's No-go asks to log in first (sign up), then is cast; the comment is shown as text.
+    # B's No-go is cast; the comment is shown as text.
     rate(row(b, t1), "nogo").click()
-    expect(b.locator("#auth-dialog")).to_be_visible()
-    sign_up(b, "bob", "🦖", {"🤡": "nikos", "🍕": "anna"})
     expect(rate(row(b, t1), "nogo")).to_have_attribute("aria-pressed", "true")
     comment_b = row(b, t1).locator(".vote-comment").first
     comment_b.fill("<b>no</b>")
@@ -1454,7 +1452,7 @@ def check_voting(browser, errors: list[str]) -> None:
         b.locator("#vote-dialog").screenshot(path=os.path.join(os.environ["UI_SHOTS"], "vote-names-emojis.png"))
     names_btn.click()
     expect(b.locator("#vote-tools")).to_be_hidden()  # not the opener
-    print("PASS B: No-go after sign-up carries on, comment <b>no</b> rendered as text, badge · 0 left")
+    print("PASS B: No-go, comment <b>no</b> rendered as text, badge · 0 left")
 
     # Trip editor line → Vote opens the dialog at that trip.
     b.click("#vote-close")
@@ -1548,6 +1546,12 @@ def check_voting(browser, errors: list[str]) -> None:
     x, y = centre(rate(row(a, t1), "ok"))
     a.mouse.click(x, y)
     a.wait_for_timeout(250)  # the answer is in: trip one is #1 now
+    # The spot still belongs to trip one (no other trip moved there). Its ⚠ No-go line went away with the new rating
+    # and the dialog (now at its max height with the Vote / Overview tabs) re-centres by less than that, so the button
+    # itself sits a little higher: the second click goes to the button where it now is, on the same row.
+    under = a.evaluate("([x, y]) => document.elementFromPoint(x, y)?.closest('.vote-trip')?.dataset.trip", [x, y])
+    assert under == t1, (under, t1)
+    x, y = centre(rate(row(a, t1), "ok"))
     a.mouse.click(x, y)
     puts_settled(a, 2, all_puts)
     assert [(path, body["rating"]) for path, body in all_puts] == [(f"trips/{t1}/vote", "ok")] * 2, all_puts
@@ -1754,9 +1758,13 @@ def check_voting(browser, errors: list[str]) -> None:
     expect(a.locator("#stay-note")).to_have_text("in trip “Vote trip two”")
     print("PASS Close now (two clicks) → 🏆 banner names the top trip + stay, buttons disabled, Show on map")
 
-    # C (logged out): a failed poll's error goes away with the next good poll; Past rounds is reachable from the
-    # closed round without logging in, while Start stays behind the login.
+    # C (nikos): a failed poll's error goes away with the next good poll; Past rounds is reachable from the closed round
+    # (no round open: nothing opens by itself after logging in).
     ctx_c, c = new_page()
+    wall_log_in(c, "nikos")
+    c.wait_for_timeout(500)
+    expect(c.locator("#vote-dialog")).to_be_hidden()
+    expect(c.locator("#round-banner")).to_be_hidden()
     c.click("#vote-btn")
     expect(c.locator("#vote-banner")).to_contain_text("🏆 Vote trip two wins")
     c.route("**/api/rounds/current", lambda route: route.fulfill(
@@ -1768,7 +1776,6 @@ def check_voting(browser, errors: list[str]) -> None:
     expect(c.locator("#vote-error")).to_be_hidden()
     print("PASS a failed poll's error is cleared by the next successful poll")
     c.locator("#vote-footer button", has_text="Past rounds").click()
-    expect(c.locator("#auth-dialog")).to_be_hidden()
     expect(c.locator("#vote-history-view")).to_be_visible()
     past = c.locator("#vote-history button", has_text="November 🥾")
     expect(past).to_contain_text("🏆 Vote trip two")
@@ -1776,12 +1783,8 @@ def check_voting(browser, errors: list[str]) -> None:
     expect(c.locator("#vote-round-view")).to_be_visible()
     expect(c.locator("#vote-banner")).to_contain_text("🏆 Vote trip two wins")
     c.locator("#vote-footer button", has_text="← Back").click()
-    c.locator("#vote-footer button", has_text="Past rounds").click()
-    c.fill("#vote-start-title", "Sneaky")
-    c.click("#vote-start-submit")
-    expect(c.locator("#auth-dialog")).to_be_visible()
-    c.click("#auth-close")
-    print("PASS logged-out C reaches Past rounds from the closed round; Start still asks to log in")
+    expect(c.locator("#vote-banner")).to_contain_text("🏆 Vote trip two wins")
+    print("PASS C reaches Past rounds from the closed round and back")
 
     ctx_c.close()
     ctx_b.close()
@@ -1805,7 +1808,6 @@ def check_emojis(browser, errors: list[str]) -> None:
 
     # zed picks 🐸 – zoe signs up with it first; zed's Sign up answers 409 and gets a fresh picker.
     ctx_z, z = new_page()
-    z.click("#auth-login-btn")
     z.click("#auth-tab-signup")
     z.fill("#auth-username", "zed")
     z.fill("#auth-password", "password1")
@@ -1820,10 +1822,10 @@ def check_emojis(browser, errors: list[str]) -> None:
     expect(frog).to_have_attribute("title", "taken by zoe")
     expect(z.locator('#auth-emoji-grid .emoji-btn[aria-pressed="true"]')).to_have_count(0)
     expect(z.locator("#auth-submit")).to_be_disabled()
-    expect(z.locator("#auth-dialog")).to_be_visible()
+    expect(z.locator("#welcome")).to_be_visible()
     pick_emoji(z, "🐙")
     z.click("#auth-submit")
-    expect(z.locator("#auth-dialog")).to_be_hidden()
+    expect(z.locator("#welcome")).to_be_hidden()
     expect(z.locator("#auth-area")).to_have_text("🐙 zed · Log out", use_inner_text=True)
     print("PASS two sign-ups with one emoji: the second gets 409 'That emoji is taken – pick another', a refreshed "
           "picker (🐸 taken by zoe) and picks again")
@@ -1923,13 +1925,13 @@ def check_emojis(browser, errors: list[str]) -> None:
     expect(prompt).to_be_visible()  # a new page load asks again
     p.keyboard.press("Escape")
     expect(prompt).to_be_hidden()
-    # The login FORM path: log out, ask for a gated action (it waits), log in as the emoji-less account through the
+    # The wall's form path: log out, ask for a gated action (it waits), log in as the emoji-less account through the
     # form → the action runs and the prompt opens; a different emoji-less account on the same page load is asked too.
     p.evaluate("window.ranPending = false")
     p.click("#auth-logout")
-    expect(p.locator("#auth-login-btn")).to_be_visible()
+    expect(p.locator("#welcome")).to_be_visible()
     p.evaluate("requireLogin(() => { window.ranPending = true; })")
-    expect(p.locator("#auth-dialog")).to_be_visible()
+    expect(p.locator("#welcome")).to_be_visible()
     p.fill("#auth-username", "olga")
     p.fill("#auth-password", "password1")
     p.click("#auth-submit")
@@ -1939,7 +1941,6 @@ def check_emojis(browser, errors: list[str]) -> None:
     p.click("#emoji-skip")
     expect(prompt).to_be_hidden()
     p.click("#auth-logout")  # same page load: logging out and in again asks again (prompted resets per user)
-    p.click("#auth-login-btn")
     p.fill("#auth-username", "olga")
     p.fill("#auth-password", "password1")
     p.click("#auth-submit")
@@ -1987,6 +1988,7 @@ def check_mobile(browser, errors: list[str]) -> None:
     pg.goto(BASE)
     pg.wait_for_function("typeof mobile === 'object' && typeof openVote === 'function' && auth.ready")
     expect(pg.locator("#hike-filters-btn")).to_be_enabled(timeout=15000)
+    wall_sign_up(pg, "mia", "🐔", tap=True)
 
     def no_side_scroll(where: str) -> None:
         if not pg.evaluate("document.documentElement.scrollWidth <= innerWidth"):
@@ -2031,7 +2033,7 @@ def check_mobile(browser, errors: list[str]) -> None:
     expect(pg.locator("#controls-more")).to_be_visible()
     fills_viewport("#controls-more")
     for shown in ("#start", "#end", "#hike-filters-btn", "#stay-filters-btn", "#draw-rect-btn", "#draw-circle-btn",
-                  "#nature-btn", "#auth-login-btn", "#search", "#search-all", "#suggest-trips", "#menu-close"):
+                  "#nature-btn", "#auth-name", "#search", "#search-all", "#suggest-trips", "#menu-close"):
         expect(pg.locator(shown)).to_be_visible()
     for small in ("#menu-close", "#search-all", "#draw-rect-btn", "#hike-filters-btn", "#nature-btn"):
         box = pg.locator(small).bounding_box()
@@ -2130,17 +2132,13 @@ def check_mobile(browser, errors: list[str]) -> None:
 
     tabs["map"].tap()
     pg.locator("#menu-btn").tap()
-    pg.locator("#auth-login-btn").tap()
-    expect(pg.locator("#auth-dialog")).to_be_visible()
-    fills_viewport("#auth-dialog")
-    pg.locator("#auth-close").tap()
     pg.locator("#hike-filters-btn").tap()
     expect(pg.locator("#hike-dialog")).to_be_visible()
     fills_viewport("#hike-dialog")
     pg.locator('#hike-dialog [data-act="cancel"]').tap()
     pg.locator("#menu-close").tap()
     no_side_scroll("after dialogs")
-    print("PASS login + filters dialogs are full-screen on the phone; no horizontal scroll")
+    print("PASS filters dialogs are full-screen on the phone; no horizontal scroll")
 
     # ---- the phone flow: touch drawing, popups, ＋ Trip sheet, dialogs' insides, 16 px inputs, 40 px targets ----
     shots = os.environ.get("UI_SHOTS")  # optional folder for phone screenshots
@@ -2247,34 +2245,8 @@ def check_mobile(browser, errors: list[str]) -> None:
     tall(".leaflet-draw-edit-remove")
     print("PASS Leaflet zoom / layers / edit buttons ≥ 40 px; Leaflet.draw's draw buttons hidden on the phone")
 
-    # Login dialog: sign up with 16 px fields.
+    # (mia signed up through the wall at the start; check_welcome_phone checks the wall itself on the phone)
     pg.locator("#menu-btn").tap()
-    pg.locator("#auth-login-btn").tap()
-    expect(pg.locator("#auth-dialog")).to_be_visible()
-    pg.locator("#auth-tab-signup").tap()
-    inputs_16("#auth-dialog")
-    tall("#auth-close")
-    tall("#auth-submit")
-    pg.fill("#auth-username", "mia")
-    pg.fill("#auth-password", "password1")
-    pg.fill("#auth-repeat", "password1")
-    shot("login-dialog")
-    expect(pg.locator("#auth-emoji-grid .emoji-btn")).to_have_count(EMOJI_COUNT)
-    tall("#auth-emoji-grid .emoji-btn")
-    narrow = pg.evaluate("""() => [...document.querySelectorAll('#auth-emoji-grid .emoji-btn')]
-        .filter((b) => b.getBoundingClientRect().width < 40).length""")
-    if narrow:
-        raise SystemExit(f"FAIL {narrow} picker buttons narrower than 40 px on the phone")
-    no_side_scroll("sign-up picker")
-    pg.locator('#auth-emoji-grid .emoji-btn[data-emoji="🐔"]').scroll_into_view_if_needed()
-    pick_emoji(pg, "🐔", tap=True)
-    shot("signup-picker-phone")
-    pg.locator("#auth-submit").tap()
-    expect(pg.locator("#auth-dialog")).to_be_hidden()
-    expect(pg.locator("#auth-name")).to_have_text("🐔 mia")
-    no_side_scroll("login")
-    print("PASS login dialog on the phone: 16 px fields, 40 px buttons, picker ≥ 40 px wraps without side scroll, "
-          "sign up works")
 
     # Change emoji on the phone: the ☰ panel (still open) → tap your name → full-screen picker.
     expect(pg.locator("#controls-more")).to_be_visible()
@@ -2508,6 +2480,7 @@ def check_mobile(browser, errors: list[str]) -> None:
     pg.wait_for_function("mobile.isPhone()")
     pg.wait_for_function("!drawControl._toolbars.draw.enabled()", timeout=3000)
     print("PASS crossing the breakpoint cancels an unfinished draw (panel or Leaflet.draw toolbar)")
+    cancel_open_round(pg)  # mia's phone round: later scenarios start with no open round
     ctx.close()
 
 
@@ -2528,6 +2501,7 @@ def check_mobile_landscape(browser, errors: list[str]) -> None:
     pg.goto(BASE)
     pg.wait_for_function("typeof mobile === 'object' && auth.ready")
     expect(pg.locator("#hike-filters-btn")).to_be_enabled(timeout=15000)
+    wall_log_in(pg, "nikos")
     if not pg.evaluate("mobile.isPhone()"):
         raise SystemExit("FAIL a phone in landscape (844×390, touch) should get the phone layout")
     expect(pg.locator("#tabbar")).to_be_visible()
@@ -2757,6 +2731,202 @@ def check_overview(browser, errors: list[str]) -> None:
     print("PASS closed round: final grid with the 🏆 winner line, also opened from Past rounds")
     ctx_b.close()
     ctx_a.close()
+
+
+def check_welcome(browser, errors: list[str]) -> None:
+    """🥾 Login first + active round: the wall shows a spinner until /api/auth/me answers (no flash of the app); an open
+    round opens by itself once per round per browser session (reload: not again; a new round: again); the banner's
+    Join / Continue voting · N left / See results ✓ open the Vote dialog; on the phone: the wall full-screen, the
+    banner at the top of the Map tab, the top bar's emoji → Change emoji / Log out. Real rounds API, no mocks."""
+    shots = os.environ.get("UI_SHOTS")
+    seed = """(body) => fetch('/api/saved-trips', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body)}).then((r) => r.json()).then((t) => t.id)"""
+    open_round = """([title, ids]) => fetch('/api/rounds', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({title, closes_at: new Date(Date.now() + 2 * 86400000).toISOString(),
+                trip_ids: ids})}).then((r) => r.json()).then((r) => r.id)"""
+    get_round = "fetch('/api/rounds/current').then((r) => r.json())"
+
+    def new_page(viewport=None, **kw):
+        ctx = browser.new_context(viewport=viewport or {"width": 1400, "height": 900}, **kw)
+        pg = ctx.new_page()
+        pg.on("pageerror", lambda exc: errors.append(str(exc)))
+        return ctx, pg
+
+    # No flash: while /api/auth/me is on its way the wall shows a spinner, the form and the app stay out of reach.
+    ctx_w, w = new_page()
+    held_me: list = []
+    w.route("**/api/auth/me", lambda route: held_me.append(route))
+    w.goto(BASE)
+    for _ in range(50):
+        if held_me:
+            break
+        w.wait_for_timeout(100)
+    expect(w.locator("#welcome")).to_be_visible()
+    expect(w.locator("#welcome-loading")).to_be_visible()
+    expect(w.locator("#auth-form")).to_be_hidden()
+    assert w.evaluate("document.querySelector('main').inert && document.getElementById('controls').inert")
+    held_me[0].continue_()
+    w.unroute("**/api/auth/me")
+    expect(w.locator("#auth-form")).to_be_visible()
+    expect(w.locator("#welcome-loading")).to_be_hidden()
+    if shots:
+        w.screenshot(path=os.path.join(shots, "wall-desktop.png"))
+    wall_log_in(w, "anna")
+    expect(w.locator("#round-banner")).to_be_hidden()  # no open round
+    print("PASS no flash: the wall shows a spinner (app inert) until /api/auth/me answers, then the form")
+
+    # anna opens a round (API): as its opener she takes part, so her banner says Continue voting · 2 left.
+    t1 = w.evaluate(seed, {"name": "Welcome trip one", "hikes": [HIKE], "stays": []})
+    t2 = w.evaluate(seed, {"name": "Welcome trip two", "hikes": [HIKE2], "stays": []})
+    first_round = w.evaluate(open_round, ["Welcome round", [t1, t2]])
+    w.evaluate("refreshBadge()")
+    banner_w = w.locator("#round-banner")
+    expect(banner_w).to_be_visible()
+    expect(w.locator("#round-banner-text")).to_have_text(re.compile(r"^🗳️ Voting open: Welcome round · closes in 1 d 23 h$"))
+    expect(w.locator("#round-banner-action")).to_have_text("Continue voting · 2 left")
+    expect(w.locator("#vote-dialog")).to_be_hidden()  # her login's first answer had no round: nothing opens now
+    box = banner_w.bounding_box()
+    head = w.locator("#controls").bounding_box()
+    if abs(box["y"] - (head["y"] + head["height"])) > 1 or box["width"] < 1300:
+        raise SystemExit(f"FAIL the desktop banner should be a strip right under the header: {box} vs {head}")
+    if shots:
+        w.screenshot(path=os.path.join(shots, "banner-desktop.png"))
+    print("PASS the banner shows the open round under the header: title, closes in…, Continue voting · 2 left")
+
+    # bob logs in: not a participant of this round → the Vote dialog opens by itself; the banner offers Join.
+    ctx_t, t = new_page()
+    t.goto(BASE)
+    wall_log_in(t, "bob")
+    expect(t.locator("#vote-dialog")).to_be_visible()
+    expect(t.locator("#vote-status")).to_contain_text("Welcome round")
+    t.click("#vote-close")
+    expect(t.locator("#round-banner-action")).to_have_text("Join")
+    assert t.evaluate(f"sessionStorage.getItem('hick-toors:auto-opened:{first_round}')") == "1"
+    t.reload()  # same browser session: not again
+    expect(t.locator("#welcome")).to_be_hidden()
+    expect(t.locator("#round-banner-action")).to_have_text("Join")
+    t.wait_for_timeout(600)
+    expect(t.locator("#vote-dialog")).to_be_hidden()
+    print("PASS a non-participant's login opens the round by itself (banner: Join); a reload in the session doesn't")
+
+    # The banner's action opens the Vote dialog; rating updates it: Continue voting · 1 left → See results ✓.
+    t.click("#round-banner-action")
+    expect(t.locator("#vote-dialog")).to_be_visible()
+    rows = t.locator("#vote-trips .vote-trip")
+    rows.filter(has_text="Welcome trip one").locator('.vote-buttons [data-rating="love"]').first.click()
+    expect(t.locator("#round-banner-action")).to_have_text("Continue voting · 1 left")
+    rows.filter(has_text="Welcome trip two").locator('.vote-buttons [data-rating="ok"]').first.click()
+    expect(t.locator("#round-banner-action")).to_have_text("See results ✓")
+    t.click("#vote-close")
+    expect(t.locator("#round-banner-text")).to_contain_text("Voting open: Welcome round")
+    t.click("#round-banner-action")
+    expect(t.locator("#vote-dialog")).to_be_visible()
+    t.click("#vote-close")
+    print("PASS banner → Vote; after rating: Continue voting · 1 left, then See results ✓ (still opens Vote)")
+
+    # A new round opens by itself again (same session, new round id); the banner hides once no round is open.
+    w.evaluate("(id) => fetch(`/api/rounds/${id}/cancel`, {method: 'POST'})", first_round)
+    t.evaluate("refreshBadge()")
+    expect(t.locator("#round-banner")).to_be_hidden()
+    w.evaluate(open_round, ["Second round", [t1, t2]])
+    t.reload()
+    expect(t.locator("#vote-dialog")).to_be_visible()
+    expect(t.locator("#vote-status")).to_contain_text("Second round")
+    expect(t.locator("#round-banner-action")).to_have_text("Join")  # taking part in the last round doesn't carry over
+    t.click("#vote-close")
+    print("PASS no open round: no banner; a new round opens by itself again in the same session")
+    ctx_t.close()
+
+    # 📱 Phone: the wall fills the screen and is usable (Sign up tab checked); zed logs in → the round opens by itself.
+    ctx_p, p = new_page({"width": 390, "height": 844}, has_touch=True, is_mobile=True, device_scale_factor=3)
+    p.goto(BASE)
+    wall = p.locator("#welcome")
+    expect(p.locator("#auth-form")).to_be_visible(timeout=15000)
+    box = wall.bounding_box()
+    if (round(box["x"]), round(box["y"]), round(box["width"]), round(box["height"])) != (0, 0, 390, 844):
+        raise SystemExit(f"FAIL the welcome wall is not full-screen on the phone: {box}")
+    p.locator("#auth-tab-signup").tap()
+    expect(p.locator("#auth-emoji-grid .emoji-btn")).to_have_count(EMOJI_COUNT)
+    small = p.evaluate("""() => [...document.querySelectorAll('#welcome input')].filter((el) => el.offsetParent)
+        .filter((el) => parseFloat(getComputedStyle(el).fontSize) < 16).map((el) => el.id)""")
+    short = p.evaluate("""() => [...document.querySelectorAll('#welcome button, #welcome input')].filter((el) => el.offsetParent)
+        .filter((el) => { const r = el.getBoundingClientRect(); return r.height < 40 || r.width < 40; })
+        .map((el) => el.id || el.textContent)""")
+    if small or short:
+        raise SystemExit(f"FAIL the wall on the phone: inputs under 16 px {small}, targets under 40 px {short}")
+    if not p.evaluate("document.documentElement.scrollWidth <= innerWidth && "
+                      "document.getElementById('welcome').scrollWidth <= innerWidth"):
+        raise SystemExit("FAIL the wall scrolls sideways on the phone")
+    if shots:
+        p.screenshot(path=os.path.join(shots, "wall-phone.png"))
+    p.locator("#auth-tab-login").tap()
+    wall_log_in(p, "zed")
+    expect(p.locator("#vote-dialog")).to_be_visible()
+    p.locator("#vote-close").tap()
+    print("PASS phone: the wall is full-screen, 16 px inputs, ≥ 40 px targets, no side scroll; log in → round opens")
+
+    # The banner sits at the top of the Map tab, below the top bar, above the map; hidden on the List tab.
+    banner_p = p.locator("#round-banner")
+    expect(banner_p).to_be_visible()
+    expect(p.locator("#round-banner-action")).to_have_text("Join")
+    top_bar = p.locator("#controls").bounding_box()
+    b_box = banner_p.bounding_box()
+    m_box = p.locator("#map").bounding_box()
+    if not (top_bar["y"] + top_bar["height"] <= b_box["y"] and b_box["y"] + b_box["height"] <= m_box["y"] + 1):
+        raise SystemExit(f"FAIL the phone banner should sit between the top bar and the map: {top_bar} {b_box} {m_box}")
+    if p.evaluate("""() => { const s = map.getSize(), el = map.getContainer();
+            return s.x !== el.clientWidth || s.y !== el.clientHeight; }"""):
+        raise SystemExit("FAIL Leaflet wasn't re-measured after the banner appeared")
+    if p.locator("#round-banner-action").bounding_box()["height"] < 40:
+        raise SystemExit("FAIL the banner's button is under 40 px on the phone")
+    if not p.evaluate("document.documentElement.scrollWidth <= innerWidth"):
+        raise SystemExit("FAIL horizontal page scroll with the banner on the phone")
+    if shots:
+        p.screenshot(path=os.path.join(shots, "banner-phone-map.png"))
+    p.locator('#tabbar button[data-tab="list"]').tap()
+    expect(banner_p).to_be_hidden()
+    p.locator('#tabbar button[data-tab="map"]').tap()
+    expect(banner_p).to_be_visible()
+    p.locator("#round-banner-action").tap()
+    expect(p.locator("#vote-dialog")).to_be_visible()
+    p.locator("#vote-close").tap()
+    print("PASS phone: banner between the top bar and the map on the Map tab (not on List), tap → Vote")
+
+    # The top bar's account button: your emoji → Change emoji / Log out.
+    account = p.locator("#account-btn")
+    expect(account).to_be_visible()
+    expect(account).to_have_text("🐙")
+    a_box = account.bounding_box()
+    if a_box["height"] < 40 or a_box["width"] < 40 or a_box["y"] > top_bar["y"] + top_bar["height"]:
+        raise SystemExit(f"FAIL the account button should be a ≥ 40 px button in the top bar: {a_box}")
+    account.tap()
+    menu = p.locator("#account-menu")
+    expect(menu).to_be_visible()
+    expect(p.locator("#account-menu-name")).to_have_text("🐙 zed")
+    expect(menu.locator("button")).to_have_text(["Change emoji", "Log out"])
+    if not p.evaluate("document.documentElement.scrollWidth <= innerWidth"):
+        raise SystemExit("FAIL horizontal page scroll with the account menu open")
+    if shots:
+        p.screenshot(path=os.path.join(shots, "account-menu-phone.png"))
+    p.locator("#map").tap(position={"x": 200, "y": 300})  # a tap elsewhere closes it
+    expect(menu).to_be_hidden()
+    account.tap()
+    p.locator("#account-emoji").tap()
+    expect(menu).to_be_hidden()
+    expect(p.locator("#emoji-dialog")).to_be_visible()
+    p.locator('#emoji-grid .emoji-btn[data-emoji="🦜"]').tap()
+    expect(p.locator("#emoji-dialog")).to_be_hidden()
+    expect(account).to_have_text("🦜")
+    account.tap()
+    p.locator("#account-logout").tap()
+    expect(wall).to_be_visible()
+    expect(account).to_be_hidden()
+    expect(p.locator("#auth-form")).to_be_visible()
+    print("PASS phone top bar: emoji button → menu (Change emoji → picker, emoji follows; Log out → the wall)")
+    ctx_p.close()
+
+    cancel_open_round(w)
+    ctx_w.close()
 
 
 if __name__ == "__main__":

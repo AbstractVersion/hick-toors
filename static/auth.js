@@ -1,6 +1,11 @@
 "use strict";
-// Log in / sign up: the header's account area, the #auth-dialog and requireLogin(then). Loaded after app.js (uses $,
-// notices) and before trips.js / vote.js, which wrap every action that changes shared data in requireLogin.
+// Log in / sign up: the #welcome wall (login first: it covers the app until someone is logged in), the header's
+// account area, the phone top bar's account button and requireLogin(then). Loaded after app.js (uses $, notices) and
+// before trips.js / vote.js, which wrap every action that changes shared data in requireLogin.
+// The wall holds the one Log in / Sign up form (#auth-form). It shows a spinner until the page's first /api/auth/me
+// answer (no flash of the app), the form once nobody is logged in, and goes away after log in / sign up; log out
+// (or a 401) brings it back over whatever was open. Everything else on the page is inert while it shows.
+// #welcome-invite above the form is a slot for an invitation line (hidden by CSS while empty).
 // Auth calls use their own fetch, not api(): a 401 "Wrong username or password" must not trigger onUnauthorized.
 // Emojis: every account has a unique emoji from the server's set; names are shown as auth.label(name) = "🤡 nikos"
 // ("👤 nikos" when it has none yet). The users map behind it is refreshed on load, after log in / sign up / emoji
@@ -51,6 +56,12 @@ function setAuthUser(user, emoji = null) {
   $("auth-login-btn").hidden = Boolean(user);
   $("auth-user").hidden = !user;
   $("auth-name").textContent = user ? `${emoji || NO_EMOJI} ${user}` : "";
+  $("account-btn").hidden = !user;
+  $("account-btn").textContent = user ? emoji || NO_EMOJI : "";
+  $("account-btn").setAttribute("aria-label", user ? `Account: ${user}` : "Account");
+  $("account-menu-name").textContent = user ? `${emoji || NO_EMOJI} ${user}` : "";
+  if (!user) closeAccountMenu();
+  showWall(!user);
   if (changed) document.dispatchEvent(new CustomEvent("auth-changed"));
   if (mapChanged) document.dispatchEvent(new CustomEvent("users-changed"));  // our own name's label changed
 }
@@ -63,6 +74,7 @@ auth.refresh = async (prompt = true) => {
       setAuthUser(me.username ?? null, me.emoji ?? null);
     }
   } catch { /* offline: keep what we have */ }
+  wallLoaded();  // the first answer (or failure) swaps the wall's spinner for the form when nobody is logged in
   if (prompt) promptForEmoji();
   return auth.user;
 };
@@ -71,6 +83,47 @@ function promptForEmoji() {
   auth.prompted = true;
   openEmojiDialog(true);
 }
+
+// ---- the welcome wall ----
+const wall = $("welcome");
+// Everything but the wall (and the scripts) is inert while it shows; open dialogs, the ＋ Trip menu and the ☰ panel
+// are closed first, so nothing opened before a log out (or a 401) sits above it. Only a change of state touches
+// the inert flags (an emoji change while the ☰ panel is open must not undo the panel's own inert handling).
+let wallOn = null;
+function showWall(on) {
+  if (on === wallOn) return;
+  wallOn = on;
+  if (on) {
+    for (const dlg of document.querySelectorAll("dialog[open]")) dlg.close();
+    window.closeTripMenu?.();
+    window.mobile?.closeMenu();
+  }
+  wall.hidden = !on;
+  for (const el of document.body.children) if (el !== wall && el.tagName !== "SCRIPT") el.inert = on;
+  if (on && !wall.classList.contains("loading")) openLoginForm(auth.mode);
+}
+function wallLoaded() {
+  if (!wall.classList.contains("loading")) return;
+  wall.classList.remove("loading");
+  $("welcome-loading").hidden = true;
+  $("auth-form").hidden = false;
+  if (!auth.user) openLoginForm("login");
+}
+
+// ---- phone top bar: the account button (your emoji) → a small menu: Change emoji / Log out ----
+function openAccountMenu() {
+  $("account-menu").hidden = false;
+  $("account-btn").setAttribute("aria-expanded", "true");
+  $("account-emoji").focus();
+}
+function closeAccountMenu() {
+  if ($("account-menu").hidden) return;
+  const hadFocus = $("account-menu").contains(document.activeElement);
+  $("account-menu").hidden = true;
+  $("account-btn").setAttribute("aria-expanded", "false");
+  if (hadFocus && !$("account-btn").hidden) $("account-btn").focus({ preventScroll: true });
+}
+window.closeAccountMenu = closeAccountMenu;
 
 // ---- the emoji picker: a grid of buttons, taken ones disabled ("taken by <name>"), the picked one pressed ----
 const picker = { emojis: [], owners: new Map() };  // owners: taken emoji → username (null if unknown)
@@ -116,11 +169,10 @@ function pickerMessage(grid, message) {
   grid.replaceChildren(p);
 }
 
-// ---- the dialog ----
+// ---- the Log in / Sign up form (on the wall) ----
 function setAuthMode(mode) {
   auth.mode = mode;
   const signup = mode === "signup";
-  $("auth-title").textContent = signup ? "👤 Sign up" : "👤 Log in";
   $("auth-submit").textContent = signup ? "Sign up" : "Log in";
   $("auth-tab-login").setAttribute("aria-selected", String(!signup));
   $("auth-tab-signup").setAttribute("aria-selected", String(signup));
@@ -162,19 +214,18 @@ async function loadSignupPicker() {
   updateAuthSubmit();
   if (picker.emojis.length && picker.emojis.every((e) => picker.owners.has(e))) showAuthError("All emojis are taken");
 }
-function openAuthDialog(mode = "login") {
+// The form in a mode, passwords cleared, the focus in the username (whenever the wall comes up).
+function openLoginForm(mode = "login") {
   setAuthMode(mode);
   $("auth-password").value = "";
   $("auth-repeat").value = "";
-  const dlg = $("auth-dialog");
-  if (!dlg.open) dlg.showModal();
   $("auth-username").focus();
 }
 
-// Runs then() now when logged in; otherwise opens the dialog and runs it once after a successful log in / sign up
-// (dropped if the dialog is closed without logging in). Before the page's first /api/auth/me answer it waits for
-// auth.ready, so a logged-in user clicking right after load isn't shown the dialog (no gated action needs the click's
-// user activation; the PDF's synchronous window.open path doesn't go through here).
+// Runs then() now when logged in; otherwise (the wall is up, so only code gets here) runs it once after a successful
+// log in / sign up through the wall. Before the page's first /api/auth/me answer it waits for auth.ready, so a
+// logged-in user's action right after load isn't lost (no gated action needs the click's user activation; the PDF's
+// synchronous window.open path doesn't go through here).
 function requireLogin(then) {
   if (auth.user) {
     then();
@@ -186,16 +237,14 @@ function requireLogin(then) {
       return;
     }
     auth.pending = then;
-    openAuthDialog("login");
+    showWall(true);
   });
 }
 
-// A protected route answered 401 (logged out, or the cookie expired): the caller still shows its error.
+// A protected route answered 401 (logged out, or the cookie expired): the wall comes back over the page as it is.
 window.onUnauthorized = () => {
-  setAuthUser(null);
   auth.pending = null;  // no automatic replay: the user repeats the click after logging in
-  if ($("emoji-dialog").open) $("emoji-dialog").close();
-  openAuthDialog("login");
+  setAuthUser(null);
 };
 
 async function submitAuth(event) {
@@ -237,7 +286,6 @@ async function submitAuth(event) {
     auth.refreshUsers();
     $("auth-password").value = "";
     $("auth-repeat").value = "";
-    $("auth-dialog").close();
     if (then) then();
     promptForEmoji();
   } catch {
@@ -321,12 +369,18 @@ async function saveEmoji(emoji) {
 $("auth-form").addEventListener("submit", submitAuth);
 $("auth-tab-login").addEventListener("click", () => { setAuthMode("login"); $("auth-username").focus(); });
 $("auth-tab-signup").addEventListener("click", () => { setAuthMode("signup"); $("auth-username").focus(); });
-$("auth-close").addEventListener("click", () => $("auth-dialog").close());
-$("auth-dialog").addEventListener("close", () => { auth.pending = null; });
-$("auth-login-btn").addEventListener("click", () => { auth.pending = null; openAuthDialog("login"); });
+$("auth-login-btn").addEventListener("click", () => { auth.pending = null; showWall(true); });
+$("account-btn").addEventListener("click", () => ($("account-menu").hidden ? openAccountMenu() : closeAccountMenu()));
+$("account-emoji").addEventListener("click", () => { closeAccountMenu(); openEmojiDialog(false); });
+$("account-logout").addEventListener("click", () => { closeAccountMenu(); logout(); });
+document.addEventListener("click", (event) => {
+  if (!event.target.closest?.("#account-menu, #account-btn")) closeAccountMenu();
+});
+document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeAccountMenu(); });
 $("auth-logout").addEventListener("click", logout);
 $("auth-name").addEventListener("click", () => openEmojiDialog(false));
 $("emoji-close").addEventListener("click", () => $("emoji-dialog").close());
 $("emoji-skip").addEventListener("click", () => $("emoji-dialog").close());
+showWall(true);  // in the page from the first paint; a spinner until /me answers
 auth.ready = auth.refresh();
 auth.refreshUsers();
