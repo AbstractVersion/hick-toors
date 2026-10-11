@@ -94,7 +94,10 @@ function startDrawing(shape) {
     ? new L.Draw.Circle(map, drawControl.options.draw.circle)
     : new L.Draw.Rectangle(map, drawControl.options.draw.rectangle);
   activeDraw.enable();
-  $("draw-hint").textContent = `Press and drag on the map to draw a ${shape} – Esc to cancel`;
+  // Phones draw by touch too (Leaflet.draw's touch support: a one-finger drag); there the hint itself cancels.
+  $("draw-hint").textContent = window.mobile?.isPhone()
+    ? `Drag a finger across the map to draw a ${shape}${shape === "circle" ? " (from its centre out)" : ""} · tap here to cancel`
+    : `Press and drag on the map to draw a ${shape} – Esc to cancel`;
   $("draw-hint").hidden = false;
   $(shape === "circle" ? "draw-circle-btn" : "draw-rect-btn").classList.add("active");
 }
@@ -112,6 +115,9 @@ map.on(L.Draw.Event.DELETED, () => {
   }
 });
 document.addEventListener("keydown", (event) => { if (event.key === "Escape") stopDrawing(); });
+// Tappable on phones only (style.css: pointer-events). pointerup, not click: while drawing, Leaflet.draw cancels every
+// touchstart on the document (no scrolling), so a tap never becomes a click.
+$("draw-hint").addEventListener("pointerup", stopDrawing);
 function drawnArea() {
   const layer = drawnItems.getLayers()[0];
   if (!layer) return null;

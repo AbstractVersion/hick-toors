@@ -12,9 +12,11 @@ creates, edits, exports and deletes a real trip, so it refuses to run unless the
 The auth API is real too: the check signs up `nikos` (a fresh TRIPS_DB has no accounts).
 The 🗳️ voting scenario at the end uses the real rounds API with two browser contexts (`anna` opens a round,
 logged-out `bob` watches, signs up from a vote click, votes; anna closes the round) – it needs no open round.
+The 📱 phone scenario (390×844, touch) runs last; set UI_SHOTS=<folder> to save its screenshots there.
 """
 
 import json
+import os
 import re
 import sys
 from urllib.parse import parse_qs, urlsplit
@@ -1493,13 +1495,18 @@ def check_mobile(browser, errors: list[str]) -> None:
     pg = ctx.new_page()
     pg.on("pageerror", lambda exc: errors.append(str(exc)))
 
+    sent: list[tuple[str, dict]] = []
+
     def answer(route):
         path = "/" + route.request.url.split("/", 3)[3].split("?")[0]
         body = route.request.post_data_json if route.request.post_data else {}
+        sent.append((path, body))
         route.fulfill(status=200, content_type="application/json", body=json.dumps(CANNED[path](body)))
 
     for path in ("/api/hikes", "/api/stays"):
         pg.route(f"**{path}", answer)
+    pg.route("**/api/nature**", lambda route: route.fulfill(
+        status=200, content_type="application/json", body=json.dumps({"sights": [WATERFALL, RIVER], "warnings": []})))
     pg.goto(BASE)
     pg.wait_for_function("typeof mobile === 'object' && typeof openVote === 'function' && auth.ready")
     expect(pg.locator("#hike-filters-btn")).to_be_enabled(timeout=15000)
@@ -1507,6 +1514,10 @@ def check_mobile(browser, errors: list[str]) -> None:
     def no_side_scroll(where: str) -> None:
         if not pg.evaluate("document.documentElement.scrollWidth <= innerWidth"):
             raise SystemExit(f"FAIL horizontal page scroll on the phone ({where})")
+        wide = pg.evaluate("""() => [...document.querySelectorAll('dialog[open]')]
+            .filter((d) => d.scrollWidth > d.clientWidth).map((d) => d.id)""")
+        if wide:
+            raise SystemExit(f"FAIL {wide} scroll sideways on the phone ({where})")
 
     def map_fills_element() -> None:
         size = pg.evaluate("""() => { const s = map.getSize(), el = map.getContainer();
@@ -1622,6 +1633,261 @@ def check_mobile(browser, errors: list[str]) -> None:
     pg.locator("#menu-close").tap()
     no_side_scroll("after dialogs")
     print("PASS login + filters dialogs are full-screen on the phone; no horizontal scroll")
+
+    # ---- the phone flow: touch drawing, popups, ＋ Trip sheet, dialogs' insides, 16 px inputs, 40 px targets ----
+    shots = os.environ.get("UI_SHOTS")  # optional folder for phone screenshots
+
+    def shot(name: str) -> None:
+        if shots:
+            pg.screenshot(path=os.path.join(shots, f"{name}.png"))
+
+    def tall(selector: str, minimum: int = 40) -> None:
+        loc = pg.locator(selector)
+        if loc.count() == 0:
+            raise SystemExit(f"FAIL nothing matches {selector}")
+        for i in range(loc.count()):
+            box = loc.nth(i).bounding_box()
+            if box and box["height"] < minimum:
+                raise SystemExit(f"FAIL {selector} #{i} is {box['height']} px tall on the phone")
+
+    def inputs_16(scope: str) -> None:
+        small = pg.evaluate("""(scope) => [...document.querySelectorAll(`${scope} input, ${scope} select, ${scope} textarea`)]
+            .filter((el) => el.offsetParent && !['checkbox', 'radio', 'range'].includes(el.type))
+            .filter((el) => parseFloat(getComputedStyle(el).fontSize) < 16).map((el) => el.id || el.name || el.className)""",
+                            scope)
+        if small:
+            raise SystemExit(f"FAIL inputs under 16 px in {scope}: {small}")
+
+    def one_column(selector: str) -> None:
+        lefts = pg.evaluate("(sel) => [...document.querySelectorAll(sel)].filter((el) => el.offsetParent)"
+                            ".map((el) => Math.round(el.getBoundingClientRect().left))", selector)
+        if not lefts or len(set(lefts)) != 1:
+            raise SystemExit(f"FAIL {selector} is not one column: {lefts}")
+
+    # ☰ panel: the rest is inert while it is open; ✕ gives the focus back to ☰.
+    pg.locator("#menu-btn").tap()
+    if not pg.evaluate("document.querySelector('main').inert && document.getElementById('tabbar').inert"):
+        raise SystemExit("FAIL the page behind the ☰ panel is still reachable")
+    pg.locator("#menu-close").tap()
+    if pg.evaluate("[document.activeElement.id, document.querySelector('main').inert]") != ["menu-btn", False]:
+        raise SystemExit("FAIL closing the ☰ panel should focus ☰ and release the page")
+    tall("#menu-btn")
+    tall("#tabbar button")
+    print("PASS ☰ panel: background inert while open, focus back on ☰ when closed")
+
+    # Login dialog: sign up with 16 px fields.
+    pg.locator("#menu-btn").tap()
+    pg.locator("#auth-login-btn").tap()
+    expect(pg.locator("#auth-dialog")).to_be_visible()
+    pg.locator("#auth-tab-signup").tap()
+    inputs_16("#auth-dialog")
+    tall("#auth-close")
+    tall("#auth-submit")
+    pg.fill("#auth-username", "mia")
+    pg.fill("#auth-password", "password1")
+    pg.fill("#auth-repeat", "password1")
+    shot("login-dialog")
+    pg.locator("#auth-submit").tap()
+    expect(pg.locator("#auth-dialog")).to_be_hidden()
+    expect(pg.locator("#auth-name")).to_have_text("mia")
+    no_side_scroll("login")
+    print("PASS login dialog on the phone: 16 px fields, 40 px buttons, sign up works")
+
+    # Draw by touch (a one-finger drag, no mouse events): circle first, cancel by tapping the hint, then a rectangle.
+    cdp = ctx.new_cdp_session(pg)
+    pg.evaluate("""() => { window.mouseSeen = 0;
+        for (const t of ['mousedown', 'mouseup']) document.addEventListener(t, () => { window.mouseSeen += 1; }, true); }""")
+
+    def touch_drag(points: list[tuple[int, int]]) -> None:
+        cdp.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": points[0][0], "y": points[0][1]}]})
+        for x, y in points[1:]:
+            pg.wait_for_timeout(40)
+            cdp.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [{"x": x, "y": y}]})
+        cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+
+    pg.locator("#draw-circle-btn").tap()
+    expect(pg.locator("#controls-more")).to_be_hidden()
+    expect(pg.locator("#draw-hint")).to_contain_text("Drag a finger across the map to draw a circle")
+    pg.locator("#draw-hint").tap()
+    expect(pg.locator("#draw-hint")).to_be_hidden()
+    expect(pg.locator("#draw-circle-btn")).not_to_have_class(re.compile(r"\bactive\b"))
+    pg.locator("#menu-btn").tap()
+    pg.locator("#draw-circle-btn").tap()
+    pg.evaluate("window.mouseSeen = 0")
+    touch_drag([(80, 180), (110, 200), (140, 220), (170, 250)])  # away from the pins at the centre
+    expect(pg.locator("#draw-hint")).to_be_hidden()
+    area = pg.evaluate("drawnArea()")
+    if not area or area["shape"] != "circle" or area["radius_m"] < 200 or pg.evaluate("window.mouseSeen") != 0:
+        raise SystemExit(f"FAIL a touch drag (no mouse events) should draw a circle: {area}")
+    pg.locator("#menu-btn").tap()
+    pg.locator("#draw-rect-btn").tap()
+    expect(pg.locator("#draw-hint")).to_contain_text("Drag a finger across the map to draw a rectangle · tap here to cancel")
+    shot("draw-hint")
+    pg.evaluate("window.mouseSeen = 0")  # the taps above bring compatibility mouse events; the drag must not
+    touch_drag([(60, 540), (140, 600), (220, 650), (300, 700)])  # clear of the circle and the pins
+    expect(pg.locator("#draw-hint")).to_be_hidden()
+    area = pg.evaluate("drawnArea()")
+    if not area or area["shape"] != "rectangle" or not (area["south"] < area["north"] and area["west"] < area["east"]):
+        raise SystemExit(f"FAIL a touch drag should draw a rectangle: {area}")
+    if pg.evaluate("mode()") != "drawn" or pg.evaluate("window.mouseSeen") != 0:
+        raise SystemExit("FAIL touch drawing: mode should be drawn, with no mouse events")
+    before = len(sent)
+    pg.locator("#menu-btn").tap()
+    pg.locator("#search-all").tap()
+    for _ in range(50):
+        hikes = [b for p, b in sent[before:] if p == "/api/hikes"]
+        if hikes:
+            break
+        pg.wait_for_timeout(100)
+    else:
+        raise SystemExit("FAIL no hikes search after drawing")
+    if hikes[0].get("mode") != "drawn" or hikes[0]["area"] != area:
+        raise SystemExit(f"FAIL the drawn-area search should send the touch-drawn rectangle: {hikes[0]}")
+    expect(pg.locator(".leaflet-marker-icon.pin.airbnb")).to_have_count(1)
+    no_side_scroll("drawn search")
+    print("PASS touch drawing (no mouse): circle, hint tap cancels, rectangle → drawn-area search with stays")
+
+    # A hike popup fits the screen; its ＋ Trip opens the bottom sheet above the tab bar; ➕ New trip saves.
+    pg.locator(".leaflet-marker-icon.pin.hike").first.tap()
+    popup = pg.locator(".leaflet-popup")
+    expect(popup).to_be_visible()
+    for _ in range(30):  # Leaflet pans the map (animated) to bring the popup into view
+        box = popup.bounding_box()
+        if box["x"] >= 0 and box["x"] + box["width"] <= 390:
+            break
+        pg.wait_for_timeout(100)
+    if box["width"] > 390 * 0.85 + 1 or box["x"] < 0 or box["x"] + box["width"] > 390:
+        raise SystemExit(f"FAIL the popup does not fit the phone: {box}")
+    tall(".leaflet-popup .add-trip")
+    tall(".leaflet-popup a.leaflet-popup-close-button")
+    shot("popup")
+    no_side_scroll("popup")
+    pg.locator(".leaflet-popup .add-trip").tap()
+    sheet = pg.locator("#trip-menu")
+    expect(sheet).to_be_visible()
+    sheet_box = sheet.bounding_box()
+    bar_top = pg.locator("#tabbar").bounding_box()["y"]
+    if round(sheet_box["x"]) != 0 or round(sheet_box["width"]) != 390 or abs(sheet_box["y"] + sheet_box["height"] - bar_top) > 1:
+        raise SystemExit(f"FAIL ＋ Trip should be a bottom sheet above the tab bar: {sheet_box}, bar at {bar_top}")
+    tall("#trip-menu button")
+    shot("trip-sheet")
+    trips_before = pg.evaluate("fetch('/api/saved-trips').then((r) => r.json()).then((l) => l.length)")
+    sheet.locator("button", has_text="➕ New trip").tap()
+    expect(sheet).to_be_hidden()
+    expect(pg.locator("#trips-count")).to_have_text(f"({trips_before + 1})")
+    print("PASS popup ≤ 85vw with 40 px buttons; ＋ Trip bottom sheet above the tab bar; ➕ New trip saved")
+
+    # Filters dialog: full screen, one column, 16 px fields, Apply works.
+    pg.locator("#menu-btn").tap()
+    pg.locator("#hike-filters-btn").tap()
+    expect(pg.locator("#hike-dialog")).to_be_visible()
+    fills_viewport("#hike-dialog")
+    one_column("#hike-dialog .field")
+    inputs_16("#hike-dialog")
+    tall('#hike-dialog [data-act="apply"]')
+    shot("filters-dialog")
+    no_side_scroll("filters dialog")
+    pg.evaluate("""() => { const s = document.querySelector('#hike-dialog [name=shared_drive]');
+        s.value = '3'; s.dispatchEvent(new Event('input', {bubbles: true})); }""")
+    pg.locator('#hike-dialog [data-act="apply"]').tap()
+    expect(pg.locator("#hike-dialog")).to_be_hidden()
+    expect(pg.locator("#drive")).to_have_value("3")
+    pg.locator("#menu-close").tap()
+    print("PASS filters dialog: full screen, one column, 16 px fields, Apply stores the change")
+
+    # Trips tab → editor: one column, 16 px, rename + Save.
+    tabs["trips"].tap()
+    expect(pg.locator("#trips-dialog")).to_be_visible()
+    tall("#trips-close")
+    pg.locator("#trips-list li", has_text=HIKE["name"]).first.tap()
+    expect(pg.locator("#trip-editor")).to_be_visible()
+    inputs_16("#trip-editor")
+    new_name = "Πήλιο – a long weekend with a very long trip name that must wrap nicely"
+    pg.fill("#trip-name", new_name)
+    shot("trip-editor")
+    no_side_scroll("trip editor")
+    pg.locator("#trip-save").tap()
+    for _ in range(50):
+        names = pg.evaluate("fetch('/api/saved-trips').then((r) => r.json()).then((l) => l.map((t) => t.name))")
+        if new_name in names:
+            break
+        pg.wait_for_timeout(100)
+    else:
+        raise SystemExit(f"FAIL the renamed trip was not saved: {names}")
+    pg.locator("#trips-close").tap()
+    expect(pg.locator("#trips-dialog")).to_be_hidden()
+    active("map")
+    print("PASS Trips tab → editor: 16 px fields, rename + Save changes")
+
+    # Vote tab → start a round and rate: the three rating buttons on one row, ≥ 40 px.
+    tabs["vote"].tap()
+    expect(pg.locator("#vote-dialog")).to_be_visible()
+    tall("#vote-close")
+    pg.locator("#vote-footer button", has_text="Start a new round").tap()
+    expect(pg.locator("#vote-start")).to_be_visible()
+    inputs_16("#vote-start")
+    pg.fill("#vote-start-title", "Phone round 📱")
+    pg.locator("#vote-start-submit").tap()
+    expect(pg.locator("#vote-round-view")).to_be_visible()
+    mine = pg.locator("#vote-trips .vote-trip", has_text=new_name)
+    buttons = mine.locator(".vote-buttons").first.locator(".vote-btn-rate")
+    expect(buttons).to_have_count(3)
+    tops = {round(buttons.nth(i).bounding_box()["y"]) for i in range(3)}
+    if len(tops) != 1:
+        raise SystemExit(f"FAIL the rating buttons are not on one row: {tops}")
+    tall("#vote-trips .vote-btn-rate")
+    buttons.nth(0).tap()
+    expect(buttons.nth(0)).to_have_attribute("aria-pressed", "true")
+    mine.scroll_into_view_if_needed()
+    shot("vote-dialog")
+    no_side_scroll("vote dialog")
+    pg.locator("#vote-close").tap()
+    active("map")
+    print("PASS Vote tab: start a round, rating buttons on one row ≥ 40 px, rate a trip")
+
+    # 🌿 Nature: the chips are one horizontally scrollable row at the top of the map.
+    pg.locator("#menu-btn").tap()
+    pg.locator("#nature-btn").tap()
+    expect(pg.locator("#controls-more")).to_be_hidden()
+    chips = pg.locator("#nature-chips")
+    expect(chips).to_be_visible()
+    tall(".nature-chip")
+    tops = pg.evaluate("[...document.querySelectorAll('.nature-chip')].map((c) => Math.round(c.getBoundingClientRect().top))")
+    if len(set(tops)) != 1:
+        raise SystemExit(f"FAIL the 🌿 chips are not one row: {tops}")
+    scrolled = pg.evaluate("""() => { const c = document.getElementById('nature-chips');
+        c.scrollLeft = 60; return [c.scrollWidth > c.clientWidth, c.scrollLeft > 0]; }""")
+    if scrolled != [True, True]:
+        raise SystemExit(f"FAIL the 🌿 chips row should scroll sideways: {scrolled}")
+    pg.evaluate("document.getElementById('nature-chips').scrollLeft = 0")
+    shot("nature-chips")
+    no_side_scroll("nature chips")
+    pg.locator("#menu-btn").tap()
+    tall("#search")
+    tall("#search-all")
+    tall("#suggest-trips")
+    print("PASS 🌿 chips: one scrollable row of 40 px chips; ☰, tabs, search buttons, ✕ and rating buttons ≥ 40 px")
+
+    # Crossing the breakpoint resets the phone state: panel closed, Map tab.
+    pg.set_viewport_size({"width": 1000, "height": 844})
+    try:  # the media query's change event comes a frame later
+        pg.wait_for_function("""() => !document.body.classList.contains('menu-open')
+            && document.getElementById('menu-btn').getAttribute('aria-expanded') === 'false'
+            && document.body.classList.contains('phone-tab-map') && !document.querySelector('main').inert""", timeout=3000)
+    except Exception:
+        raise SystemExit("FAIL crossing the breakpoint should close the panel and return to the Map tab")
+    pg.set_viewport_size({"width": 390, "height": 844})
+    pg.wait_for_function("mobile.isPhone()")
+    tabs["list"].tap()
+    active("list")
+    pg.set_viewport_size({"width": 1000, "height": 844})
+    pg.wait_for_function("!mobile.isPhone() && document.body.classList.contains('phone-tab-map')")
+    pg.set_viewport_size({"width": 390, "height": 844})
+    pg.wait_for_function("mobile.isPhone()")
+    active("map")
+    expect(pg.locator("#controls-more")).to_be_hidden()
+    map_fills_element()
+    print("PASS crossing the 760 px breakpoint closes the panel and returns to the Map tab")
     ctx.close()
 
 

@@ -62,6 +62,12 @@ async function openTripMenu(button) {
   };
   entry("➕ New trip", () => newTripWith(kind, item));
   for (const t of ordered) entry(t.name, () => addToTrip(t, kind, item));
+  if (window.mobile?.isPhone()) {  // a bottom sheet above the tab bar (style.css)
+    menu.style.left = menu.style.top = "";
+    menu.hidden = false;
+    menu.querySelector("button")?.focus();
+    return;
+  }
   const r = button.getBoundingClientRect();
   menu.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - 260))}px`;
   menu.style.top = `${r.bottom + 4}px`;

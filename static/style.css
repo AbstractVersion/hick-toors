@@ -245,4 +245,81 @@ main { flex: 1; display: flex; min-height: 0; }
   .dlg-head .tool-btn { min-width: 44px; min-height: 44px; }
   .filters-dialog .dialog-buttons { position: sticky; bottom: 0; padding: 10px 0 calc(10px + env(safe-area-inset-bottom)); background: #fff; }
   .filters-dialog .dialog-buttons button { min-height: 44px; }
+
+  /* 16 px everywhere a phone could zoom in on focus (beats the dialogs' own `font: inherit` rules) */
+  input:not([type=checkbox]):not([type=radio]):not([type=range]), select, textarea { font-size: 16px !important; }
+
+  /* map: hints centred under the 🌿 chips row; the draw hint can be tapped to cancel */
+  #draw-hint, #nature-hint { width: max-content; max-width: calc(100vw - 32px); text-align: center; }
+  #draw-hint { top: 58px; pointer-events: auto; cursor: pointer; }
+  #nature-hint { top: 104px; }
+  .leaflet-draw-tooltip { display: none; }  /* it follows a mouse pointer; our #draw-hint says what to do on phones */
+  #nature-chips { top: 10px; left: 52px; right: 66px; flex-direction: row; flex-wrap: nowrap; align-items: center; gap: 6px;
+    overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; padding: 2px; pointer-events: auto; }
+  #nature-chips::-webkit-scrollbar { display: none; }
+  .nature-chip, #nature-chips .load-chip { flex: 0 0 auto; white-space: nowrap; }
+  .nature-chip { min-height: 40px; padding: 0 12px; font-size: 13px; }
+
+  /* map popups fit the screen; their buttons and links are thumb-sized */
+  .leaflet-popup-content { max-width: calc(85vw - 60px); margin-right: 40px; }
+  .leaflet-container a.leaflet-popup-close-button { width: 40px; height: 40px; font-size: 24px; line-height: 40px; }
+  .popup a, .popup .add-trip { display: inline-flex; align-items: center; min-height: 40px; }
+  .popup .add-trip { padding: 0 4px; font-size: 14px; }
+
+  /* list rows: ＋ Trip, 💾 Save and ↗ links are thumb-sized */
+  #sidebar li { padding: 8px; }
+  #sidebar .add-trip, #sidebar .save-combo, #sidebar .open-link { display: inline-flex; align-items: center; min-height: 40px;
+    padding: 0 6px; font-size: 13px; }
+
+  /* ＋ Trip: a bottom sheet above the tab bar */
+  .trip-menu { left: 0 !important; right: 0; top: auto !important; bottom: calc(53px + env(safe-area-inset-bottom)); min-width: 0;
+    max-width: none; max-height: 50dvh; padding: 6px 8px; border-radius: 14px 14px 0 0; box-shadow: 0 -4px 20px rgba(0,0,0,.2); }
+  .trip-menu button { min-height: 44px; padding: 8px 12px; font-size: 15px; }
+
+  /* filters dialogs: one column, full-width controls */
+  .filters-dialog .shared { flex-direction: column; align-items: stretch; }
+  .filters-dialog .shared-item { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-height: 40px; }
+  .filters-dialog .shared-item input:not([type=checkbox]) { flex: 1; min-width: 0; min-height: 40px; }
+  .filters-dialog .fields { grid-template-columns: 1fr; }
+  .filters-dialog select { width: 100%; min-height: 40px; }
+  .filters-dialog .field > input[type=number] { width: 100%; min-height: 40px; }
+  .filters-dialog .range-row input[type=number] { flex: 1; width: auto; min-width: 0; min-height: 40px; }
+  .filters-dialog .chip { display: inline-flex; gap: 4px; align-items: center; min-height: 40px; }
+  .filters-dialog .dialog-buttons button { flex: 1; }
+
+  /* trip editor: dates on one line, the rest one per line; item rows wrap under their name */
+  #trip-editor .row:not(.airbnb-add) { display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px; align-items: center; }
+  #trip-editor .row > label:has(#trip-start) { display: flex; gap: 6px; align-items: center; }
+  #trip-start, #trip-end { min-width: 0; width: 100%; }
+  #trip-editor .row > label:has(#trip-guests), #trip-editor .row > label:has(#trip-dog) { grid-column: 1 / -1; min-height: 40px;
+    display: flex; gap: 8px; align-items: center; }
+  #trip-guests { width: 6em; }
+  #trip-editor input:not([type=checkbox]), #trip-editor textarea { min-height: 40px; }
+  .trip-items li { flex-wrap: wrap; padding: 6px 0; }
+  .trip-items li > a, .trip-items li > span:first-child { flex: 1 1 100%; overflow-wrap: anywhere; }
+  .trip-items .item-tools { margin-left: auto; }
+  .trip-items .item-tools .link-btn { min-width: 40px; min-height: 40px; font-size: 16px; }
+  #trip-editor .dlg-actions > *, .auth-dialog .dlg-actions > *, .vote-start .dlg-actions > * { flex: 1 1 40%; min-height: 44px; }
+  #trip-editor .link-btn#trip-back, #trip-round button { min-height: 40px; font-size: 14px; }
+  .trips-list li { padding: 12px 8px; }
+
+  /* login dialog */
+  .auth-tabs button { flex: 1; min-height: 44px; }
+  .auth-dialog input { min-height: 44px; }
+
+  /* vote dialog: one column, the three rating buttons on one full-width row */
+  .vote-banner, .vote-panel { flex-direction: column; align-items: stretch; }
+  .vote-dialog .dlg-actions > * { flex: 1 1 40%; min-height: 40px; }
+  .vote-panel button, .vote-banner button { min-height: 40px; }
+  .vote-panel label:not(.vote-check) { display: flex; flex-direction: column; gap: 4px; }
+  .vote-panel input[type=datetime-local] { width: 100%; min-height: 40px; }
+  .vote-stays { margin-left: 0; }
+  .vote-counts .count-btn { min-height: 40px; min-width: 52px; font-size: 14px; }
+  .vote-buttons { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .vote-btn-rate { min-height: 44px; padding: 4px 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .vote-comment { grid-column: 1 / -1; min-width: 0; min-height: 40px; }
+  .vote-actions .link-btn { min-height: 40px; font-size: 14px; }
+  .vote-check { display: flex; gap: 8px; align-items: center; min-height: 40px; }
+  .vote-start label.wide input { min-height: 44px; }
+  .vote-head, .vote-status, .vote-trip { overflow-wrap: anywhere; }
 }

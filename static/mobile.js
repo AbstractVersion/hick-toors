@@ -28,15 +28,22 @@ window.mobile = (() => {
     if (name === "map") window.mapShown?.();  // re-measure after the List tab hid it; runs a fit that waited
   }
 
+  // While the ☰ panel is open everything behind it is inert (no Tab, no taps); closing it gives the focus back to ☰.
+  const behindPanel = () => [document.querySelector("#controls .goto"), $("menu-btn"), $("notices"),
+    document.querySelector("main"), $("ask"), $("tabbar")];
   function openMenu() {
     body.classList.add("menu-open");
     $("menu-btn").setAttribute("aria-expanded", "true");
+    for (const el of behindPanel()) el.inert = true;
     $("menu-close").focus();
   }
   function closeMenu() {
     if (!body.classList.contains("menu-open")) return;
+    const hadFocus = $("controls-more").contains(document.activeElement);
     body.classList.remove("menu-open");
     $("menu-btn").setAttribute("aria-expanded", "false");
+    for (const el of behindPanel()) el.inert = false;
+    if (hadFocus) $("menu-btn").focus({ preventScroll: true });
   }
 
   function showTab(name) {
@@ -83,15 +90,21 @@ window.mobile = (() => {
     if (event.key === "Escape" && body.classList.contains("menu-open") && !document.querySelector("dialog[open]")) closeMenu();
   });
   // Capture listeners run before app.js's own click handlers, so searching / drawing starts on a visible map:
-  // a search or draw button closes the panel and shows the Map tab; 📍 Go shows the Map tab.
-  for (const id of ["search", "search-all", "suggest-trips", "draw-rect-btn", "draw-circle-btn", "goto-btn"]) {
+  // a search or draw button closes the panel and shows the Map tab, so does 🌿 Nature (its chips and pins are on
+  // the map); 📍 Go shows the Map tab.
+  for (const id of ["search", "search-all", "suggest-trips", "draw-rect-btn", "draw-circle-btn", "nature-btn", "goto-btn"]) {
     $(id).addEventListener("click", () => { if (isPhone()) showMap(); }, true);
   }
   // A Trips / Vote dialog opened from anywhere lights its tab.
   const dialogWatch = new MutationObserver(syncTabbar);
   for (const id of Object.values(DIALOG_TABS)) dialogWatch.observe($(id), { attributes: true, attributeFilter: ["open"] });
-  // Rotating across the breakpoint can reveal a map hidden by the List tab.
-  phone.addEventListener("change", () => window.mapShown?.());
+  // Rotating / resizing across the breakpoint resets the phone state: panel and ＋ Trip sheet closed, Map tab
+  // (which also re-measures a map the List tab had hidden).
+  phone.addEventListener("change", () => {
+    closeMenu();
+    window.closeTripMenu?.();
+    setView("map");
+  });
 
   setView("map");
   return { isPhone, showTab, showMap, openMenu, closeMenu, dialogClosed };
