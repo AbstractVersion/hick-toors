@@ -13,9 +13,9 @@ hasn't voted, and what's leading — so the group can see where they agree and w
   choice is remembered per browser (localStorage `hick-toors:vote-tab`, wrapped in try/catch). Works for open
   and closed rounds (closed = final grid) and for past rounds opened from the history. Visible logged out.
 - **Header:** round title · `closes in …` (or `Closed …` / 🏆 winner line) · `Leader: <trip> (+score)` ·
-  `<n>/<m> people done` (done = rated every trip; m = all accounts, like Waiting for).
-- **Grid:** rows = trips in rank order: `#rank`, trip name, score at the end. Columns = people: every account
-  (from `GET /api/users`), header cell = their emoji (👤 if none) with the name as title/tooltip and under the
+  `<n>/<m> people done` (done = rated every trip; m = participants).
+- **Grid:** rows = trips in rank order: `#rank`, trip name, score at the end. Columns = the round's
+  **participants** (`RoundView.participants`, see the guided-round spec; emojis from `GET /api/users`), header cell = their emoji (👤 if none) with the name as title/tooltip and under the
   emoji in small text; people who are done first, then the rest; the viewer's own column highlighted.
   Cell = 😍 / 🙂 / 🚫 or `·` (not rated). A cell with a comment shows a small dot; tapping/clicking it opens
   a small popover: `<emoji> <name>: <rating label> – “comment”` (Escape / tap outside closes).

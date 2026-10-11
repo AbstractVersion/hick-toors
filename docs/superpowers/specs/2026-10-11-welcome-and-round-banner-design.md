@@ -13,7 +13,8 @@ Nobody uses the site anonymously, and nobody misses an open voting round — esp
 - **Welcome / login wall (UI):** on page load, until `auth.user` is set, a full-screen `#welcome` screen covers
   the app (desktop and phone): `🥾 hick-toors` + one line ("Plan hikes and vote on trips with your friends"),
   and the existing Log in / Sign up form (with the emoji picker) embedded — the same code as `#auth-dialog`,
-  not a copy. The rest of the page is `inert` behind it. After login/sign-up the wall disappears and the app
+  not a copy. The wall has a slot above the form for an invitation line (filled by the guided-round task when
+  the page was opened from a round link). The rest of the page is `inert` behind it. After login/sign-up the wall disappears and the app
   starts; after logout it comes back. No ✕ on the wall. While `/api/auth/me` is loading, show the wall with a
   spinner (no flash of the app).
 - **Server unchanged:** write routes already require a login; read routes stay open (a later change could
@@ -21,12 +22,15 @@ Nobody uses the site anonymously, and nobody misses an open voting round — esp
 - **Account in the phone top bar:** on phones the top bar shows the user's emoji (tap → Change emoji / Log out
   menu) next to ☰; the login button is no longer only inside the ☰ panel.
 - **Active-round banner:** while a round is open, a banner is visible on the main screen — desktop: under the
-  header; phone: floating at the top of the map, below the top bar — `🗳️ Voting open: <title> · <N> left ·
-  closes in <time>` (or `· you're done ✓` when N = 0). Tapping it opens the Vote dialog. Refreshes with the
-  existing 60 s badge timer and after votes. Hidden when there is no open round.
-- **Auto-open:** right after login (or page load while logged in), if a round is open and the user has unrated
-  trips, open the Vote dialog once per round per browser session (sessionStorage key with the round id,
-  try/catch).
+  header; phone: floating at the top of the map, below the top bar — `🗳️ Voting open: <title> · closes in
+  <time>` plus an action: `Join` (not a participant), `Continue voting · <N> left` (participant with unrated
+  trips) or `See results ✓` (done). Until the guided-round task lands, every action opens the Vote dialog;
+  the guided-round task re-points them to the Join screen / guide / Overview. Refreshes with the existing 60 s
+  badge timer and after votes. Hidden when there is no open round.
+- **Auto-open:** right after login (or page load while logged in), if a round is open and the user is a
+  participant with unrated trips, or not yet a participant, open it once per round per browser session
+  (sessionStorage key with the round id, try/catch) — the Vote dialog for now; the guided-round task makes
+  this the Join screen / guide.
 - All user text via textContent; works at 390 px with no horizontal scroll; tap targets ≥ 40 px.
 
 ## Testing
