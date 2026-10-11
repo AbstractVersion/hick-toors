@@ -1369,6 +1369,8 @@ def check_voting(browser, errors: list[str]) -> None:
     expect(a.locator("#vote-btn")).to_have_class(re.compile(r"\bhas-left\b"))
     print("PASS Start a round: form defaults, round view, badge · 2 left")
 
+    trip_order = """() => [...document.querySelectorAll('#vote-trips > .vote-trip')].map((li) => li.dataset.trip)"""
+    start_order = a.evaluate(trip_order)
     rate(row(a, t1), "love").click()
     expect(rate(row(a, t1), "love")).to_have_attribute("aria-pressed", "true")
     expect(a.locator("#vote-status")).to_contain_text("😍 Your Love: Vote trip one")
@@ -1385,7 +1387,13 @@ def check_voting(browser, errors: list[str]) -> None:
     expect(stay_a).to_be_visible()
     expect(row(a, t2).locator("button", has_text="▾ Stays (1)")).to_be_visible()
     trips_a = a.locator("#vote-trips > .vote-trip")
-    a.mouse.move(2, 2)  # rows keep their places while the pointer is over the list; leaving it re-sorts them
+    # Rows never move by themselves while the dialog is open; ↻ Sort by rank shows when they are out of rank order.
+    assert a.evaluate(trip_order) == start_order, (a.evaluate(trip_order), start_order)
+    sort_a = a.locator("#vote-sort")
+    if start_order[0] != t2:
+        expect(sort_a).to_be_visible()
+        sort_a.click()
+    expect(sort_a).to_be_hidden()
     expect(trips_a.nth(0)).to_have_attribute("data-trip", t2)
     expect(trips_a.nth(0).locator(".vote-head").first).to_have_text("#1 Vote trip two · 2 pts")
     expect(trips_a.nth(1).locator(".vote-head").first).to_have_text("#2 Vote trip one · 1 pts")
@@ -1486,15 +1494,21 @@ def check_voting(browser, errors: list[str]) -> None:
     assert [(v["rating"], v["comment"]) for v in trip_one["votes"] if v["username"] == "anna"] == [("nogo", "too far")]
     print("PASS rating changed while typing a comment (button never focused): one PUT with the new rating + text")
 
-    # The rows move with the ranking: a press must still rate the trip/stay that was pressed, and a quick second
-    # click must not land on another trip that moved under the pointer (the reported "wrong option updated").
+    # The ranking changes under the user: a click or tap must rate the trip/stay that was clicked, and a quick second
+    # click on the same spot must not land on another trip that moved there (the reported "wrong option updated").
     round_id = a.evaluate(get_round)["id"]
     all_puts: list[tuple[str, dict]] = []
     a.on("request", lambda req: all_puts.append((req.url.split(f"/rounds/{round_id}/")[1], req.post_data_json))
          if req.method == "PUT" else None)
-    bob_vote = """([path, rating, comment]) => fetch(path, {method: 'PUT',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({rating, comment: comment || null})}).then((r) => r.status)"""
+    put_js = """([path, rating, comment]) => fetch(path, {method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({rating, comment: comment || null})}).then((r) => r.status)"""
+
+    def bob_votes(*votes) -> None:  # (trip_id, rating[, comment]) or ((trip_id, stay_id), rating)
+        for target, rating, *comment in votes:
+            path = (f"trips/{target[0]}/stays/{quote(target[1], safe='')}" if isinstance(target, tuple)
+                    else f"trips/{target}")
+            assert b.evaluate(put_js, [f"/api/rounds/{round_id}/{path}/vote", rating, *comment]) == 200
 
     def anna_votes() -> dict:
         out = {}
@@ -1504,85 +1518,219 @@ def check_voting(browser, errors: list[str]) -> None:
                 out[(t["trip_id"], s["stay_id"])] = [v["rating"] for v in s["votes"] if v["username"] == "anna"]
         return out
 
-    def slow_press(button, during) -> None:
-        """Press, let others vote + a poll redraw arrive, then release: the pressed button must still be there."""
-        handle = button.element_handle()
-        box = button.bounding_box()
-        a.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-        a.mouse.down()
-        during()
-        a.evaluate("refreshVote()")  # the 10 s poll, between press and release
-        a.wait_for_timeout(400)
-        if not handle.evaluate("(el) => el.isConnected"):
-            raise SystemExit("FAIL a redraw replaced the pressed rating button before the release")
-        a.mouse.up()
+    def others_same(before: dict, after: dict, key) -> None:
+        assert {k: v for k, v in after.items() if k != key} == {k: v for k, v in before.items() if k != key}, after
 
-    def puts_settled(count: int) -> None:
-        for _ in range(30):
-            if len(all_puts) >= count and a.evaluate("vote.writing") == 0:
+    def puts_settled(pg, count: int, seen: list) -> None:
+        for _ in range(50):
+            if len(seen) >= count and pg.evaluate("vote.writing") == 0:
                 break
-            a.wait_for_timeout(100)
-        a.wait_for_timeout(300)
+            pg.wait_for_timeout(100)
+        pg.wait_for_timeout(300)
 
-    a.mouse.move(2, 2)
+    def sort_rows(pg) -> None:
+        if pg.locator("#vote-sort").is_visible():
+            pg.locator("#vote-sort").click()
+        expect(pg.locator("#vote-sort")).to_be_hidden()
+
+    def centre(locator) -> tuple[float, float]:
+        box = locator.bounding_box()
+        return box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+
+    # (1) quick second click: bob's votes leave trip one second (-2 pts vs -1); anna's 🙂 on trip one makes it #1.
+    bob_votes((t1, "ok"), (t2, "nogo"))
     a.evaluate("refreshVote()")
-    expect(trips_a.nth(0)).to_have_attribute("data-trip", t2)
+    sort_rows(a)
     expect(trips_a.nth(1)).to_have_attribute("data-trip", t1)
     before = anna_votes()
-    # (a) trip row: anna presses 🙂 OK on #2 Vote trip one; meanwhile bob's votes put trip one first.
-    slow_press(rate(row(a, t1), "ok"), lambda: [
-        b.evaluate(bob_vote, [f"/api/rounds/{round_id}/trips/{t1}/vote", "love"]),
-        b.evaluate(bob_vote, [f"/api/rounds/{round_id}/trips/{t2}/vote", "nogo"])])
-    puts_settled(1)
-    assert [(path, body["rating"]) for path, body in all_puts] == [(f"trips/{t1}/vote", "ok")], all_puts
-    after = anna_votes()
-    assert after[t1] == [("ok", "too far")], after[t1]
-    assert {k: v for k, v in after.items() if k != t1} == {k: v for k, v in before.items() if k != t1}, after
-    # The pointer is still over the list: trip one keeps its place (second row) with its new rank, #1.
-    expect(trips_a.nth(1)).to_have_attribute("data-trip", t1)
-    expect(trips_a.nth(1).locator(".vote-head").first).to_contain_text("#1 Vote trip one")
-    expect(rate(row(a, t1), "ok")).to_have_attribute("aria-pressed", "true")
-    print("PASS slow press on a trip while the ranking changes + a poll redraw: one PUT, only the pressed trip rated")
-
-    # (c) a quick second click on the same spot right after a vote that changed the ranking: still trip one.
     all_puts.clear()
-    box = rate(row(a, t1), "nogo").bounding_box()
-    a.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-    a.wait_for_timeout(250)
-    a.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-    puts_settled(2)
-    assert [(path, body["rating"]) for path, body in all_puts] == [(f"trips/{t1}/vote", "nogo")] * 2, all_puts
-    assert anna_votes()[t2] == before[t2], anna_votes()[t2]
-    expect(trips_a.nth(1)).to_have_attribute("data-trip", t1)  # still held in its place
-    a.mouse.move(2, 2)  # leaving the list re-sorts the rows into rank order
+    x, y = centre(rate(row(a, t1), "ok"))
+    a.mouse.click(x, y)
+    a.wait_for_timeout(250)  # the answer is in: trip one is #1 now
+    a.mouse.click(x, y)
+    puts_settled(a, 2, all_puts)
+    assert [(path, body["rating"]) for path, body in all_puts] == [(f"trips/{t1}/vote", "ok")] * 2, all_puts
+    others_same(before, anna_votes(), t1)
+    expect(trips_a.nth(1)).to_have_attribute("data-trip", t1)  # kept in its place, with its new rank
+    expect(trips_a.nth(1).locator(".vote-head").first).to_contain_text("#1 Vote trip one")
+    expect(a.locator("#vote-sort")).to_be_visible()
+    print("PASS a quick second click after a rank-changing vote rates the same trip; rows keep their places, "
+          "↻ Sort by rank shown")
+
+    # (2) slow press on a trip while others' votes change the ranking and a poll arrives: only the pressed trip.
+    before = anna_votes()
+    all_puts.clear()
+    x, y = centre(rate(row(a, t1), "nogo"))
+    a.mouse.move(x, y)
+    a.mouse.down()
+    bob_votes((t2, "love"))  # trip two back to #1
+    a.evaluate("refreshVote()")
+    a.wait_for_timeout(400)
+    a.mouse.up()
+    puts_settled(a, 1, all_puts)
+    assert [(path, body["rating"]) for path, body in all_puts] == [(f"trips/{t1}/vote", "nogo")], all_puts
+    after = anna_votes()
+    assert after[t1] == [("nogo", "too far")], after[t1]
+    others_same(before, after, t1)
+    expect(trips_a.nth(1)).to_have_attribute("data-trip", t1)
+    expect(rate(row(a, t1), "nogo")).to_have_attribute("aria-pressed", "true")
+    sort_rows(a)
     ranked = [t["trip_id"] for t in a.evaluate(get_round)["trips"]]
     expect(trips_a.nth(0)).to_have_attribute("data-trip", ranked[0])
-    expect(trips_a.nth(1)).to_have_attribute("data-trip", ranked[1])
-    print("PASS a quick second click after a rank-changing vote lands on the same trip; leaving the list re-sorts")
+    print("PASS slow press on a trip while the ranking changes + a poll: one PUT, only the pressed trip rated")
 
-    # (b) stay row: anna presses 😍 on #2 Area house of trip one; meanwhile bob's 🙂 puts Area house first.
+    # (3) the same for a stay: anna presses 😍 on #2 Area house of trip one while bob's 🙂 puts it first.
     all_puts.clear()
     stays_t1 = row(a, t1).locator(".vote-stay")
     expect(stays_t1.nth(0)).to_have_attribute("data-stay", BSTAY["id"])
     stay_area = row(a, t1).locator(f'.vote-stay[data-stay="{STAY["id"]}"]')
     before = anna_votes()
-    slow_press(rate(stay_area, "love"), lambda: b.evaluate(
-        bob_vote, [f"/api/rounds/{round_id}/trips/{t1}/stays/{quote(STAY['id'], safe='')}/vote", "ok"]))
-    puts_settled(1)
+    x, y = centre(rate(stay_area, "love"))
+    a.mouse.move(x, y)
+    a.mouse.down()
+    bob_votes(((t1, STAY["id"]), "ok"))
+    a.evaluate("refreshVote()")
+    a.wait_for_timeout(400)
+    a.mouse.up()
+    puts_settled(a, 1, all_puts)
     assert [(path, body["rating"]) for path, body in all_puts] == [
         (f"trips/{t1}/stays/{quote(STAY['id'], safe='')}/vote", "love")], all_puts
     after = anna_votes()
     assert after[(t1, STAY["id"])] == ["love"], after
-    key = (t1, STAY["id"])
-    assert {k: v for k, v in after.items() if k != key} == {k: v for k, v in before.items() if k != key}, after
-    expect(stays_t1.nth(1)).to_have_attribute("data-stay", STAY["id"])  # kept in place while the pointer is over
-    a.mouse.move(2, 2)
+    others_same(before, after, (t1, STAY["id"]))
+    expect(stays_t1.nth(1)).to_have_attribute("data-stay", STAY["id"])  # kept in place
+    sort_rows(a)
     expect(stays_t1.nth(0)).to_have_attribute("data-stay", STAY["id"])
-    print("PASS slow press on a stay while the stay ranking changes + a poll redraw: one PUT, only that stay rated")
-    # bob's votes as they were (trip two wins below).
-    b.evaluate(bob_vote, [f"/api/rounds/{round_id}/trips/{t1}/vote", "nogo", "<b>no</b>"])
-    b.evaluate(bob_vote, [f"/api/rounds/{round_id}/trips/{t2}/vote", "ok"])
+    print("PASS slow press on a stay while the stay ranking changes + a poll: one PUT, only that stay rated")
+
+    # (4) a press on a rating button that slides off (no click) still saves the typed comment.
+    all_puts.clear()
+    comment_t1 = row(a, t1).locator(".vote-comment").first
+    comment_t1.click()
+    comment_t1.fill("way too far")
+    x, y = centre(rate(row(a, t1), "ok"))
+    a.mouse.move(x, y)
+    a.mouse.down()
+    a.mouse.move(2, 2, steps=4)
+    a.mouse.up()
+    puts_settled(a, 1, all_puts)
+    assert all_puts == [(f"trips/{t1}/vote", {"rating": "nogo", "comment": "way too far"})], all_puts
+    print("PASS a rating press that slides off without a click saves the typed comment with the current rating")
+
+    # (5) a right-click in the list does not hold the redraws back.
+    a.mouse.move(*centre(row(a, t2).locator(".vote-head").first))
+    a.mouse.down(button="right")  # held: a context menu may swallow its release
+    bob_votes((t2, "ok"))
     a.evaluate("refreshVote()")
+    expect(row(a, t2).locator(".count-btn").first).to_have_text("😍1")
+    assert not a.evaluate("vote.pressed")
+    a.mouse.up(button="right")
+    print("PASS a right-click in the list leaves redraws running")
+
+    # (6) phone-style touch (own context, small screen): a tap whose answer is slow, others' votes + polls change
+    # the ranking meanwhile and well afterwards, then a second tap on the same spot → still the same trip.
+    ctx_d = browser.new_context(viewport={"width": 900, "height": 560}, has_touch=True)
+    d = ctx_d.new_page()
+    d.on("pageerror", lambda exc: errors.append(str(exc)))
+    d.goto(BASE)
+    d.wait_for_function("typeof openVote === 'function' && auth.ready")
+    assert d.evaluate("""() => fetch('/api/auth/login', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: 'anna', password: 'password1'})}).then((r) => r.status)""") == 200
+    d.reload()
+    d.wait_for_function("typeof openVote === 'function' && auth.ready && Boolean(auth.user)")
+    d.click("#vote-btn")
+    trips_d = d.locator("#vote-trips > .vote-trip")
+    expect(trips_d).to_have_count(2)
+    # No ⚠ No-go lines that could appear/vanish and shift the buttons: trip two 3 pts, trip one 2.
+    a.evaluate(put_js, [f"/api/rounds/{round_id}/trips/{t1}/vote", "ok", None])
+    a.evaluate(put_js, [f"/api/rounds/{round_id}/trips/{t2}/vote", "love", None])
+    bob_votes((t1, "ok"), (t2, "ok"))
+    d.evaluate("refreshVote()")
+    sort_rows(d)
+    expect(trips_d.nth(1)).to_have_attribute("data-trip", t1)
+    d_puts: list[str] = []
+    held_puts: list = []
+    d.on("request", lambda req: d_puts.append(req.url.split(f"/rounds/{round_id}/")[1]) if req.method == "PUT" else None)
+    d.route("**/vote", lambda route: held_puts.append(route))
+    rate(row(d, t1), "love").scroll_into_view_if_needed()
+    x, y = centre(rate(row(d, t1), "love"))
+    d.touchscreen.tap(x, y)  # 😍 trip one: its answer waits
+    for _ in range(30):
+        if held_puts:
+            break
+        d.wait_for_timeout(100)
+    assert len(held_puts) == 1, held_puts
+    bob_votes((t1, "love"))
+    d.evaluate("refreshVote()")
+    d.wait_for_timeout(1700)
+    held_puts.pop().continue_()
+    for _ in range(30):
+        if d.evaluate("vote.writing") == 0:
+            break
+        d.wait_for_timeout(100)
+    d.unroute("**/vote")
+    d.wait_for_timeout(1700)
+    d.evaluate("refreshVote()")  # a poll well after the tap: trip one is #1 by now
+    d.wait_for_timeout(500)
+    expect(trips_d.nth(1)).to_have_attribute("data-trip", t1)
+    expect(trips_d.nth(1).locator(".vote-head").first).to_contain_text("#1 Vote trip one")
+    d.touchscreen.tap(x, y)  # the same spot again: 😍 trip one again
+    puts_settled(d, 2, d_puts)
+    assert d_puts == [f"trips/{t1}/vote"] * 2, d_puts
+    after = anna_votes()
+    assert after[t1][0][0] == "love" and after[t2][0][0] == "ok", after  # anna's Love moved off trip two
+    print("PASS touch: a slow tap answer + polls changing the ranking, then a second tap on the same spot → same trip")
+
+    # (7) keyboard: Enter on a rating button keeps the focus on that button across the redraw.
+    d_puts.clear()
+    nogo_t1 = rate(row(d, t1), "nogo")
+    rate(row(d, t1), "ok").focus()
+    d.keyboard.press("Tab")
+    expect(nogo_t1).to_be_focused()
+    d.keyboard.press("Enter")
+    puts_settled(d, 1, d_puts)
+    expect(nogo_t1).to_have_attribute("aria-pressed", "true")
+    expect(nogo_t1).to_be_focused()
+    d.keyboard.press("Shift+Tab")
+    d.keyboard.press("Enter")
+    puts_settled(d, 2, d_puts)
+    expect(rate(row(d, t1), "ok")).to_have_attribute("aria-pressed", "true")
+    assert d_puts == [f"trips/{t1}/vote"] * 2, d_puts
+    print("PASS keyboard: Enter rates, the focus stays on the same button across redraws, Shift+Tab + Enter re-rates")
+
+    # (8) a poll does not scroll the dialog back to the last clicked button.
+    row(d, t1).locator("button", has_text="Stays (2)").click()  # a taller list
+    row(d, t2).locator("button", has_text="Stays (1)").click()
+    for count in d.locator("#vote-trips .vote-counts").all():  # every names box open: taller still
+        count.locator(".count-btn").first.click()
+    top_ok = rate(trips_d.nth(0), "ok")
+    top_ok.click()  # the top row's button; a mouse click focuses it in Chrome
+    puts_settled(d, 3, d_puts)
+    scroller = """(() => { let el = document.getElementById('vote-trips');
+        while (el && !(el.scrollHeight > el.clientHeight + 4 && /(auto|scroll)/.test(getComputedStyle(el).overflowY)))
+            el = el.parentElement;
+        return el; })()"""
+    assert d.evaluate(f"{scroller} !== null"), "the vote dialog should scroll at 900×560"
+    d.evaluate(f"{scroller}.scrollTop = 1e6")
+    top = d.evaluate(f"{scroller}.scrollTop")
+    assert top > 0, top
+    scroller_top = d.evaluate(f"{scroller}.getBoundingClientRect().top")
+    assert top_ok.bounding_box()["y"] + top_ok.bounding_box()["height"] < scroller_top, ("scrolled out of view", top_ok.bounding_box(), scroller_top,
+        d.evaluate(f"[{scroller}.scrollHeight, {scroller}.clientHeight, {scroller}.scrollTop, {scroller}.id]"))
+    bob_votes((t2, "nogo"))
+    d.evaluate("refreshVote()")
+    expect(row(d, t2).locator(".count-btn").nth(2)).to_have_text("🚫1")
+    d.wait_for_timeout(300)
+    assert d.evaluate(f"{scroller}.scrollTop") == top, (top, d.evaluate(f"{scroller}.scrollTop"))
+    print("PASS a poll redraw keeps the dialog's scroll position")
+    ctx_d.close()
+
+    # Everyone's votes as the checks below expect them (trip two wins, stay: Area house).
+    a.evaluate(put_js, [f"/api/rounds/{round_id}/trips/{t1}/vote", "nogo", "too far"])
+    a.evaluate(put_js, [f"/api/rounds/{round_id}/trips/{t2}/vote", "love", "can't wait 🥾"])
+    bob_votes((t1, "nogo", "<b>no</b>"), (t2, "ok"))
+    a.evaluate("refreshVote()")
+    sort_rows(a)
     expect(trips_a.nth(0)).to_have_attribute("data-trip", t2)
 
     close_btn = a.locator("#vote-tools button", has_text="Close now")
