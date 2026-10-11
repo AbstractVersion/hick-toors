@@ -101,6 +101,12 @@ function startDrawing(shape) {
   $("draw-hint").hidden = false;
   $(shape === "circle" ? "draw-circle-btn" : "draw-rect-btn").classList.add("active");
 }
+// Crossing the phone breakpoint (mobile.js): also a draw started from Leaflet.draw's own toolbar, whose draw
+// buttons phones hide (style.css) – no draw is left running without a way to cancel it.
+window.cancelDrawing = () => {
+  drawControl._toolbars?.draw?.disable();
+  stopDrawing();
+};
 map.on(L.Draw.Event.CREATED, (event) => {
   drawnItems.clearLayers();
   drawnItems.addLayer(event.layer);

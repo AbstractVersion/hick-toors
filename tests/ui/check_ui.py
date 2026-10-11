@@ -12,7 +12,8 @@ creates, edits, exports and deletes a real trip, so it refuses to run unless the
 The auth API is real too: the check signs up `nikos` (a fresh TRIPS_DB has no accounts).
 The 🗳️ voting scenario at the end uses the real rounds API with two browser contexts (`anna` opens a round,
 logged-out `bob` watches, signs up from a vote click, votes; anna closes the round) – it needs no open round.
-The 📱 phone scenario (390×844, touch) runs last; set UI_SHOTS=<folder> to save its screenshots there.
+The 📱 phone scenarios (390×844 and landscape 844×390, touch) run last; set UI_SHOTS=<folder> to save screenshots there.
+UI sign-ups get an emoji added to their request (give_signups_an_emoji) until the sign-up form has its picker.
 """
 
 import json
@@ -52,6 +53,21 @@ RIVER = {"id": "osm:way/2", "name": "Test river", "kind": "river", "lat": 38.56,
 NATURE_DOWN = "Nature sights unavailable for part of the map – try again in a minute"
 # Set by the Load more step: hikes answers then carry a total and a next page.
 paging = {"on": False}
+# Sign-ups need an emoji now; the sign-up form gets its picker in the next task. Until then every UI sign-up gets a
+# fresh one from the set added to its request body (give_signups_an_emoji).
+SIGNUP_EMOJIS = ["🤡", "🐸", "🦄", "🐙", "🦖", "🍕", "🦥", "🐧", "🦉", "🦜", "🐼", "🐨", "🦘", "🦒", "🐘", "🦛",
+                 "🐢", "🦎", "🦋", "🐝"]
+signups = {"n": 0}
+
+
+def give_signups_an_emoji(ctx) -> None:
+    def add(route):
+        body = route.request.post_data_json or {}
+        if "emoji" not in body:
+            body["emoji"] = SIGNUP_EMOJIS[signups["n"] % len(SIGNUP_EMOJIS)]
+            signups["n"] += 1
+        route.continue_(post_data=json.dumps(body))
+    ctx.route("**/api/auth/signup", add)
 
 
 def canned_hikes(body: dict) -> dict:
@@ -81,6 +97,7 @@ def main() -> None:
         browser = p.chromium.launch(channel="chrome", headless=True)
         page = browser.new_page(viewport={"width": 1400, "height": 900})
         page.on("pageerror", lambda exc: errors.append(str(exc)))
+        give_signups_an_emoji(page.context)
 
         held: list = []  # (route, path, body) of requests kept in flight on purpose
         hold: set = set()
@@ -604,7 +621,7 @@ def main() -> None:
 
         page.click("#auth-logout")
         expect(auth_area).to_have_text("👤 Log in", use_inner_text=True)
-        assert page.evaluate("fetch('/api/auth/me').then((r) => r.json())") == {"username": None}
+        assert page.evaluate("fetch('/api/auth/me').then((r) => r.json())") == {"username": None, "emoji": None}
         page.click("#auth-login-btn")
         expect(auth_dlg).to_be_visible()
         expect(page.locator("#auth-repeat")).to_be_hidden()
@@ -1265,6 +1282,7 @@ def main() -> None:
 
         check_voting(browser, errors)
         check_mobile(browser, errors)
+        check_mobile_landscape(browser, errors)
         browser.close()
     if errors:
         raise SystemExit(f"FAIL page errors: {errors}")
@@ -1275,6 +1293,7 @@ def check_voting(browser, errors: list[str]) -> None:
     """🗳️ Voting round with two people in two browser contexts (real rounds API, no mocks)."""
     def new_page():
         ctx = browser.new_context(viewport={"width": 1400, "height": 900})
+        give_signups_an_emoji(ctx)
         pg = ctx.new_page()
         pg.on("pageerror", lambda exc: errors.append(str(exc)))
         pg.goto(BASE)
@@ -1492,15 +1511,21 @@ def check_mobile(browser, errors: list[str]) -> None:
     """📱 Phone shell at 390×844: tab bar, ☰ panel, List / Map tabs, full-screen Trips / Vote dialogs."""
     ctx = browser.new_context(viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True,
                               device_scale_factor=3)
+    give_signups_an_emoji(ctx)
     pg = ctx.new_page()
     pg.on("pageerror", lambda exc: errors.append(str(exc)))
 
     sent: list[tuple[str, dict]] = []
+    held: list = []  # searches kept in flight while hold["on"]
+    hold = {"on": False}
 
     def answer(route):
         path = "/" + route.request.url.split("/", 3)[3].split("?")[0]
         body = route.request.post_data_json if route.request.post_data else {}
         sent.append((path, body))
+        if hold["on"]:
+            held.append((route, path, body))
+            return
         route.fulfill(status=200, content_type="application/json", body=json.dumps(CANNED[path](body)))
 
     for path in ("/api/hikes", "/api/stays"):
@@ -1571,6 +1596,37 @@ def check_mobile(browser, errors: list[str]) -> None:
     active("map")
     expect(pg.locator("#tab-badge-list")).to_have_text("1")
     print("PASS Search all from the panel closes it, stays on Map, 📋 List badge shows the hike count")
+
+    # A slow search on the Map tab: "Searching…" on the map and a spinner on 📋 List until every answer is in.
+    expect(pg.locator("#map-busy")).to_be_hidden()
+    hold["on"] = True
+    pg.locator("#menu-btn").tap()
+    pg.locator("#search-all").tap()
+    expect(pg.locator("#map-busy")).to_be_visible()
+    expect(pg.locator("#map-busy")).to_contain_text("Searching…")
+    expect(pg.locator("#tab-spin-list")).to_be_visible()
+    busy_box = pg.locator("#map-busy").bounding_box()
+    map_box = pg.locator("#map").bounding_box()
+    if not (map_box["y"] < busy_box["y"] < map_box["y"] + 120):
+        raise SystemExit(f"FAIL Searching… should sit at the top of the map: {busy_box} in {map_box}")
+    if os.environ.get("UI_SHOTS"):
+        pg.screenshot(path=os.path.join(os.environ["UI_SHOTS"], "searching.png"))
+    for _ in range(50):
+        if {p for _, p, _ in held} >= {"/api/hikes", "/api/stays"}:
+            break
+        pg.wait_for_timeout(100)
+    hold["on"] = False
+    first, *rest = held
+    first[0].fulfill(status=200, content_type="application/json", body=json.dumps(CANNED[first[1]](first[2])))
+    if rest:  # one answer in, the other still loading
+        expect(pg.locator("#map-busy")).to_be_visible()
+    for route, path, body in rest:
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(CANNED[path](body)))
+    held.clear()
+    expect(pg.locator("#map-busy")).to_be_hidden()
+    expect(pg.locator("#tab-spin-list")).to_be_hidden()
+    expect(pg.locator("#tab-badge-list")).to_have_text("1")
+    print("PASS a slow search on the Map tab shows Searching… on the map + a 📋 List spinner until it is done")
 
     tabs["list"].tap()
     active("list")
@@ -1674,6 +1730,70 @@ def check_mobile(browser, errors: list[str]) -> None:
     tall("#menu-btn")
     tall("#tabbar button")
     print("PASS ☰ panel: background inert while open, focus back on ☰ when closed")
+
+    # ☰ panel is a modal dialog while open (and only then).
+    panel = pg.locator("#controls-more")
+    expect(panel).not_to_have_attribute("role", "dialog")
+    pg.locator("#menu-btn").tap()
+    expect(panel).to_have_attribute("role", "dialog")
+    expect(panel).to_have_attribute("aria-modal", "true")
+    expect(panel).to_have_attribute("aria-label", "Search controls")
+    pg.locator("#menu-close").tap()
+    for name in ("role", "aria-modal", "aria-label"):
+        if panel.get_attribute(name) is not None:
+            raise SystemExit(f"FAIL the closed ☰ panel keeps {name}")
+    print("PASS ☰ panel: role=dialog, aria-modal, aria-label while open; removed when closed")
+
+    # Back gesture: closes the ☰ panel / returns from List to Map, never leaves the site; UI closes leave no entries.
+    no_phone_entry = "!Array.isArray(history.state?.phone)"
+    pg.wait_for_function(no_phone_entry)
+    pg.locator("#menu-btn").tap()
+    open_length = pg.evaluate("history.length")
+    pg.locator("#menu-close").tap()
+    pg.wait_for_function(no_phone_entry)
+    pg.locator("#menu-btn").tap()
+    pg.keyboard.press("Escape")
+    expect(pg.locator("#controls-more")).to_be_hidden()
+    pg.wait_for_function(no_phone_entry)
+    pg.locator("#menu-btn").tap()
+    if pg.evaluate("history.length") != open_length:  # each ✕ / Escape stepped back over its entry
+        raise SystemExit(f"FAIL ☰ ✕ / Escape should not pile up history entries: {pg.evaluate('history.length')} "
+                         f"vs {open_length}")
+    pg.go_back()
+    expect(pg.locator("#controls-more")).to_be_hidden()
+    if pg.url.rstrip("/") != BASE.rstrip("/") or pg.evaluate("document.body.classList.contains('menu-open')"):
+        raise SystemExit(f"FAIL back should close the ☰ panel and stay on the site: {pg.url}")
+    if pg.evaluate("document.querySelector('main').inert"):
+        raise SystemExit("FAIL back closed the panel but left the page inert")
+    tabs["list"].tap()
+    active("list")
+    pg.go_back()
+    active("map")
+    expect(pg.locator("#map")).to_be_visible()
+    map_fills_element()
+    tabs["list"].tap()
+    pg.locator("#menu-btn").tap()  # List + panel: back closes the panel first, then returns to Map
+    pg.go_back()
+    expect(pg.locator("#controls-more")).to_be_hidden()
+    active("list")
+    pg.go_back()
+    active("map")
+    if pg.url.rstrip("/") != BASE.rstrip("/"):
+        raise SystemExit(f"FAIL back left the site: {pg.url}")
+    tabs["list"].tap()
+    tabs["map"].tap()  # back to Map from the UI: the List entry is dropped, not piled up
+    pg.wait_for_function(no_phone_entry)
+    print("PASS back gesture: closes ☰, List → Map, stays on the site; UI closes leave no history entries")
+
+    # Leaflet's controls are thumb-sized; its draw buttons are hidden (the panel's draw buttons show the hint).
+    tall(".leaflet-control-zoom a")
+    tall(".leaflet-control-layers-toggle")
+    expect(pg.locator(".leaflet-draw-draw-rectangle")).to_be_hidden()
+    expect(pg.locator(".leaflet-draw-draw-circle")).to_be_hidden()
+    expect(pg.locator(".leaflet-draw-edit-edit")).to_be_visible()
+    tall(".leaflet-draw-edit-edit")
+    tall(".leaflet-draw-edit-remove")
+    print("PASS Leaflet zoom / layers / edit buttons ≥ 40 px; Leaflet.draw's draw buttons hidden on the phone")
 
     # Login dialog: sign up with 16 px fields.
     pg.locator("#menu-btn").tap()
@@ -1888,6 +2008,88 @@ def check_mobile(browser, errors: list[str]) -> None:
     expect(pg.locator("#controls-more")).to_be_hidden()
     map_fills_element()
     print("PASS crossing the 760 px breakpoint closes the panel and returns to the Map tab")
+
+    # Crossing it mid-draw cancels the draw: one from the panel (phone → desktop) and one from Leaflet.draw's
+    # toolbar (desktop → phone, where that toolbar's draw buttons are hidden).
+    pg.locator("#menu-btn").tap()
+    pg.locator("#draw-rect-btn").tap()
+    expect(pg.locator("#draw-hint")).to_be_visible()
+    pg.set_viewport_size({"width": 1000, "height": 844})
+    pg.wait_for_function("!mobile.isPhone()")
+    expect(pg.locator("#draw-hint")).to_be_hidden()
+    if pg.evaluate("activeDraw !== null || document.querySelector('#draw-rect-btn.active') !== null"):
+        raise SystemExit("FAIL crossing the breakpoint should cancel a draw started from the panel")
+    pg.locator(".leaflet-draw-draw-circle").click()
+    if not pg.evaluate("drawControl._toolbars.draw.enabled()"):
+        raise SystemExit("FAIL Leaflet.draw's circle button should start drawing on the desktop layout")
+    pg.set_viewport_size({"width": 390, "height": 844})
+    pg.wait_for_function("mobile.isPhone()")
+    pg.wait_for_function("!drawControl._toolbars.draw.enabled()", timeout=3000)
+    print("PASS crossing the breakpoint cancels an unfinished draw (panel or Leaflet.draw toolbar)")
+    ctx.close()
+
+
+def check_mobile_landscape(browser, errors: list[str]) -> None:
+    """📱 A phone in landscape (844×390, touch) gets the phone layout too, not the desktop one."""
+    ctx = browser.new_context(viewport={"width": 844, "height": 390}, has_touch=True, is_mobile=True,
+                              device_scale_factor=3)
+    pg = ctx.new_page()
+    pg.on("pageerror", lambda exc: errors.append(str(exc)))
+
+    def answer(route):
+        path = "/" + route.request.url.split("/", 3)[3].split("?")[0]
+        body = route.request.post_data_json if route.request.post_data else {}
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(CANNED[path](body)))
+
+    for path in ("/api/hikes", "/api/stays"):
+        pg.route(f"**{path}", answer)
+    pg.goto(BASE)
+    pg.wait_for_function("typeof mobile === 'object' && auth.ready")
+    expect(pg.locator("#hike-filters-btn")).to_be_enabled(timeout=15000)
+    if not pg.evaluate("mobile.isPhone()"):
+        raise SystemExit("FAIL a phone in landscape (844×390, touch) should get the phone layout")
+    expect(pg.locator("#tabbar")).to_be_visible()
+    expect(pg.locator("#menu-btn")).to_be_visible()
+    for hidden in ("#controls .brand", "#search-all", "#sidebar", "#trips-btn"):
+        expect(pg.locator(hidden)).to_be_hidden()
+    if not pg.evaluate("document.documentElement.scrollWidth <= innerWidth"):
+        raise SystemExit("FAIL horizontal page scroll on the phone in landscape")
+    size = pg.evaluate("""() => { const s = map.getSize(), el = map.getContainer();
+        return [s.x, s.y, el.clientWidth, el.clientHeight]; }""")
+    if size[0] != size[2] or size[1] != size[3] or size[0] != 844 or size[1] < 200:
+        raise SystemExit(f"FAIL the landscape map should fill the width with a usable height: {size}")
+
+    def inputs_16() -> None:
+        small = pg.evaluate("""() => [...document.querySelectorAll('input, select, textarea')]
+            .filter((el) => el.offsetParent && !['checkbox', 'radio', 'range'].includes(el.type))
+            .filter((el) => parseFloat(getComputedStyle(el).fontSize) < 16).map((el) => el.id)""")
+        if small:
+            raise SystemExit(f"FAIL inputs under 16 px on the landscape phone: {small}")
+
+    inputs_16()
+    pg.locator("#menu-btn").tap()
+    expect(pg.locator("#controls-more")).to_be_visible()
+    box = pg.locator("#controls-more").bounding_box()
+    if (round(box["width"]), round(box["height"])) != (844, 390):
+        raise SystemExit(f"FAIL the landscape ☰ panel is not full-screen: {box}")
+    inputs_16()
+    search = pg.locator("#search-all")
+    expect(search).to_be_visible()
+    search_box = search.bounding_box()
+    if search_box["y"] + search_box["height"] > 390:
+        raise SystemExit(f"FAIL the panel's search buttons should stay on screen in landscape: {search_box}")
+    if not pg.evaluate("document.documentElement.scrollWidth <= innerWidth"):
+        raise SystemExit("FAIL horizontal page scroll in the landscape ☰ panel")
+    search.tap()
+    expect(pg.locator("#controls-more")).to_be_hidden()
+    expect(pg.locator("#tab-badge-list")).to_have_text("1")
+    pg.locator('#tabbar button[data-tab="list"]').tap()
+    expect(pg.locator("#sidebar")).to_be_visible()
+    expect(pg.locator("#map")).to_be_hidden()
+    if os.environ.get("UI_SHOTS"):
+        pg.screenshot(path=os.path.join(os.environ["UI_SHOTS"], "landscape-list.png"))
+    print("PASS landscape phone 844×390: phone layout (tab bar, full-screen ☰ panel, 16 px inputs, no side scroll, "
+          "map fills the width)")
     ctx.close()
 
 

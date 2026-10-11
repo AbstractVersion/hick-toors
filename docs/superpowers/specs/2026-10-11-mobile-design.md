@@ -12,7 +12,7 @@ layout stays exactly as it is.
 
 | Topic | Decision |
 |---|---|
-| Breakpoint | `@media (max-width: 760px)` = phone layout; wider = today's desktop layout, unchanged |
+| Breakpoint | `@media (max-width: 760px), (pointer: coarse) and (max-height: 500px)` = phone layout (the second part: phones in landscape, 800–932 px wide; one query, `PHONE_QUERY` in mobile.js); otherwise today's desktop layout, unchanged |
 | Layout | map fills the screen; a compact top bar; a bottom tab bar 🗺️ Map / 📋 List / 🧳 Trips / 🗳️ Vote |
 | Top bar | `📍 [Go to place…] Go` and a `☰` button (opens the controls panel) |
 | Controls panel (☰) | full-screen panel with everything else from today's header: login area, dates, home, drive, 🐕, mode + place, hike/stay filters, draw, 🌿 Nature, and the three search buttons (sticky at the bottom). Pressing a search button or a draw button closes the panel |

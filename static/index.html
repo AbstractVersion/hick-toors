@@ -69,6 +69,7 @@
     </aside>
     <div id="map-wrap"><div id="map"></div><div id="draw-hint" hidden></div>
       <div id="nature-hint" class="map-hint" role="status" hidden>Zoom in to see nature sights</div>
+      <div id="map-busy" role="status" hidden>Searching… <i class="spinner"></i></div>
       <div id="nature-chips" role="group" aria-label="Nature sight categories" hidden>
         <button type="button" class="nature-chip" data-group="water" aria-pressed="true">💧 Water</button>
         <button type="button" class="nature-chip" data-group="landforms" aria-pressed="true">⛰️ Landforms</button>
@@ -88,7 +89,7 @@
   </footer>
   <nav id="tabbar" aria-label="Views">
     <button type="button" data-tab="map" aria-pressed="true">🗺️ Map</button>
-    <button type="button" data-tab="list" aria-pressed="false">📋 List<span id="tab-badge-list" class="tab-badge" hidden></span></button>
+    <button type="button" data-tab="list" aria-pressed="false">📋 List<span id="tab-badge-list" class="tab-badge" hidden></span><i id="tab-spin-list" class="spinner" aria-hidden="true" hidden></i></button>
     <button type="button" data-tab="trips" aria-pressed="false">🧳 Trips<span id="tab-badge-trips" class="tab-badge" hidden></span></button>
     <button type="button" data-tab="vote" aria-pressed="false">🗳️ Vote<span id="tab-badge-vote" class="tab-badge" hidden></span></button>
   </nav>
