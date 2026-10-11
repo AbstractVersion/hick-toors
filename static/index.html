@@ -38,6 +38,10 @@
     <button id="search" title="Hikes only – stays already on the map stay">🔍 Search hikes</button>
     <button id="search-all" title="Hikes + stays: clears the map; a drawn area also loads its stays">🔍 Search all</button>
     <button id="suggest-trips">⭐ Suggest trips</button>
+    <span id="auth-area" class="auth-area">
+      <button type="button" id="auth-login-btn" class="tool-btn">👤 Log in</button>
+      <span id="auth-user" hidden>👤 <span id="auth-name"></span> · <button type="button" id="auth-logout" class="link-btn">Log out</button></span>
+    </span>
   </header>
   <div id="notices"></div>
   <main>
@@ -86,6 +90,7 @@
     <form id="trip-editor" hidden>
       <button type="button" id="trip-back" class="link-btn">← All trips</button>
       <label class="wide">Name <input id="trip-name" maxlength="120" required></label>
+      <p id="trip-created-by" class="list-note" hidden></p>
       <div class="row">
         <label>📅 <input type="date" id="trip-start"></label> → <input type="date" id="trip-end" aria-label="End date">
         <label>👥 <input type="number" id="trip-guests" min="1" max="16" step="1"></label>
@@ -114,6 +119,21 @@
       </div>
     </form>
   </dialog>
+  <dialog id="auth-dialog" class="auth-dialog" aria-labelledby="auth-title">
+    <form id="auth-form" novalidate>
+      <div class="dlg-head"><h2 id="auth-title">👤 Log in</h2>
+        <button type="button" id="auth-close" class="tool-btn" aria-label="Close">✕</button></div>
+      <div class="auth-tabs" role="tablist">
+        <button type="button" id="auth-tab-login" role="tab" aria-selected="true">Log in</button>
+        <button type="button" id="auth-tab-signup" role="tab" aria-selected="false">Sign up</button>
+      </div>
+      <label>Username <input id="auth-username" autocomplete="username" maxlength="20" spellcheck="false" autocapitalize="off"></label>
+      <label>Password <input id="auth-password" type="password" autocomplete="current-password" maxlength="200"></label>
+      <label id="auth-repeat-row" hidden>Repeat password <input id="auth-repeat" type="password" autocomplete="new-password" maxlength="200"></label>
+      <p id="auth-error" class="form-error" role="alert"></p>
+      <div class="dlg-actions"><button type="submit" id="auth-submit" class="primary">Log in</button></div>
+    </form>
+  </dialog>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
   <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
@@ -121,6 +141,7 @@
   <script src="/static/dialog.js"></script>
   <script src="/static/app.js"></script>
   <script src="/static/nature.js"></script>
+  <script src="/static/auth.js"></script>
   <script src="/static/trips.js"></script>
 </body>
 </html>

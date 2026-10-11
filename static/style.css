@@ -124,3 +124,19 @@ main { flex: 1; display: flex; min-height: 0; }
 .popup .sight-kind { color: #5d6b63; }
 .popup .sight-links a { margin-right: 8px; }
 .popup .osm-credit { display: block; margin-top: 4px; color: #5d6b63; font-size: 11px; }
+.auth-area { margin-left: auto; white-space: nowrap; }
+.auth-area [hidden] { display: none; }
+.auth-area .link-btn { font-size: 14px; }
+.auth-dialog { width: min(360px, calc(100vw - 32px)); border: 1px solid #dde3dc; border-radius: 10px; padding: 12px 16px; }
+.auth-dialog::backdrop { background: rgba(0,0,0,.35); }
+.auth-dialog .dlg-head { display: flex; justify-content: space-between; align-items: center; }
+.auth-dialog h2 { margin: 0; font-size: 16px; }
+.auth-dialog label { display: block; margin: 8px 0; }
+.auth-dialog label[hidden] { display: none; }
+.auth-dialog input { display: block; width: 100%; margin-top: 2px; padding: 5px 7px; border: 1px solid #c8d0c6; border-radius: 6px; font: inherit; }
+.auth-tabs { display: flex; gap: 4px; margin: 10px 0 4px; border-bottom: 1px solid #dde3dc; }
+.auth-tabs button { padding: 5px 12px; border: 0; border-bottom: 2px solid transparent; background: none; font: inherit; cursor: pointer; color: #5d6b63; }
+.auth-tabs button[aria-selected="true"] { border-bottom-color: #2f6f4e; color: #1d2b24; font-weight: 600; }
+.auth-dialog .form-error { margin: 4px 0 0; min-height: 18px; color: #a8322d; }
+.auth-dialog .dlg-actions .primary:disabled { opacity: .5; cursor: wait; }
+#trip-created-by { margin: -4px 0 4px; color: #5d6b63; font-size: 12px; }

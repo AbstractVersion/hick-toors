@@ -191,6 +191,7 @@ async function api(path, body, method, signal) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
+    if (res.status === 401) window.onUnauthorized?.();  // auth.js: mark logged out, open the login dialog
     const msg = Array.isArray(data.detail)
       ? data.detail.map((d) => {
         const loc = (d.loc || []).filter((part) => part !== "body").join(".");

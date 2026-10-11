@@ -1,5 +1,5 @@
-"""Headless-Chrome check of the filter popups, results, Trip picks, saved trips and the 🌿 Nature layer
-(not collected by pytest).
+"""Headless-Chrome check of the filter popups, results, Trip picks, log in / sign up, saved trips and the
+🌿 Nature layer (not collected by pytest).
 
 Start the app first with a throwaway trips database, then run the check against it:
     TRIPS_DB=$(mktemp -d)/trips.db env -u VIRTUAL_ENV uv run uvicorn app.main:app --port 8765
@@ -9,6 +9,7 @@ The script talks only to the local server. Search endpoints are answered by Play
 canned JSON, so no Wikiloc/Airbnb/Booking/Overpass request is made; the captured request bodies are
 asserted instead. The saved-trips API (/api/saved-trips...) is NOT mocked: the trips scenario
 creates, edits, exports and deletes a real trip, so it refuses to run unless the trips list is empty.
+The auth API is real too: the check signs up `nikos` (a fresh TRIPS_DB has no accounts).
 """
 
 import json
@@ -562,6 +563,84 @@ def main() -> None:
         assert page.evaluate("placeLayer.getLayers().length") == 1
         print("PASS Go to place: pin + fly, no search fired, warning, pin survives a new search")
 
+        # ---- log in / sign up (real API): logged out, ＋ Trip asks to log in first, then carries on ----
+        auth_dlg = page.locator("#auth-dialog")
+        auth_area = page.locator("#auth-area")
+        menu = page.locator("#trip-menu")
+        expect(auth_area).to_have_text("👤 Log in", use_inner_text=True)
+        page.locator("#hike-list li", has_text="Test hike").locator(".add-trip").click()
+        expect(auth_dlg).to_be_visible()
+        expect(menu).to_be_hidden()
+        expect(page.locator("#auth-username")).to_be_focused()
+        page.click("#auth-tab-signup")
+        expect(page.locator("#auth-repeat")).to_be_visible()
+        page.fill("#auth-username", "nikos")
+        page.fill("#auth-password", "password1")
+        page.fill("#auth-repeat", "password2")
+        page.press("#auth-repeat", "Enter")
+        expect(page.locator("#auth-error")).to_have_text("The passwords don't match")
+        page.fill("#auth-repeat", "password1")
+        page.press("#auth-repeat", "Enter")  # Enter submits
+        expect(auth_dlg).to_be_hidden()
+        expect(menu).to_be_visible()  # the ＋ Trip action continued after the sign-up
+        expect(menu.locator("button")).to_have_count(1)
+        expect(menu.locator("button").first).to_have_text("➕ New trip")
+        page.keyboard.press("Escape")
+        expect(menu).to_be_hidden()
+        expect(auth_area).to_have_text("👤 nikos · Log out", use_inner_text=True)
+        print("PASS logged out ＋ Trip opens the login dialog; Sign up (Enter) continues to the trip menu")
+
+        page.click("#auth-logout")
+        expect(auth_area).to_have_text("👤 Log in", use_inner_text=True)
+        assert page.evaluate("fetch('/api/auth/me').then((r) => r.json())") == {"username": None}
+        page.click("#auth-login-btn")
+        expect(auth_dlg).to_be_visible()
+        expect(page.locator("#auth-repeat")).to_be_hidden()
+        page.fill("#auth-username", "nikos")
+        page.fill("#auth-password", "wrong-password")
+        page.click("#auth-submit")
+        expect(page.locator("#auth-error")).to_have_text("Wrong username or password")
+        expect(auth_dlg).to_be_visible()
+        page.click("#auth-tab-signup")  # a taken name and a body-rule error are shown inline too
+        page.fill("#auth-password", "password1")
+        page.fill("#auth-repeat", "password1")
+        page.click("#auth-submit")
+        expect(page.locator("#auth-error")).to_have_text("That username is taken")
+        page.fill("#auth-username", "x")
+        page.click("#auth-submit")
+        expect(page.locator("#auth-error")).not_to_have_text("")
+        page.click("#auth-close")
+        expect(auth_dlg).to_be_hidden()
+        page.locator("#hike-list li", has_text="Test hike").locator(".add-trip").click()
+        expect(auth_dlg).to_be_visible()
+        page.keyboard.press("Escape")  # closed without logging in: the ＋ Trip action is dropped
+        expect(auth_dlg).to_be_hidden()
+        page.click("#auth-login-btn")
+        page.fill("#auth-username", "nikos")
+        page.fill("#auth-password", "password1")
+        page.press("#auth-password", "Enter")
+        expect(auth_dlg).to_be_hidden()
+        expect(menu).to_be_hidden()
+        expect(auth_area).to_have_text("👤 nikos · Log out", use_inner_text=True)
+        print("PASS Log out; wrong password / taken name shown inline; closing the dialog drops the action; Log in")
+
+        # The cookie expires while the page still shows nikos: the 401 opens the dialog, no replay after login.
+        page.context.clear_cookies()
+        page.locator("#hike-list li", has_text="Test hike").locator(".add-trip").click()
+        expect(menu).to_be_visible()  # the page still thinks we are logged in
+        menu.locator("button", has_text="New trip").click()
+        expect(auth_dlg).to_be_visible()
+        expect(auth_area).to_have_text("👤 Log in", use_inner_text=True)
+        expect(page.locator("#notices")).to_contain_text("Log in first")
+        page.fill("#auth-username", "nikos")
+        page.fill("#auth-password", "password1")
+        page.press("#auth-password", "Enter")
+        expect(auth_dlg).to_be_hidden()
+        expect(auth_area).to_have_text("👤 nikos · Log out", use_inner_text=True)
+        page.wait_for_timeout(300)
+        assert page.evaluate("fetch('/api/saved-trips').then((r) => r.json())") == []  # nothing replayed
+        print("PASS an expired cookie (401) opens the login dialog; the user repeats the click")
+
         # ---- saved trips (real API, throwaway TRIPS_DB) ----
         saved_name = "Test hike + Area house"
         expect(page.locator("#search")).to_be_enabled()
@@ -583,7 +662,6 @@ def main() -> None:
         page.click("#load-more")
         expect(page.locator("#hike-list li")).to_have_count(2)
         paging["on"] = False
-        menu = page.locator("#trip-menu")
         before = len(requests)
         page.locator("#hike-list li", has_text="Test hike").locator(".add-trip").click()
         expect(menu).to_be_visible()
@@ -631,9 +709,10 @@ def main() -> None:
         expect(dlg).to_be_visible()
         rows = page.locator("#trips-list li")
         expect(rows).to_have_count(1)
-        expect(rows.first).to_contain_text("2 hikes · 1 stay · ⭐")
+        expect(rows.first).to_contain_text("2 hikes · 1 stay · ⭐ · by nikos")
         rows.first.click()
         expect(page.locator("#trip-editor")).to_be_visible()
+        expect(page.locator("#trip-created-by")).to_have_text("Created by nikos")
         hikes_ul = page.locator("#trip-hikes li")
         expect(hikes_ul).to_have_count(2)
         expect(hikes_ul.nth(1)).to_contain_text("Second hike")

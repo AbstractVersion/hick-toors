@@ -1,7 +1,8 @@
 "use strict";
 // Saved trips: ＋ Trip menu on hikes/stays/nature sights, 💾 Save on Trip picks, and the 🧳 My trips dialog.
-// Loaded after app.js and nature.js and uses their globals ($, esc, state, api, notices, dates, guests, clearAll,
-// showTripSights, SIGHT_EMOJI, ...).
+// Loaded after app.js, nature.js and auth.js and uses their globals ($, esc, state, api, notices, dates, guests,
+// clearAll, showTripSights, SIGHT_EMOJI, requireLogin, ...). Every action that writes to the server goes through
+// requireLogin; fields that only change what is on screen (name, dates, notes, prices) are not gated.
 const trips = { list: [], current: null, deleteTimer: null, busy: 0, saving: Promise.resolve() };
 const LAST_TRIP_KEY = "hick-toors:last-trip";
 
@@ -89,7 +90,7 @@ document.addEventListener("click", (event) => {
   if (button) {
     event.preventDefault();
     event.stopPropagation();
-    openTripMenu(button).catch((err) => notices([err.message]));
+    requireLogin(() => openTripMenu(button).catch((err) => notices([err.message])));
     return;
   }
   if (!event.target.closest?.("#trip-menu")) closeTripMenu();
@@ -102,22 +103,26 @@ function saveComboButton(combo) {
   b.type = "button";
   b.className = "save-combo link-btn";
   b.textContent = "💾 Save";
-  b.addEventListener("click", async (event) => {
+  b.addEventListener("click", (event) => {
     event.stopPropagation();
-    b.disabled = true;
-    try {
-      const trip = await api("/api/saved-trips", { name: `${combo.hike.name} + ${combo.stay.name}`.slice(0, 120),
-        ...formTripFields(), source: "suggested", score: combo.score ?? null, hikes: [combo.hike], stays: [combo.stay] });
-      rememberTrip(trip.id);
-      await refreshTrips();
-      b.textContent = "✓ Saved";
-      notices([`Saved “${trip.name}” – see 🧳 My trips`]);
-    } catch (err) {
-      b.disabled = false;
-      notices([err.message]);
-    }
+    requireLogin(() => saveCombo(b, combo));
   });
   return b;
+}
+async function saveCombo(b, combo) {
+  if (b.disabled) return;
+  b.disabled = true;
+  try {
+    const trip = await api("/api/saved-trips", { name: `${combo.hike.name} + ${combo.stay.name}`.slice(0, 120),
+      ...formTripFields(), source: "suggested", score: combo.score ?? null, hikes: [combo.hike], stays: [combo.stay] });
+    rememberTrip(trip.id);
+    await refreshTrips();
+    b.textContent = "✓ Saved";
+    notices([`Saved “${trip.name}” – see 🧳 My trips`]);
+  } catch (err) {
+    b.disabled = false;
+    notices([err.message]);
+  }
 }
 
 // ---- 🧳 My trips dialog ----
@@ -157,6 +162,7 @@ function renderTripList(list) {
     const meta = document.createElement("div");
     meta.className = "meta";
     meta.textContent = `${tripDates(t)} · ${plural(t.hike_count, "hike")} · ${plural(t.stay_count, "stay")}${t.sight_count > 0 ? ` · ${plural(t.sight_count, "sight")}` : ""}${t.source === "suggested" ? " · ⭐" : ""}`;
+    if (t.created_by) meta.textContent += ` · by ${t.created_by}`;
     li.append(strong, meta);
     li.addEventListener("click", () => openTrip(t.id));
     li.addEventListener("keydown", (e) => { if (e.key === "Enter") openTrip(t.id); });
@@ -173,6 +179,8 @@ async function openTrip(id) {
   $("trip-guests").value = t.guests;
   $("trip-dog").checked = t.dog;
   $("trip-notes").value = t.notes || "";
+  $("trip-created-by").textContent = t.created_by ? `Created by ${t.created_by}` : "";
+  $("trip-created-by").hidden = !t.created_by;
   $("trip-airbnb-url").value = "";
   showAirbnbInfo([]);
   showSightsInfo([]);
@@ -209,7 +217,7 @@ function renderTripItems() {
         b.title = title;
         b.setAttribute("aria-label", `${title}: ${item.name}`);
         b.disabled = disabled;
-        b.addEventListener("click", action);
+        b.addEventListener("click", () => requireLogin(action));  // the list changes are saved with Save changes
         tools.appendChild(b);
       };
       tool("↑", "Move up", i === 0, () => moveItem(kind, i, -1));
@@ -411,8 +419,11 @@ async function persistNow(tripId) {
     setBusy(-1);
   }
 }
-async function saveTrip(event) {
+function saveTrip(event) {
   event.preventDefault();
+  requireLogin(saveNow);
+}
+async function saveNow() {
   if (!trips.current || !(await persistTrip())) return;
   $("trip-save").textContent = "✓ Saved";
   setTimeout(() => { $("trip-save").textContent = "Save changes"; }, 1500);
@@ -490,12 +501,12 @@ $("trip-editor").addEventListener("submit", saveTrip);
 $("trip-show").addEventListener("click", showTripOnMap);
 $("trip-export").addEventListener("click", exportTrip);
 $("trip-pdf").addEventListener("click", printTrip);
-$("trip-delete").addEventListener("click", deleteTrip);
-$("trip-airbnb-add").addEventListener("click", addAirbnbLink);
-$("trip-find-sights").addEventListener("click", findNearbySights);
+$("trip-delete").addEventListener("click", () => requireLogin(deleteTrip));
+$("trip-airbnb-add").addEventListener("click", () => requireLogin(addAirbnbLink));
+$("trip-find-sights").addEventListener("click", () => requireLogin(findNearbySights));
 $("trip-airbnb-url").addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;
   event.preventDefault();  // Enter here adds the link; it must not submit (save) the editor form
-  addAirbnbLink();
+  requireLogin(addAirbnbLink);
 });
 refreshTrips().catch(() => { $("trips-count").textContent = ""; });
