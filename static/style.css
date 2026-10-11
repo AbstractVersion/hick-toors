@@ -189,6 +189,38 @@ main { flex: 1; display: flex; min-height: 0; }
 .vote-start fieldset { border: 1px solid #dde3dc; border-radius: 8px; max-height: 30vh; overflow-y: auto; }
 .vote-dialog .dlg-actions .primary:disabled { opacity: .5; cursor: default; }
 .vote-panel .primary { padding: 5px 12px; border: 0; border-radius: 6px; background: #2f6f4e; color: #fff; cursor: pointer; }
+/* 📊 vote overview: the Vote / Overview tabs and the who-voted-what grid (scrolls sideways inside its own box, the
+   trip column pinned) */
+.vote-tabs { display: flex; gap: 4px; margin: 6px 0 4px; border-bottom: 1px solid #dde3dc; }
+.vote-tabs button { padding: 6px 12px; border: 0; border-bottom: 2px solid transparent; background: none; font: inherit; color: #5d6b63; cursor: pointer; }
+.vote-tabs button[aria-selected="true"] { color: #1d2b24; font-weight: 600; border-bottom-color: #2f6f4e; }
+.ov-winner { font-weight: 600; }
+.ov-scroll { max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; margin: 8px 0; border: 1px solid #eef1ed; border-radius: 8px; }
+.ov-grid { border-collapse: separate; border-spacing: 0; font-size: 14px; }
+.ov-grid th, .ov-grid td { padding: 4px 6px; border-bottom: 1px solid #eef1ed; text-align: center; vertical-align: middle; background: #fff; }
+.ov-grid .ov-name { position: sticky; left: 0; z-index: 1; min-width: 160px; max-width: 260px; text-align: left; font-weight: normal;
+  overflow-wrap: anywhere; border-right: 1px solid #dde3dc; }
+.ov-grid .ov-corner { color: #5d6b63; font-size: 12px; font-weight: 600; }
+.ov-grid .ov-stay { padding-left: 18px; font-size: 13px; color: #3c4a42; }
+.ov-trip-row > * { border-top: 1px solid #dde3dc; }
+.ov-rank { color: #5d6b63; }
+.ov-trip { font-size: 14px; font-weight: 600; text-align: left; overflow-wrap: anywhere; }
+.ov-more { font-size: 13px; }
+.ov-person { min-width: 44px; font-weight: normal; }
+.ov-emoji { display: block; font-size: 20px; line-height: 1.2; }
+.ov-pname { display: block; max-width: 72px; margin: 0 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: #5d6b63; }
+.ov-pending .ov-emoji { opacity: .55; }
+.ov-grid .me { background: #eef6f0; }
+.ov-cell { min-width: 40px; height: 36px; font-size: 18px; }
+.ov-grid td.nogo { background: #fbe3e1; }
+.ov-grid td.me.nogo { background: #f5d3cf; }
+.ov-none { color: #9aa79f; }
+.ov-cell-btn { position: relative; min-width: 36px; min-height: 32px; padding: 0 4px; border: 0; background: none; font: inherit; cursor: pointer; }
+.ov-dot { position: absolute; top: 2px; right: 0; width: 7px; height: 7px; border-radius: 50%; background: #2f6f4e; }
+.ov-grid .ov-score { font-weight: 600; white-space: nowrap; border-left: 1px solid #dde3dc; }
+.ov-warn { color: #a8322d; }
+.ov-pop { position: fixed; z-index: 10; max-width: min(320px, calc(100vw - 16px)); padding: 8px 10px; border: 1px solid #c8d0c6; border-radius: 8px;
+  background: #fff; box-shadow: 0 4px 16px rgba(0,0,0,.18); font-size: 14px; overflow-wrap: anywhere; }
 /* ---- phone layout shell: one DOM; on desktop the wrappers vanish and the header looks as before ---- */
 #controls-more, #controls .search-row { display: contents; }
 #menu-btn, #controls .panel-head, #tabbar { display: none; }
@@ -364,4 +396,10 @@ main { flex: 1; display: flex; min-height: 0; }
   .vote-check { display: flex; gap: 8px; align-items: center; min-height: 40px; }
   .vote-start label.wide input { min-height: 44px; }
   .vote-head, .vote-status, .vote-trip { overflow-wrap: anywhere; }
+  /* 📊 overview: 44 px tabs; the grid scrolls inside .ov-scroll (the page never side-scrolls), cells ≥ 40 px */
+  .vote-tabs button { flex: 1; min-height: 44px; }
+  .ov-grid .ov-name { min-width: 112px; max-width: 42vw; }
+  .ov-cell { min-width: 44px; height: 44px; }
+  .ov-cell-btn { min-width: 40px; min-height: 40px; }
+  .ov-trip, .ov-more { min-height: 40px; }
 }

@@ -168,10 +168,21 @@
     <div id="vote-error" class="notice" role="alert" hidden></div>
     <div id="vote-toast" class="vote-toast" role="status" hidden></div>
     <div id="vote-round-view" hidden>
-      <div id="vote-banner" class="vote-banner" hidden></div>
-      <div id="vote-status" class="vote-status"></div>
-      <div id="vote-tools" class="vote-tools" hidden></div>
-      <ol id="vote-trips" class="vote-trips"></ol>
+      <div id="vote-tabs" class="vote-tabs" role="tablist" aria-label="Vote or overview">
+        <button type="button" role="tab" id="vote-tab-vote" data-vtab="vote" aria-controls="vote-pane" aria-selected="true">🗳️ Vote</button>
+        <button type="button" role="tab" id="vote-tab-overview" data-vtab="overview" aria-controls="vote-overview" aria-selected="false">📊 Overview</button>
+      </div>
+      <div id="vote-pane" role="tabpanel" aria-labelledby="vote-tab-vote">
+        <div id="vote-banner" class="vote-banner" hidden></div>
+        <div id="vote-status" class="vote-status"></div>
+        <div id="vote-tools" class="vote-tools" hidden></div>
+        <ol id="vote-trips" class="vote-trips"></ol>
+      </div>
+      <div id="vote-overview" class="vote-overview" role="tabpanel" aria-labelledby="vote-tab-overview" hidden>
+        <div id="vote-ov-head" class="vote-status"></div>
+        <div id="vote-ov-scroll" class="ov-scroll"></div>
+        <div id="vote-ov-pop" class="ov-pop" role="status" hidden></div>
+      </div>
       <div id="vote-footer" class="dlg-actions"></div>
     </div>
     <form id="vote-start" class="vote-start" hidden novalidate>

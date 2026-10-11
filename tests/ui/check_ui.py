@@ -1299,6 +1299,7 @@ def main() -> None:
 
         check_voting(browser, errors)
         check_emojis(browser, errors)
+        check_overview(browser, errors)  # leaves its round closed: the phone scenario starts a new one
         check_mobile(browser, errors)
         check_mobile_landscape(browser, errors)
         browser.close()
@@ -2572,6 +2573,190 @@ def check_mobile_landscape(browser, errors: list[str]) -> None:
     print("PASS landscape phone 844×390: phone layout (tab bar, full-screen ☰ panel, 16 px inputs, no side scroll, "
           "map fills the width)")
     ctx.close()
+
+
+def check_overview(browser, errors: list[str]) -> None:
+    """📊 Overview grid: anna and bob (accounts from the voting scenario) vote on 2 trips (+ a stay) with comments via
+    the real API; the grid, the comment popover, progress, leader, tab persistence, trip name → Vote tab, a phone
+    with more participants (scrolls inside its box, name column pinned), and the closed round's final grid."""
+    from datetime import datetime, timedelta, timezone
+    from urllib.parse import quote
+
+    def logged_in(name: str, **kw):
+        ctx = browser.new_context(**kw)
+        res = ctx.request.post(f"{BASE}/api/auth/login", data={"username": name, "password": "password1"})
+        return ctx if res.status == 200 else (ctx.close(), None)[1]
+
+    def page_of(ctx):
+        pg = ctx.new_page()
+        pg.on("pageerror", lambda exc: errors.append(str(exc)))
+        pg.goto(BASE)
+        pg.wait_for_function("typeof openVote === 'function' && typeof renderOverview === 'function' && auth.ready")
+        return pg
+
+    def call(ctx, method: str, path: str, body=None):
+        res = ctx.request.fetch(f"{BASE}{path}", method=method, data=body)
+        assert res.ok, (method, path, res.status, res.text())
+        return res.json() if res.text() else None
+
+    ctx_a = logged_in("anna", viewport={"width": 1400, "height": 900})
+    ctx_b = logged_in("bob")
+    assert ctx_a and ctx_b, "anna / bob from the voting scenario should log in"
+    current = call(ctx_a, "GET", "/api/rounds/current")
+    assert not current or current["status"] != "open", "the overview scenario needs no open round"
+    long_name = "Overview trip two – a rather long name that has to wrap"
+    t1 = call(ctx_a, "POST", "/api/saved-trips", {"name": "Overview trip one", "hikes": [HIKE], "stays": [STAY, BSTAY]})["id"]
+    t2 = call(ctx_a, "POST", "/api/saved-trips", {"name": long_name, "hikes": [HIKE2], "stays": [STAY]})["id"]
+    closes = (datetime.now(timezone.utc) + timedelta(days=3)).isoformat()
+    rid = call(ctx_a, "POST", "/api/rounds", {"title": "Overview 📊", "closes_at": closes, "trip_ids": [t1, t2]})["id"]
+
+    def cast(ctx, trip: str, rating: str, comment: str | None = None, stay: str | None = None) -> None:
+        path = f"/api/rounds/{rid}/trips/{trip}" + (f"/stays/{quote(stay, safe='')}" if stay else "") + "/vote"
+        call(ctx, "PUT", path, {"rating": rating, "comment": comment})
+
+    cast(ctx_a, t1, "love")
+    cast(ctx_a, t2, "ok", "<i>long drive</i>")
+    cast(ctx_a, t1, "love", stay=STAY["id"])
+    cast(ctx_b, t1, "nogo", "too far")  # bob leaves trip two unrated: 1/2 people done
+
+    a = page_of(ctx_a)
+    a.click("#vote-btn")
+    expect(a.locator("#vote-pane")).to_be_visible()
+    expect(a.locator("#vote-tab-vote")).to_have_attribute("aria-selected", "true")
+    a.click("#vote-tab-overview")
+    expect(a.locator("#vote-overview")).to_be_visible()
+    expect(a.locator("#vote-pane")).to_be_hidden()
+    head = a.locator("#vote-ov-head")
+    expect(head).to_contain_text("Overview 📊")
+    expect(head).to_contain_text("closes in 2 d 23 h")
+    expect(head).to_contain_text(f"Leader: {long_name} (+1)")
+    expect(head).to_contain_text("1/2 people done")
+    people = a.locator("#vote-ov-scroll th.ov-person")
+    expect(people).to_have_count(2)
+    expect(people.nth(0)).to_have_text("🍕anna")  # done first; the viewer's own column highlighted
+    expect(people.nth(0)).to_have_class(re.compile(r"\bme\b"))
+    expect(people.nth(1)).to_have_text("🦖bob")
+    expect(people.nth(1)).to_have_attribute("title", "bob")
+    rows = a.locator("#vote-ov-scroll tr.ov-trip-row")
+    expect(rows).to_have_count(2)
+    expect(rows.nth(0)).to_have_attribute("data-trip", t2)
+    expect(rows.nth(0).locator("th.ov-name")).to_have_text(f"#1 {long_name}")
+    expect(rows.nth(1).locator("th.ov-name")).to_have_text("#2 Overview trip one")
+    r1, r2 = rows.nth(1), rows.nth(0)
+    expect(r1.locator('td[data-user="anna"]')).to_have_text("😍")
+    expect(r1.locator('td[data-user="bob"]')).to_have_text("🚫")
+    expect(r1.locator('td[data-user="bob"]')).to_have_class(re.compile(r"\bnogo\b"))
+    expect(r1.locator("td.ov-score")).to_have_text("-1 ⚠")
+    expect(r2.locator('td[data-user="anna"]')).to_have_text("🙂")
+    expect(r2.locator('td[data-user="bob"]')).to_have_text("·")
+    expect(r2.locator("td.ov-score")).to_have_text("1")
+    stay_row = lambda trip, stay: a.locator(f'#vote-ov-scroll tr.ov-stay-row[data-trip="{trip}"][data-stay="{stay}"]')
+    expect(stay_row(t1, STAY["id"])).to_have_text(re.compile(r"^🏡 #1 Area house😍·2$"))
+    expect(stay_row(t1, BSTAY["id"])).to_have_count(0)
+    more = a.locator("#vote-ov-scroll .ov-more")
+    expect(more).to_have_text("▸ 1 more stay")
+    more.click()
+    expect(stay_row(t1, BSTAY["id"])).to_have_count(1)
+    expect(a.locator("#vote-ov-scroll .ov-more")).to_have_text("▾ hide 1 stay")
+    a.evaluate("refreshVote()")
+    expect(stay_row(t1, BSTAY["id"])).to_have_count(1)  # expanded state kept across refreshes
+    print("PASS overview: rows in rank order with scores + ⚠, emoji columns (done first, own highlighted), "
+          "symbols / · per cell, leader, 1/2 people done, ▸ more stays kept across a refresh")
+
+    pop = a.locator("#vote-ov-pop")
+    r1.locator('td[data-user="bob"] .ov-cell-btn').click()
+    expect(pop).to_be_visible()
+    expect(pop).to_have_text("🦖 bob: No-go – “too far”")
+    a.keyboard.press("Escape")
+    expect(pop).to_be_hidden()
+    expect(a.locator("#vote-dialog")).to_be_visible()  # Escape closed only the popover
+    r2.locator('td[data-user="anna"] .ov-cell-btn').click()
+    expect(pop).to_have_text("🍕 anna: OK – “<i>long drive</i>”")
+    expect(a.locator("#vote-dialog i")).to_have_count(0)
+    if os.environ.get("UI_SHOTS"):
+        a.locator("#vote-dialog").screenshot(path=os.path.join(os.environ["UI_SHOTS"], "overview-desktop.png"))
+    head.click()
+    expect(pop).to_be_hidden()
+    print("PASS overview comment popover: text only, Escape / click outside close it, the dialog stays open")
+
+    # Trip name → the Vote tab at that trip; the tab choice persists across reopen (and reload).
+    r1.locator(".ov-trip").click()
+    expect(a.locator("#vote-pane")).to_be_visible()
+    expect(a.locator("#vote-tab-vote")).to_have_attribute("aria-selected", "true")
+    expect(a.locator(f'#vote-trips .vote-trip[data-trip="{t1}"]')).to_have_class(re.compile(r"\bfocus\b"))
+    a.click("#vote-tab-overview")
+    a.click("#vote-close")
+    a.reload()
+    a.wait_for_function("typeof openVote === 'function' && auth.ready")
+    assert a.evaluate("localStorage.getItem('hick-toors:vote-tab')") == "overview"
+    a.click("#vote-btn")
+    expect(a.locator("#vote-overview")).to_be_visible()
+    expect(a.locator("#vote-tab-overview")).to_have_attribute("aria-selected", "true")
+    # Live: bob rates trip two → 2/2 after the next poll.
+    cast(ctx_b, t2, "ok")
+    a.evaluate("refreshVote()")
+    expect(head).to_contain_text("2/2 people done")
+    expect(a.locator(f'#vote-ov-scroll tr.ov-trip-row[data-trip="{t2}"] td[data-user="bob"]')).to_have_text("🙂")
+    print("PASS trip name → Vote tab at that trip; Overview tab remembered across reload; a new vote shows on refresh")
+
+    # Phone: more participants (accounts from earlier scenarios join) → the grid scrolls inside its box.
+    joined = 2
+    for name in ("nikos", "zoe", "zed", "olga"):
+        ctx = logged_in(name)
+        if ctx:
+            call(ctx, "POST", f"/api/rounds/{rid}/join")
+            joined += 1
+            ctx.close()
+    assert joined >= 4, joined
+    ctx_p = logged_in("bob", viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True, device_scale_factor=2)
+    p = page_of(ctx_p)
+    p.locator('#tabbar button[data-tab="vote"]').tap()
+    expect(p.locator("#vote-dialog")).to_be_visible()
+    p.locator("#vote-tab-overview").tap()
+    expect(p.locator("#vote-overview")).to_be_visible()
+    expect(p.locator("#vote-ov-scroll th.ov-person")).to_have_count(joined)
+    expect(p.locator("#vote-ov-head")).to_contain_text(f"2/{joined} people done")
+    for sel in ("#vote-tab-overview", "#vote-tab-vote"):
+        assert p.locator(sel).bounding_box()["height"] >= 40, sel
+    small = p.evaluate("""() => [...document.querySelectorAll('#vote-ov-scroll td.ov-cell, #vote-ov-scroll .ov-cell-btn')]
+        .map((el) => el.getBoundingClientRect()).filter((r) => r.width < 40 || r.height < 40).length""")
+    assert small == 0, f"{small} overview cells under 40 px on the phone"
+    sizes = p.evaluate("(() => { const b = document.getElementById('vote-ov-scroll'); return [b.scrollWidth, b.clientWidth]; })()")
+    assert sizes[0] > sizes[1], f"the phone grid should scroll inside its box: {sizes}"
+    p.evaluate("document.getElementById('vote-ov-scroll').scrollLeft = 10000")
+    p.wait_for_timeout(100)
+    pinned = p.evaluate("""() => { const box = document.getElementById('vote-ov-scroll').getBoundingClientRect();
+        const name = document.querySelector('#vote-ov-scroll tr.ov-trip-row th.ov-name').getBoundingClientRect();
+        return [box.left, name.left, document.getElementById('vote-ov-scroll').scrollLeft]; }""")
+    assert pinned[2] > 0 and abs(pinned[0] + 1 - pinned[1]) <= 2, f"trip name column not pinned: {pinned}"
+    if not p.evaluate("document.documentElement.scrollWidth <= innerWidth"):
+        raise SystemExit("FAIL horizontal page scroll on the phone (overview)")
+    wide = p.evaluate("[...document.querySelectorAll('dialog[open]')].filter((d) => d.scrollWidth > d.clientWidth).length")
+    assert wide == 0, "the vote dialog scrolls sideways on the phone (overview)"
+    if os.environ.get("UI_SHOTS"):
+        p.screenshot(path=os.path.join(os.environ["UI_SHOTS"], "overview-phone-scrolled.png"))
+    p.locator(f'#vote-ov-scroll tr.ov-trip-row[data-trip="{t1}"] td[data-user="bob"] .ov-cell-btn').tap()
+    expect(p.locator("#vote-ov-pop")).to_have_text("🦖 bob: No-go – “too far”")
+    p.locator("#vote-ov-head").tap()
+    expect(p.locator("#vote-ov-pop")).to_be_hidden()
+    print(f"PASS phone overview ({joined} people): grid scrolls inside its box, trip column pinned, cells ≥ 40 px, "
+          "no page side-scroll, popover on tap")
+    ctx_p.close()
+
+    # Closed: the final grid with the winner line, also from Past rounds.
+    call(ctx_a, "POST", f"/api/rounds/{rid}/close")
+    a.evaluate("refreshVote()")
+    expect(head).to_contain_text("Closed ")
+    expect(head).to_contain_text(f"🏆 {long_name} wins")
+    expect(a.locator("#vote-ov-scroll tr.ov-trip-row")).to_have_count(2)
+    a.locator("#vote-footer button", has_text="Past rounds").click()
+    a.locator("#vote-history button", has_text="Overview 📊").click()
+    expect(a.locator("#vote-overview")).to_be_visible()
+    expect(head).to_contain_text(f"🏆 {long_name} wins")
+    expect(a.locator(f'#vote-ov-scroll tr.ov-trip-row[data-trip="{t1}"] td[data-user="bob"]')).to_have_text("🚫")
+    print("PASS closed round: final grid with the 🏆 winner line, also opened from Past rounds")
+    ctx_b.close()
+    ctx_a.close()
 
 
 if __name__ == "__main__":
