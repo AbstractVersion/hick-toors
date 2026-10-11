@@ -23,7 +23,13 @@ participation; the rest of the app stays free-form.
 
 ## Share link
 
-- URL: `<origin>/?round=<round id>`. The Vote dialog (open round) shows `🔗 Share link`: on phones with
+- **The opener gets the link right away (user requirement):** submitting "Start a round" shows a
+  `🎉 Round started – invite your friends` screen: the link in a selectable field, `📤 Share` (native share
+  sheet, e.g. WhatsApp/Viber, where `navigator.share` exists), `📋 Copy link` (→ "Link copied"), a one-line
+  hint ("Send it to everyone who should vote – they can sign up from the link"), and `Start voting myself` (→
+  the guide). The opener sees this before anything else after creating the round.
+- URL: `<origin>/?round=<round id>`. The Vote dialog (open round) also shows `🔗 Share link` at any time
+  (for everyone, so participants can forward it): on phones with
   `navigator.share` → native share sheet (title + text "Vote on '<title>' – closes <date>"); otherwise copy to
   clipboard and show "Link copied" plus the URL in a selectable field.
 - Opening the link: logged out → the welcome wall (see the login-first spec) shows the invitation on top:

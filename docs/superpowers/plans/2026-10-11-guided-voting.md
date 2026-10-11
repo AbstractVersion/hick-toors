@@ -67,6 +67,6 @@
 
 **Consumes:** Task 1 join/participants; Task 2 Overview tab; Task 3 wall slot, banner, auto-open (re-point them to Join screen / guide / Overview).
 
-- [ ] Step 1 — Implement per the guided-round spec §Share link, §Join screen, §Guide (incl. resume, See on map + Back pill, stays section with No-go collapse, dots, summary, Done → Overview, unknown/closed round handling, `?round=` cleanup).
+- [ ] Step 1 — FIRST: after "Start a round" the opener immediately gets the "🎉 Round started – invite your friends" screen with the link, 📤 Share, 📋 Copy link and Start voting myself (spec §Share link, user requirement). Then implement per the guided-round spec §Share link, §Join screen, §Guide (incl. resume, See on map + Back pill, stays section with No-go collapse, dots, summary, Done → Overview, unknown/closed round handling, `?round=` cleanup).
 - [ ] Step 2 — UI check per the guided-round spec §Testing (desktop + full phone journey for a brand-new user).
 - [ ] Step 3 — `node --check`, pytest, UI check green; commit `feat(hick-toors): 🔗 share link and guided voting journey`.
