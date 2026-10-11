@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 HOUR = 3600
 DAY = 86400
-MAX_AGE_S = 31 * DAY  # safety net: the longest TTL (geocoding) is 30 days, so anything older is left over
+MAX_AGE_S = 366 * DAY  # safety net: the longest TTL (hike routes) is 365 days, so anything older is left over
 TMP_GRACE_S = HOUR
 
 

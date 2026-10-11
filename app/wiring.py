@@ -7,12 +7,13 @@ from app.sources.stays.airbnb import AirbnbProvider
 from app.sources.stays.booking import BookingProvider
 from app.sources.nature import DailyBudget, NatureSource
 from app.sources.wikiloc import WikilocSource
+from app.sources.wikiloc_route import RouteFetcher
 
 
 def build_engine(settings: Settings | None = None) -> Engine:
     settings = settings or Settings()
     cache = DiskCache(settings.cache_dir)
-    return Engine(
+    engine = Engine(
         settings=settings,
         wikiloc=WikilocSource(pages=settings.hike_pages, cookie=settings.wikiloc_cookie,
                              concurrency=settings.wikiloc_concurrency),
@@ -23,3 +24,5 @@ def build_engine(settings: Settings | None = None) -> Engine:
         cache=cache,
         nature=NatureSource(budget=DailyBudget(cache)),
     )
+    engine.routes = RouteFetcher(cache=cache, online=settings.wikiloc_routes)  # hike tracks (app/routes.py)
+    return engine

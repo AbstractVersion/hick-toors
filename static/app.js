@@ -9,7 +9,8 @@ const BADGES = {
 };
 const $ = (id) => document.getElementById(id);
 const state = { config: null, hikes: new Map(), stays: new Map(), markers: new Map(), items: new Map(), comboView: false, staysRequest: 0,
-  stayWarnings: {}, stayPending: 0, bookingFailed: false, staySpec: null, lastHikeBody: null, nextPageOffset: null, hikeTotal: null, hikeGen: 0, hikeWarnings: [], catalogue: null, filters: null, dialogs: {} };
+  stayWarnings: {}, stayPending: 0, bookingFailed: false, staySpec: null, lastHikeBody: null, nextPageOffset: null, hikeTotal: null, hikeGen: 0, hikeWarnings: [], catalogue: null, filters: null, dialogs: {},
+  routes: new Map() };  // hike id -> { line, layers } of a shown trip's drawn tracks
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) =>
@@ -49,9 +50,13 @@ L.control.layers(tiles).addTo(map);
 const hikeLayer = L.markerClusterGroup();
 const stayLayer = L.markerClusterGroup();
 const overlay = L.layerGroup();
+// A shown trip's hike tracks (🗺️ Show on map / See on map): their own canvas, with a wide tap tolerance for phones.
+const routeLayer = L.layerGroup();
+const routeCanvas = L.canvas({ tolerance: 10 });
 map.addLayer(hikeLayer);
 map.addLayer(stayLayer);
 overlay.addTo(map);
+routeLayer.addTo(map);
 let reachCircle = null;
 // Phone layout (mobile.js): the 📋 List tab hides the map. A fit asked for meanwhile waits, and mobile.js calls
 // mapShown() once the map is visible again so Leaflet re-measures it (no grey band) and runs that fit.
@@ -317,6 +322,11 @@ function linkMarker(id, marker, layer) {
   state.markers.set(id, marker);
 }
 function focusMarker(id) {
+  const route = state.routes.get(id);
+  if (route) {
+    whenMapShown(() => { map.fitBounds(route.line.getBounds().pad(0.15), { maxZoom: 16 }); route.line.openPopup(); });
+    return;
+  }
   const marker = state.markers.get(id);
   if (!marker) return;
   const layer = state.hikes.has(id) ? hikeLayer : stayLayer;
@@ -347,6 +357,8 @@ function clearHikes() {
   $("load-more").hidden = true;
   hikeLayer.clearLayers();
   overlay.clearLayers();
+  routeLayer.clearLayers();
+  state.routes.clear();
   for (const id of state.hikes.keys()) { state.markers.delete(id); state.items.delete(id); }
   for (const id of [...state.items.keys()]) if (id.startsWith("combo:")) state.items.delete(id);
   state.hikes.clear();
@@ -376,15 +388,100 @@ function openLink(url, label, title) {
   a.addEventListener("click", (event) => event.stopPropagation());
   return a;
 }
-function addHike(h) {
+// ---- hike tracks (Hike.route: Google polyline, precision 5) ----
+// Distinct line colours, one per hike of a shown trip (in trip order; the editor's dots use the same).
+const ROUTE_COLORS = ["#e6194b", "#4363d8", "#f58231", "#911eb4", "#3cb44b", "#f032e6", "#008080", "#9a6324",
+  "#800000", "#000075"];
+const routeColor = (i) => ROUTE_COLORS[i % ROUTE_COLORS.length];
+function decodePolyline(text) {
+  const points = [];
+  let index = 0, lat = 0, lon = 0;
+  while (index < text.length) {
+    const delta = [];
+    for (let k = 0; k < 2; k += 1) {
+      let result = 0, shift = 0, b;
+      do {
+        if (index >= text.length) throw new Error("truncated polyline");
+        b = text.charCodeAt(index++) - 63;
+        result |= (b & 0x1f) << shift;
+        shift += 5;
+      } while (b >= 0x20);
+      delta.push(result & 1 ? ~(result >> 1) : result >> 1);
+    }
+    lat += delta[0];
+    lon += delta[1];
+    points.push([lat / 1e5, lon / 1e5]);
+  }
+  return points;
+}
+function routeDot(color) {
+  const dot = document.createElement("span");
+  dot.className = "route-dot";
+  dot.style.background = color;
+  dot.setAttribute("aria-hidden", "true");
+  return dot;
+}
+// Draws h.route into the route layer: white casing, the coloured line, ▶ start and 🏁 end (when > 50 m from the
+// start). Clicking / tapping the line opens the hike popup. Returns false when there is no usable track.
+function drawRoute(h, color) {
+  let points;
+  try { points = h.route ? decodePolyline(h.route) : []; } catch { points = []; }
+  if (points.length < 2) return false;
+  const common = { renderer: routeCanvas, interactive: !drawing(), lineCap: "round", lineJoin: "round" };
+  const casing = L.polyline(points, { ...common, color: "#fff", weight: 8, opacity: 0.95, className: "route-casing" });
+  const line = L.polyline(points, { ...common, color, weight: 5, opacity: 1, className: "route-line" })
+    .bindPopup(hikePopup(h));
+  casing.on("click", (event) => line.openPopup(event.latlng));
+  const start = L.marker(points[0], { keyboard: false, title: `Start: ${h.name}`,
+    icon: L.divIcon({ className: "route-start", iconSize: [18, 18], html: `<span style="background:${color}">▶</span>` }) })
+    .bindPopup(hikePopup(h));
+  const layers = [casing, line, start];
+  const last = points[points.length - 1];
+  if (map.distance(points[0], last) > 50) {
+    layers.push(L.marker(last, { keyboard: false, title: `End: ${h.name}`,
+      icon: L.divIcon({ className: "route-end", iconSize: [22, 22], iconAnchor: [4, 20], html: "🏁" }) })
+      .bindPopup(hikePopup(h)));
+  }
+  for (const layer of layers) layer.addTo(routeLayer);
+  line.on("mouseover", () => state.items.get(h.id)?.classList.add("active"));
+  line.on("mouseout", () => state.items.get(h.id)?.classList.remove("active"));
+  state.routes.set(h.id, { line, layers });
+  return true;
+}
+// While a search area is drawn, clicks on the map must reach Leaflet.draw, not the tracks (like nature.js's lines).
+let routeDrawing = false;
+const drawing = () => routeDrawing;
+function setRoutesInteractive(on) {
+  routeDrawing = !on;
+  for (const { layers } of state.routes.values()) {
+    for (const layer of layers) if (layer instanceof L.Polyline) layer.options.interactive = on;
+  }
+}
+map.on(L.Draw.Event.DRAWSTART, () => setRoutesInteractive(false));
+map.on(L.Draw.Event.DRAWSTOP, () => setRoutesInteractive(true));
+// A route that arrived later (lazy fill): its pin gives way to the line.
+function replacePinWithRoute(h, color) {
+  if (!state.hikes.has(h.id) || state.routes.has(h.id) || !drawRoute(h, color)) return false;
+  const marker = state.markers.get(h.id);
+  if (marker) { hikeLayer.removeLayer(marker); state.markers.delete(h.id); }
+  const li = state.items.get(h.id);
+  if (li && !li.querySelector(".route-dot")) li.querySelector("strong")?.prepend(routeDot(color));
+  return true;
+}
+// color: a shown trip draws the hike's track in that colour instead of its 🥾 pin (hikes without a track keep the pin).
+function addHike(h, color = null) {
   state.hikes.set(h.id, h);
-  const marker = L.marker([h.lat, h.lon], { icon: pin("🥾", "hike") }).bindPopup(hikePopup(h));
-  marker.on("click", () => { if (!state.comboView) selectHike(h.id); });
-  linkMarker(h.id, marker, hikeLayer);
+  const routed = color != null && drawRoute(h, color);
+  if (!routed) {
+    const marker = L.marker([h.lat, h.lon], { icon: pin("🥾", "hike") }).bindPopup(hikePopup(h));
+    marker.on("click", () => { if (!state.comboView) selectHike(h.id); });
+    linkMarker(h.id, marker, hikeLayer);
+  }
   const drive = h.ferry_needed ? "⛴️ ferry" : `🚗 ${fmtMinutes(h.drive_minutes, h.drive_estimated)}`;
   const li = listItem($("hike-list"), h.id, h.name,
     `${h.distance_km ?? "?"} km · +${h.elevation_gain_m ?? "?"} m · ${h.difficulty || "?"} · ${drive}`,
     null, () => { if (!state.comboView) selectHike(h.id); focusMarker(h.id); });
+  if (routed) li.querySelector("strong").prepend(routeDot(color));
   li.appendChild(tripButton("hike", h.id));
   const open = openLink(h.url, "Wikiloc", "Open this hike on Wikiloc in a new tab");
   if (open) li.appendChild(open);

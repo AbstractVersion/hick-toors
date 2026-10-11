@@ -34,6 +34,22 @@ class BBox(BaseModel):
     east: float
 
 
+MAX_ROUTE_CHARS = 8000  # ≤ 400 points of a Google polyline stay well under this
+
+
+def _check_route(value):
+    """'' → None; otherwise a decodable Google polyline (precision 5) of real coordinates."""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or len(value) > MAX_ROUTE_CHARS:
+        raise ValueError(f"route must be an encoded polyline of at most {MAX_ROUTE_CHARS} characters")
+    from app.sources.wikiloc_route import decode_polyline  # local: the sources import this module
+    points = decode_polyline(value)  # ValueError on a bad / truncated string
+    if any(not (-90 <= lat <= 90 and -180 <= lon <= 180) for lat, lon in points):
+        raise ValueError("route points must be real coordinates")
+    return value
+
+
 class Hike(BaseModel):
     id: str
     name: str
@@ -51,6 +67,9 @@ class Hike(BaseModel):
     ferry_needed: bool = False
     activity: int | None = None  # Wikiloc picto id (1 = Hiking)
     skill: int | None = None  # Wikiloc difficulty 1-5
+    route: str | None = None  # the full track as a Google polyline (precision 5), stored with saved trips
+
+    _route = field_validator("route", mode="before")(_check_route)
 
 
 class Stay(BaseModel):
@@ -362,6 +381,24 @@ def _finite_items(items: list, info: ValidationInfo) -> list:
 def trip_size(trip: "SavedTripIn") -> int:
     """Bytes of the trip's SavedTripIn fields as JSON (id/timestamps excluded, so POST and load agree)."""
     return len(trip.model_dump_json(include=set(SavedTripIn.model_fields)).encode())
+
+
+def with_routes(trip, routes: dict[str, str | None]):
+    """Copy of `trip` (any model with `hikes`) where hikes without a route get routes[hike.id].
+
+    A hike that already has a route keeps it. Added routes that would push the trip past MAX_TRIP_BYTES are
+    dropped, last first (the hikes stay)."""
+    added = [i for i, h in enumerate(trip.hikes) if not h.route and routes.get(h.id)]
+    if not added:
+        return trip
+    while added:
+        keep = set(added)
+        hikes = [h.model_copy(update={"route": routes[h.id]}) if i in keep else h for i, h in enumerate(trip.hikes)]
+        filled = trip.model_copy(update={"hikes": hikes})
+        if trip_size(filled) <= MAX_TRIP_BYTES:
+            return filled
+        added.pop()
+    return trip
 
 
 # Stored documents are re-validated against SavedTrip (this model + id/timestamps) on every load, and rows

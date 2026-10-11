@@ -247,3 +247,70 @@ def test_add_sights_respects_size_cap(store):
 
 def test_add_sights_missing_trip(store):
     assert store.add_sights("missing", [sight(1)]) is None
+
+
+# --- hike routes (polyline on the hike) ---------------------------------------
+
+ROUTE = "_p~iF~ps|U_ulLnnqC_mqNvxq`@"
+
+
+def routed(i, route=ROUTE):
+    return hike(i).model_copy(update={"route": route})
+
+
+def fat_trip(store, room: int):
+    """A trip whose document is `room` bytes short of the size cap."""
+    trip = store.create(SavedTripIn(name="T", hikes=[hike(1)]))
+    filler = MAX_TRIP_BYTES - room - len(trip.model_dump_json(include=set(SavedTripIn.model_fields)).encode())
+    return store.replace(trip.id, SavedTripIn(name="T", notes="", hikes=[
+        hike(1).model_copy(update={"name": "x" * (filler - 60)})]))
+
+
+def test_old_documents_without_route_load(store):
+    trip = store.create(SavedTripIn(name="T", hikes=[hike(1)]))
+    assert store.get(trip.id).hikes[0].route is None
+    assert "route" in store.get(trip.id).hikes[0].model_dump()
+
+
+def test_add_item_stores_the_route(store):
+    trip = store.create(SavedTripIn(name="T"))
+    assert store.add_item(trip.id, TripItemAdd(hike=routed(1))).hikes[0].route == ROUTE
+    assert store.get(trip.id).hikes[0].route == ROUTE
+
+
+def test_add_item_drops_a_route_that_would_pass_the_size_cap(store):
+    trip = fat_trip(store, room=400)
+    big = "_" * 50 + "?" * 3000  # a long (valid) polyline
+    saved = store.add_item(trip.id, TripItemAdd(hike=routed(2, big)))
+    assert [h.id for h in saved.hikes] == ["wikiloc:1", "wikiloc:2"] and saved.hikes[1].route is None
+
+
+def test_replace_keeps_stored_routes_for_hikes_sent_without(store):
+    trip = store.create(SavedTripIn(name="T", hikes=[routed(1), hike(2)]))
+    other = "_ibE_seK"
+    saved = store.replace(trip.id, SavedTripIn(name="Renamed", hikes=[hike(2), hike(1), routed(3, other)]))
+    assert [(h.id, h.route) for h in saved.hikes] == [("wikiloc:2", None), ("wikiloc:1", ROUTE),
+                                                      ("wikiloc:3", other)]
+    assert store.get(trip.id) == saved
+
+
+def test_replace_does_not_override_a_route_the_client_sent(store):
+    trip = store.create(SavedTripIn(name="T", hikes=[routed(1)]))
+    saved = store.replace(trip.id, SavedTripIn(name="T", hikes=[routed(1, "_ibE_seK")]))
+    assert saved.hikes[0].route == "_ibE_seK"
+
+
+def test_with_routes_fills_missing_and_respects_the_cap():
+    from app.models import with_routes
+
+    trip = SavedTripIn(name="T", hikes=[hike(1), routed(2), hike(3)])
+    filled = with_routes(trip, {"wikiloc:1": "_ibE_seK", "wikiloc:2": "_seK_ibE", "wikiloc:3": None})
+    assert [h.route for h in filled.hikes] == ["_ibE_seK", ROUTE, None]
+    assert trip.hikes[0].route is None  # the input is not changed
+    from app.models import trip_size
+
+    slim = SavedTripIn(name="T", hikes=[hike(1), hike(2), hike(3)])
+    pad = MAX_TRIP_BYTES - trip_size(slim) - 100  # leaves 100 bytes
+    fat = SavedTripIn(name="T", hikes=[hike(1).model_copy(update={"name": "Hike 1" + "x" * pad}), hike(2), hike(3)])
+    capped = with_routes(fat, {"wikiloc:2": "_ibE_seK", "wikiloc:3": "?" * 900})
+    assert [h.route for h in capped.hikes] == [None, "_ibE_seK", None]

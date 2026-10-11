@@ -117,6 +117,11 @@ main { flex: 1; display: flex; min-height: 0; }
 .pin.sight span { font-size: 18px; }
 .pin.trip-sight span { font-size: 20px; filter: drop-shadow(0 0 3px #2f6f4e) drop-shadow(0 0 2px #2f6f4e); }
 .popup .sight-kind { color: #5d6b63; }
+/* hike tracks of a shown trip (app.js drawRoute) */
+.route-dot { display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 50%; border: 1.5px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.35); vertical-align: 0; flex: none; }
+.route-start { background: none; border: 0; }
+.route-start span { display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; border: 2px solid #fff; border-radius: 50%; box-sizing: border-box; color: #fff; font-size: 8px; line-height: 1; padding-left: 1px; box-shadow: 0 1px 3px rgba(0,0,0,.45); }
+.route-end { background: none; border: 0; font-size: 18px; line-height: 1; filter: drop-shadow(0 1px 1px rgba(0,0,0,.45)); }
 .popup .sight-links a { margin-right: 8px; }
 .popup .osm-credit { display: block; margin-top: 4px; color: #5d6b63; font-size: 11px; }
 .auth-area { margin-left: auto; white-space: nowrap; }

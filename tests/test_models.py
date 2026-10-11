@@ -305,3 +305,13 @@ def test_trip_item_add_needs_exactly_one():
     with pytest.raises(ValidationError, match=msg):
         TripItemAdd(sight=_sight(1), hike=Hike(id="w:1", name="n", url="u", lat=1, lon=1))
     assert TripItemAdd(sight=_sight(1)).sight.id == "osm:node/1"
+
+
+def test_hike_route_is_optional_and_validated():
+    base = {"id": "wikiloc:1", "name": "h", "url": "u", "lat": 39.0, "lon": 21.0}
+    assert Hike(**base).route is None
+    assert Hike(**base, route="_p~iF~ps|U_ulLnnqC_mqNvxq`@").route == "_p~iF~ps|U_ulLnnqC_mqNvxq`@"
+    assert Hike(**base, route="").route is None
+    for bad in ("not a polyline", "_p~iF~ps|U_", "a" * 9000, "_p~iF\n~ps|U"):
+        with pytest.raises(ValidationError):
+            Hike(**base, route=bad)

@@ -25,6 +25,8 @@ from app.nearby_limits import NearbyBusy, NearbyLimits
 from app.trip_markdown import content_disposition, trip_markdown
 from app.trip_print import CSP, trip_print_html
 from app.rounds_routes import rounds_router
+from app.routes import fill_routes, missing_route_ids, route_router
+from app.sources.wikiloc_route import RouteFetcher
 from app.trips_store import TooManyTrips, TripConflict, TripFull, TripStore, TripTooLarge
 from app.votes_store import RoundStore
 from app.wiring import build_engine
@@ -74,7 +76,7 @@ async def sweep_cache_daily(cache, interval: float = DAY, accounts=None) -> None
 
 def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
                trip_store: TripStore | None = None, accounts: AccountStore | None = None,
-               rounds: RoundStore | None = None) -> FastAPI:
+               rounds: RoundStore | None = None, route_fetcher: RouteFetcher | None = None) -> FastAPI:
     settings = settings or Settings()
     engine = engine or build_engine(settings)
     cache = getattr(engine, "cache", None)
@@ -103,6 +105,10 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
     app.state.rounds = rounds
     app.include_router(auth_router(accounts))
     app.include_router(rounds_router(rounds))
+    # Hike tracks: build_engine's fetcher; an injected engine without one (tests) gets an offline, cache-less one.
+    routes = route_fetcher or getattr(engine, "routes", None) or RouteFetcher(online=False)
+    app.state.routes = routes
+    app.include_router(route_router(routes))
     nearby_limits = NearbyLimits()
     app.state.nearby = nearby_limits
 
@@ -126,6 +132,7 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
             "stay_radius_km": settings.stay_radius_km,
             "default_guests": settings.default_guests,
             "ask_available": bool(ask_runner and ask_runner.available()),
+            "route_fetch": routes.online,
         }
 
     @app.get("/api/filters")
@@ -188,10 +195,13 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
     def list_saved_trips():
         return trip_store.list_trips()
 
+    # Create / replace / add item are async: hikes without a route get one fetched (app/routes.py) without
+    # blocking the loop, while sqlite still runs in a thread.
     @app.post("/api/saved-trips", response_model=SavedTrip, status_code=201)
-    def create_saved_trip(body: SavedTripIn, user: User = Depends(require_user)):
+    async def create_saved_trip(body: SavedTripIn, user: User = Depends(require_user)):
+        body = await fill_routes(routes, body)
         try:
-            return trip_store.create(body, created_by=user.username)
+            return await asyncio.to_thread(trip_store.create, body, created_by=user.username)
         except TooManyTrips:
             raise HTTPException(status_code=409, detail="At most 500 saved trips – delete some first")
 
@@ -200,9 +210,13 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
         return found(trip_store.get(trip_id))
 
     @app.put("/api/saved-trips/{trip_id}", response_model=SavedTrip)
-    def replace_saved_trip(trip_id: str, body: SavedTripUpdate, user: User = Depends(require_user)):
+    async def replace_saved_trip(trip_id: str, body: SavedTripUpdate, user: User = Depends(require_user)):
+        old = found(await asyncio.to_thread(trip_store.get, trip_id))
+        # Stored routes are kept by the store (even if the editor sent the hike without one): fetch only the rest.
+        body = await fill_routes(routes, body, have={h.id for h in old.hikes if h.route})
         try:
-            return found(trip_store.replace(trip_id, body, expected_updated_at=body.expected_updated_at))
+            return found(await asyncio.to_thread(trip_store.replace, trip_id, body,
+                                                 expected_updated_at=body.expected_updated_at))
         except TripConflict:
             raise HTTPException(status_code=409,
                                 detail="Trip changed elsewhere – reopen it to see the latest version")
@@ -214,9 +228,15 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
         return Response(status_code=204)
 
     @app.post("/api/saved-trips/{trip_id}/items", response_model=SavedTrip)
-    def add_saved_trip_item(trip_id: str, body: TripItemAdd, user: User = Depends(require_user)):
+    async def add_saved_trip_item(trip_id: str, body: TripItemAdd, user: User = Depends(require_user)):
+        if body.hike is not None and missing_route_ids([body.hike]):
+            trip = found(await asyncio.to_thread(trip_store.get, trip_id))
+            if all(h.id != body.hike.id for h in trip.hikes):  # already in the trip: nothing to fetch
+                route = await routes.route(body.hike.id)
+                if route:
+                    body = body.model_copy(update={"hike": body.hike.model_copy(update={"route": route})})
         try:
-            return found(trip_store.add_item(trip_id, body))
+            return found(await asyncio.to_thread(trip_store.add_item, trip_id, body))
         except TripFull as full:
             raise HTTPException(status_code=409, detail="A trip holds at most 100 nature sights"
                                 if full.kind == "sights" else "A trip holds at most 50 hikes and 50 stays")

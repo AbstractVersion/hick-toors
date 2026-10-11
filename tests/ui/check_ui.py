@@ -4,7 +4,7 @@
 Start the app first with a throwaway trips database and a high per-IP sign-up limit (the server allows 10 sign-ups
 per address and hour by default – SIGNUP_PER_IP_HOUR – and the whole check signs up more than that from 127.0.0.1),
 then run the check against it:
-    TRIPS_DB=$(mktemp -d)/trips.db SIGNUP_PER_IP_HOUR=1000 env -u VIRTUAL_ENV uv run uvicorn app.main:app --port 8765
+    TRIPS_DB=$(mktemp -d)/trips.db SIGNUP_PER_IP_HOUR=1000 WIKILOC_ROUTES=0 env -u VIRTUAL_ENV uv run uvicorn app.main:app --port 8765
     env -u VIRTUAL_ENV uv run --with playwright python tests/ui/check_ui.py http://127.0.0.1:8765
 
 The script talks only to the local server. Search endpoints are answered by Playwright with
@@ -20,6 +20,8 @@ The 🧭 guide scenario (share link, invite screen, Join screen, the guided step
 GUIDE_SHOTS=<folder> (or UI_SHOTS) saves its phone screenshots.
 The 🔗 plain-http scenario launches a second Chrome that maps hick.test to the server's address
 (--host-resolver-rules) – a non-secure origin like the public VM, without navigator.share / navigator.clipboard.
+WIKILOC_ROUTES=0 keeps the server from fetching hike tracks from Wikiloc when trips get hikes (the check refuses to
+run otherwise); the 🗺️ tracks scenario gives its hikes routes through the API (ROUTE_SHOTS=<folder> saves screenshots).
 The 📱 phone scenarios (390×844 and landscape 844×390, touch) run last; set UI_SHOTS=<folder> to save screenshots there.
 Login first: every scenario starts on the welcome wall and signs up / logs in through it (wall_sign_up / wall_log_in).
 Every UI sign-up picks its emoji in the sign-up picker; the 😀 scenarios check taken emojis, the 409 race, Change emoji
@@ -27,6 +29,7 @@ and the first-login prompt (mocked /api/auth/me for an account from before emoji
 """
 
 import json
+import math
 import os
 import re
 import sys
@@ -215,6 +218,8 @@ def main() -> None:
         load(clear=True)
         if page.evaluate("fetch('/api/saved-trips').then((r) => r.json())"):
             raise SystemExit("FAIL start the server with a throwaway TRIPS_DB")  # never touch real trips
+        if page.evaluate("fetch('/api/config').then((r) => r.json()).then((c) => c.route_fetch)"):
+            raise SystemExit("FAIL start the server with WIKILOC_ROUTES=0")  # no Wikiloc track fetches from the check
 
         # ---- login first (real auth API): logged out, the welcome wall covers the app; sign up through it ----
         wall = page.locator("#welcome")
@@ -1320,12 +1325,181 @@ def main() -> None:
         check_welcome(browser, errors)
         check_guide(browser, errors)  # closes its round and deletes its trips again
         check_insecure_share(p, errors)  # plain http on hick.test; cancels its round, deletes its trip
+        check_routes(browser, errors)  # deletes its trip again
         check_mobile(browser, errors)
         check_mobile_landscape(browser, errors)
         browser.close()
     if errors:
         raise SystemExit(f"FAIL page errors: {errors}")
     print("ALL UI CHECKS PASSED")
+
+
+def polyline(points: list[tuple[float, float]]) -> str:
+    """Google encoded polyline (precision 5) – what the server stores in Hike.route."""
+    out, prev = [], (0, 0)
+    for lat, lon in points:
+        cur = (round(lat * 1e5), round(lon * 1e5))
+        for delta in (cur[0] - prev[0], cur[1] - prev[1]):
+            value = ~(delta << 1) if delta < 0 else delta << 1
+            while value >= 0x20:
+                out.append(chr((0x20 | (value & 0x1F)) + 63))
+                value >>= 5
+            out.append(chr(value + 63))
+        prev = cur
+    return "".join(out)
+
+
+# Zagori-like tracks: a gorge traverse (start ≠ end → 🏁) and a loop (start = end → no 🏁).
+ROUTE_TRAVERSE = polyline([(39.882 + i * 0.0012, 20.749 - i * 0.0007 + (0.002 if i % 6 < 3 else 0)) for i in range(60)])
+ROUTE_LOOP = polyline([(39.905 + 0.01 * math.sin(i / 40 * 6.283), 20.80 + 0.014 * math.cos(i / 40 * 6.283) - 0.014)
+                       for i in range(41)])
+
+
+def check_routes(browser, errors: list[str]) -> None:
+    """🗺️ Hike tracks: a trip whose hikes carry `route` → Show on map draws each track (white casing under a coloured
+    line, ▶ start, 🏁 end when start ≠ end), clicking the line opens the hike popup, the map fits the tracks; a hike
+    without a track keeps its 🥾 pin, and one whose track the server finds later (lazy GET /api/hikes/{id}/route,
+    answered here by Playwright) swaps its pin for the line; the editor rows carry the line's colour dot; phone: the
+    same, tap on the line opens the popup. ROUTE_SHOTS=<folder> saves desktop + phone screenshots."""
+    shot_dir = os.environ.get("ROUTE_SHOTS")
+    lazy = polyline([(39.84 + i * 0.001, 20.70 + i * 0.0015) for i in range(30)])
+    lazy_calls: list[str] = []
+
+    def new_page(**kw):
+        kw.setdefault("viewport", {"width": 1400, "height": 900})
+        ctx = browser.new_context(**kw)
+        pg = ctx.new_page()
+        pg.on("pageerror", lambda exc: errors.append(str(exc)))
+
+        def lazy_answer(route):
+            lazy_calls.append(route.request.url)
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({"route": lazy}))
+        pg.route(re.compile(r".*/api/hikes/wikiloc(%3A|:)95/route$"), lazy_answer)
+        return ctx, pg
+
+    def shot(pg, name: str) -> None:
+        if shot_dir:
+            os.makedirs(shot_dir, exist_ok=True)
+            pg.screenshot(path=os.path.join(shot_dir, name))
+
+    def assert_drawn(pg, where: str) -> None:
+        pg.wait_for_function("state.routes.size === 3")  # 2 stored + the lazily found one
+        pg.wait_for_function("map.getBounds().contains(state.routes.get('wikiloc:91').line.getBounds())")  # the fit ran
+        info = pg.evaluate("""() => {
+            const routes = [...state.routes.entries()].map(([id, r]) => {
+                const [casing, line] = r.layers;
+                return { id, casing: [casing.options.color, casing.options.weight], line: [line.options.color, line.options.weight],
+                         inView: map.getBounds().contains(line.getBounds()), behind: routeLayer.hasLayer(casing) };
+            });
+            return { routes, ends: document.querySelectorAll('.route-end').length,
+                     starts: document.querySelectorAll('.route-start').length,
+                     pin93: state.markers.has('wikiloc:93'), pin95: state.markers.has('wikiloc:95'),
+                     pins: hikeLayer.getLayers().length, renderer: [...state.routes.values()][0].line.options.renderer.options.tolerance };
+        }""")
+        by_id = {r["id"]: r for r in info["routes"]}
+        assert set(by_id) == {"wikiloc:91", "wikiloc:92", "wikiloc:95"}, info
+        for r in info["routes"]:
+            assert r["casing"] == ["#fff", 8] and r["line"][1] == 5 and r["behind"], r
+        assert len({r["line"][0] for r in info["routes"]}) == 3, info  # distinct colours
+        assert by_id["wikiloc:91"]["inView"] and by_id["wikiloc:92"]["inView"], info  # the fit covers the stored tracks
+        assert info["starts"] == 3 and info["ends"] == 2, info  # the loop has no 🏁
+        assert info["pin93"] and not info["pin95"] and info["pins"] == 1, info  # only the trackless hike keeps its pin
+        assert info["renderer"] == 10, info
+        print(f"PASS {where}: tracks drawn (casing 8 px white + 5 px colour), ▶ ×3, 🏁 ×2 (not on the loop), "
+              "map fits the tracks; the trackless hike keeps its 🥾 pin; the lazily found track replaced its pin")
+
+    def click_line(pg, hike_id: str, name: str, tap: bool = False) -> None:
+        x, y = pg.evaluate("""(id) => {
+            const line = state.routes.get(id).line, pts = line.getLatLngs();
+            const p = map.latLngToContainerPoint(pts[Math.floor(pts.length / 2)]);
+            const box = map.getContainer().getBoundingClientRect();
+            return [box.left + p.x, box.top + p.y]; }""", hike_id)
+        if tap:
+            pg.touchscreen.tap(x + 4, y + 3)  # a few px off the line: the canvas tolerance catches it
+        else:
+            pg.mouse.click(x + 3, y + 2)
+        expect(pg.locator(".leaflet-popup-content strong")).to_have_text(name)
+        pg.evaluate("map.closePopup()")
+        expect(pg.locator(".leaflet-popup")).to_have_count(0)
+
+    seed = """(body) => fetch('/api/saved-trips', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body)}).then((r) => r.json())"""
+    ctx, pg = new_page()
+    pg.goto(BASE)
+    wall_sign_up(pg, "rita", "🦔")
+    trip = pg.evaluate(seed, {"name": "Zagori tracks", "stays": [{**STAY, "lat": 39.9, "lon": 20.76}], "hikes": [
+        {**HIKE, "id": "wikiloc:91", "name": "Vikos gorge traverse", "lat": 39.882, "lon": 20.749, "route": ROUTE_TRAVERSE},
+        {**HIKE, "id": "wikiloc:92", "name": "Beloi loop", "lat": 39.905, "lon": 20.80, "route": ROUTE_LOOP},
+        {**HIKE, "id": "wikiloc:93", "name": "Trackless walk", "lat": 39.87, "lon": 20.78},
+        {**HIKE, "id": "wikiloc:95", "name": "Found later", "lat": 39.84, "lon": 20.70}]})
+    assert [h.get("route") for h in trip["hikes"]] == [ROUTE_TRAVERSE, ROUTE_LOOP, None, None], trip["hikes"]
+    # The editor sends hikes without their routes (old cached page): stored routes stay.
+    put = pg.evaluate("""([id, body]) => fetch(`/api/saved-trips/${encodeURIComponent(id)}`, {method: 'PUT',
+        headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}).then((r) => r.json())""",
+                      [trip["id"], {**{k: trip[k] for k in ("name", "stays")},
+                                    "hikes": [{k: v for k, v in h.items() if k != "route"} for h in trip["hikes"]]}])
+    assert [bool(h.get("route")) for h in put["hikes"]] == [True, True, False, False], put["hikes"]
+    print("PASS routes are stored on the hikes; a PUT without them keeps the stored routes")
+
+    pg.click("#trips-btn")
+    pg.locator("#trips-list li", has_text="Zagori tracks").click()
+    expect(pg.locator("#trip-editor")).to_be_visible()
+    dots = pg.locator("#trip-hikes .route-dot")
+    expect(dots).to_have_count(2)
+    colours = [d.evaluate("(el) => getComputedStyle(el).backgroundColor") for d in dots.all()]
+    pg.click("#trip-show")
+    expect(pg.locator("#trips-dialog")).to_be_hidden()
+    assert_drawn(pg, "desktop Show on map")
+    line_colours = pg.evaluate("""() => ['wikiloc:91', 'wikiloc:92'].map((id) => {
+        const el = document.createElement('i'); el.style.color = state.routes.get(id).line.options.color;
+        document.body.appendChild(el); const c = getComputedStyle(el).color; el.remove(); return c; })""")
+    assert colours == line_colours, (colours, line_colours)
+    assert lazy_calls and all("wikiloc" in u and ("95" in u) for u in lazy_calls), lazy_calls
+    assert pg.locator("#hike-list .route-dot").count() == 3
+    print("PASS editor rows carry their line's colour dot; the list rows too; only hikes without a stored route "
+          f"were looked up ({len(lazy_calls)} lazy call(s), for wikiloc:95; wikiloc:93 got null from the server)")
+    click_line(pg, "wikiloc:91", "Vikos gorge traverse")
+    click_line(pg, "wikiloc:92", "Beloi loop")
+    pg.locator("#hike-list li", has_text="Beloi loop").click()  # the list row zooms to the track + its popup
+    expect(pg.locator(".leaflet-popup-content strong")).to_have_text("Beloi loop")
+    pg.evaluate("map.closePopup()")
+    expect(pg.locator(".leaflet-popup")).to_have_count(0)
+    pg.click("#trips-btn")
+    pg.locator("#trips-list li", has_text="Zagori tracks").click()
+    pg.click("#trip-show")
+    pg.wait_for_function("state.routes.size === 3")
+    pg.wait_for_timeout(600)  # tiles
+    shot(pg, "routes-desktop.png")
+    print("PASS clicking a track opens its hike popup; a list row focuses its track")
+
+    # A new search clears the tracks with the trip.
+    pg.evaluate("clearAll()")
+    assert pg.evaluate("state.routes.size === 0 && routeLayer.getLayers().length === 0")
+    print("PASS the tracks go with the trip (clearAll)")
+    ctx.close()
+
+    # ---- phone ----
+    phone = {"viewport": {"width": 390, "height": 844}, "has_touch": True, "is_mobile": True, "device_scale_factor": 3}
+    lazy_calls.clear()
+    ctx, pg = new_page(**phone)
+    pg.goto(BASE)
+    wall_log_in(pg, "rita")
+    pg.locator('#tabbar button[data-tab="trips"]').tap()
+    pg.locator("#trips-list li", has_text="Zagori tracks").tap()
+    expect(pg.locator("#trip-editor")).to_be_visible()
+    pg.locator("#trip-show").tap()
+    expect(pg.locator("#trips-dialog")).to_be_hidden()
+    assert_drawn(pg, "phone Show on map")
+    click_line(pg, "wikiloc:91", "Vikos gorge traverse", tap=True)
+    if pg.evaluate("document.documentElement.scrollWidth > innerWidth"):
+        raise SystemExit("FAIL side scroll on the phone with the tracks shown")
+    pg.wait_for_timeout(600)
+    shot(pg, "routes-phone.png")
+    print("PASS phone: the tracks + tap on a line (canvas tolerance) opens the popup; no side scroll")
+    status = pg.evaluate("(id) => fetch(`/api/saved-trips/${encodeURIComponent(id)}`, {method: 'DELETE'})"
+                         ".then((r) => r.status)", trip["id"])
+    assert status == 204, status
+    ctx.close()
 
 
 def check_voting(browser, errors: list[str]) -> None:
@@ -3048,7 +3222,8 @@ def check_guide(browser, errors: list[str]) -> None:
     trip_a = o.evaluate(seed, {
         "name": "Zagori stone villages", "start": "2026-11-13", "end": "2026-11-15", "guests": 4, "dog": True,
         "notes": "Vikos gorge on Saturday, <b>tsipouro</b> in Monodendri after.",
-        "hikes": [{**HIKE, "name": "Vikos Gorge traverse", "distance_km": 12.4, "elevation_gain_m": 750},
+        "hikes": [{**HIKE, "name": "Vikos Gorge traverse", "distance_km": 12.4, "elevation_gain_m": 750,
+                   "lat": 39.882, "lon": 20.749, "route": ROUTE_TRAVERSE},
                   {**HIKE2, "name": "Beloi viewpoint loop", "distance_km": 3.1, "elevation_gain_m": 120,
                    "difficulty": "Easy"}],
         "stays": [stay(1, "red", name="Archontiko Mikri Arktos", total_price=240, rating=4.9),
@@ -3191,6 +3366,12 @@ def check_guide(browser, errors: list[str]) -> None:
     expect(p.locator("#guide-pill-back")).to_have_text("← Back to voting (Trip 1 of 3)")
     assert p.evaluate("state.hikes.size") == 2 and p.evaluate("state.stays.size") == 2
     expect(p.locator("#stay-note")).to_have_text("in trip “Zagori stone villages”")
+    p.wait_for_function("state.routes.has('wikiloc:1') && map.getBounds().contains(state.routes.get('wikiloc:1').line.getBounds())")
+    drawn = p.evaluate("""() => { const r = state.routes.get('wikiloc:1');
+        return r && [r.layers[0].options.weight, r.line.options.weight, map.getBounds().contains(r.line.getBounds()),
+                     state.markers.has('wikiloc:1'), state.markers.has('wikiloc:2')]; }""")
+    assert drawn == [8, 5, True, False, True], drawn  # the track instead of its pin; the trackless hike keeps a pin
+    expect(p.locator(".route-end")).to_have_count(1)
     pill_box = pill.bounding_box()
     tab_box = p.locator("#tabbar").bounding_box()
     if not (pill_box["y"] + pill_box["height"] <= tab_box["y"] and pill_box["height"] >= 40):
@@ -3208,7 +3389,8 @@ def check_guide(browser, errors: list[str]) -> None:
     expect(p.locator('.g-rate-btn[data-rating="love"]')).to_have_attribute("aria-pressed", "true")
     expect(p.locator(".g-comment")).to_have_value("gorge! 🥾")
     p.wait_for_function("!(history.state?.phone || []).includes('guide')")  # the pill's entry stepped back over
-    print("PASS See on map → the trip on the map + Back pill above the tab bar → the same step, ratings intact")
+    print("PASS See on map → the trip on the map (its hike track drawn) + Back pill above the tab bar → the same step, "
+          "ratings intact")
 
     # The back gesture after See on map reopens the guide at the same step (still on the site); entries don't pile up.
     depth = p.evaluate("history.length")

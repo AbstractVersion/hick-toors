@@ -254,6 +254,7 @@ function renderTripItems() {
       tool("↑", "Move up", i === 0, () => moveItem(kind, i, -1));
       tool("↓", "Move down", i === items.length - 1, () => moveItem(kind, i, 1));
       tool("✕", "Remove", false, () => { items.splice(i, 1); renderTripItems(); });
+      if (kind === "hikes" && item.route) label.prepend(routeDot(routeColor(i)));  // the colour of its line on the map
       li.append(label);
       if (kind === "stays") li.append(priceField(item));
       li.append(tools);
@@ -499,7 +500,7 @@ function showTripOnMap(t = trips.current, name = $("trip-name").value.trim() || 
   if (!t) return;
   window.mobile?.showMap();  // phone: from the 📋 List tab too, the trip is shown on the map
   clearAll();
-  t.hikes.forEach(addHike);
+  t.hikes.forEach((h, i) => addHike(h, routeColor(i)));  // tracks in their colour; hikes without one keep the pin
   t.stays.forEach(addStay);
   const sightMarkers = showTripSights(t.sights || []);  // after clearAll, which empties the previous trip's sights
   state.comboView = true;  // clicking a trip hike must not replace its stays with a new search
@@ -508,7 +509,21 @@ function showTripOnMap(t = trips.current, name = $("trip-name").value.trim() || 
   $("stay-note").textContent = `in trip “${name}”`;
   notices([`Showing trip “${name}”`]);
   $("trips-dialog").close();
-  fitLayers([...hikeLayer.getLayers(), ...stayLayer.getLayers(), ...sightMarkers]);
+  fitLayers([...hikeLayer.getLayers(), ...routeLayer.getLayers(), ...stayLayer.getLayers(), ...sightMarkers]);
+  fillMissingRoutes(t);
+}
+// Hikes saved without a track: ask the server (its cache first) once per showing; a found track replaces the pin and
+// is kept on the trip object, so the editor's Save stores it and it is never looked up again.
+function fillMissingRoutes(t) {
+  const gen = state.hikeGen;
+  t.hikes.forEach(async (h, i) => {
+    if (h.route || !/^wikiloc:\d+$/.test(h.id)) return;
+    let data;
+    try { data = await api(`/api/hikes/${encodeURIComponent(h.id)}/route`); } catch { return; }
+    if (!data?.route || gen !== state.hikeGen) return;  // another trip / search is shown by now
+    h.route = data.route;
+    replacePinWithRoute(h, routeColor(i));
+  });
 }
 function resetDelete() {
   clearTimeout(trips.deleteTimer);

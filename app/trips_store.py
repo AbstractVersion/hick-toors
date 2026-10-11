@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.models import (MAX_TRIP_BYTES, MAX_TRIP_ITEMS, MAX_TRIP_SIGHTS, SavedTrip, SavedTripIn, SavedTripSummary,
-                        Sight, TripItemAdd, trip_size)
+                        Sight, TripItemAdd, trip_size, with_routes)
 
 MAX_ITEMS = MAX_TRIP_ITEMS
 MAX_SIGHTS = MAX_TRIP_SIGHTS
@@ -119,6 +119,8 @@ class TripStore:
                 return None
             if expected_updated_at is not None and expected_updated_at != old.updated_at:
                 raise TripConflict()  # aware datetimes compare by instant, whatever the offset
+            # A route, once stored, stays: an editor (or an old cached page) may send the hike without it.
+            data = with_routes(data, {h.id: h.route for h in old.hikes if h.route})
             trip = SavedTrip.model_validate({**data.model_dump(include=_TRIP_FIELDS), "id": old.id,
                                              "created_at": old.created_at, "updated_at": _now(),
                                              "created_by": old.created_by})
@@ -147,9 +149,13 @@ class TripStore:
                 return trip
             if len(items) >= limit:
                 raise TripFull(kind)
-            trip = trip.model_copy(update={kind: [*items, value], "updated_at": _now()})
-            if trip_size(trip) > MAX_TRIP_BYTES:
+            grown = trip.model_copy(update={kind: [*items, value], "updated_at": _now()})
+            if trip_size(grown) > MAX_TRIP_BYTES and kind == "hikes" and value.route:
+                value = value.model_copy(update={"route": None})  # the route is extra: keep the hike without it
+                grown = trip.model_copy(update={kind: [*items, value], "updated_at": _now()})
+            if trip_size(grown) > MAX_TRIP_BYTES:
                 raise TripTooLarge()
+            trip = grown
             self._save(db, trip)
         return trip
 

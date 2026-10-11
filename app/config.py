@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     hike_pages: int = 20  # 25 routes per Wikiloc request
     hike_pages_filtered: int = 30  # anonymous + hike filters: fetch up to 750 routes, filter locally
     wikiloc_concurrency: int = 4  # Wikiloc pages fetched in parallel
+    wikiloc_routes: bool = True  # WIKILOC_ROUTES=0: never fetch hike tracks (cache / stored routes only)
     wikiloc_cookie: str | None = Field(default=None, repr=False)  # WIKILOC_COOKIE: logged-in session cookie -> server-side filters
     max_hikes: int = 500
     trip_top_hikes: int = 5

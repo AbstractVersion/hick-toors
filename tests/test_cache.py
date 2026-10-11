@@ -57,10 +57,12 @@ def test_sweep_removes_expired_old_corrupt_and_stray_tmp(tmp_path):
     cache = DiskCache(tmp_path, clock=clock)
     cache.set("expired", 1, 10)
     cache.set("fresh", 2, 100 * DAY)
-    cache.set("old", 3, 100 * DAY)
-    _age(cache._path("old"), clock, 32 * DAY)  # longer than any TTL (geocoding: 30 days)
+    cache.set("old", 3, 400 * DAY)
+    _age(cache._path("old"), clock, 367 * DAY)  # longer than any TTL (hike routes: 365 days)
     cache.set("geocode", 4, 30 * DAY)
     _age(cache._path("geocode"), clock, 20 * DAY)  # long-lived entries are kept while unexpired
+    cache.set("route", 5, 365 * DAY)
+    _age(cache._path("route"), clock, 200 * DAY)
     (tmp_path / "corrupt.json").write_text("{not json")
     stray = tmp_path / "abc.123.tmp"
     stray.write_text("x")
@@ -70,7 +72,7 @@ def test_sweep_removes_expired_old_corrupt_and_stray_tmp(tmp_path):
     clock.now += 11
     assert cache.sweep() == 4
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
-        [cache._path("fresh").name, cache._path("geocode").name, writing.name])
+        [cache._path("fresh").name, cache._path("geocode").name, cache._path("route").name, writing.name])
     assert cache.get("fresh") == 2
 
 
