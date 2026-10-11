@@ -37,9 +37,9 @@ EMOJIS: tuple[str, ...] = (
     "🥥", "🥒", "🍔", "🍩", "🍺", "🦑", "🐧", "🦉", "🦜", "🐮",
     "🐵", "🦍", "🐼", "🐨", "🦘", "🦒", "🐘", "🦛", "🐫", "🦙",
     "🐢", "🐍", "🦎", "🦞", "🦐", "🪲", "🦋", "🐛", "🕷️", "🦂",
-    "🧌", "🧞", "🧜", "🧚", "👾", "☠️", "🤪", "🥴", "🤯", "🥳",
+    "🦃", "🧞", "🧜", "🧚", "👾", "☠️", "🤪", "🥴", "🤯", "🥳",
     "🍟", "🌭", "🥓", "🧇", "🍉", "🍍", "🍓", "🥔", "🧅", "🥦",
-    "🍦", "🧁", "🍪", "🥨", "🥐", "🍣", "🍜", "🥟", "🧄", "🪿",
+    "🍦", "🧁", "🍪", "🥨", "🥐", "🍣", "🍜", "🥟", "🧄", "🐒",
 )
 _EMOJI_SET = frozenset(EMOJIS)
 _USERNAME_RE = re.compile(r"[A-Za-z0-9_.-]{3,20}")
@@ -145,7 +145,11 @@ class AccountStore:
                        "id INTEGER PRIMARY KEY, username TEXT NOT NULL, username_key TEXT NOT NULL UNIQUE, "
                        "pw_hash TEXT NOT NULL, created_at TEXT NOT NULL, emoji TEXT)")
             if "emoji" not in {r[1] for r in db.execute("PRAGMA table_info(users)")}:
-                db.execute("ALTER TABLE users ADD COLUMN emoji TEXT")  # database from before emojis
+                try:
+                    db.execute("ALTER TABLE users ADD COLUMN emoji TEXT")  # database from before emojis
+                except sqlite3.OperationalError as exc:  # another process migrated in between
+                    if "duplicate column" not in str(exc).lower():
+                        raise
             db.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_emoji ON users (emoji) WHERE emoji IS NOT NULL")
             db.execute("CREATE TABLE IF NOT EXISTS sessions ("
                        "token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, expires_at TEXT NOT NULL)")

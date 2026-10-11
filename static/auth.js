@@ -43,6 +43,7 @@ auth.refreshUsers = async () => {
 function setAuthUser(user, emoji = null) {
   emoji = (user && emoji) || null;
   const changed = auth.user !== user || auth.emoji !== emoji;
+  if (auth.user !== user) auth.prompted = false;  // a different account may need the prompt
   auth.user = user;
   auth.emoji = emoji;
   const mapChanged = Boolean(user) && auth.users.get(user.toLowerCase()) !== emoji;
@@ -159,6 +160,7 @@ async function loadSignupPicker() {
   if (picker.owners.has(auth.signupEmoji)) auth.signupEmoji = null;  // someone took it meanwhile
   renderSignupPicker();
   updateAuthSubmit();
+  if (picker.emojis.length && picker.emojis.every((e) => picker.owners.has(e))) showAuthError("All emojis are taken");
 }
 function openAuthDialog(mode = "login") {
   setAuthMode(mode);

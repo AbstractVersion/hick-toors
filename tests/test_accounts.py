@@ -369,3 +369,66 @@ def test_database_from_before_emojis_migrates(tmp_path, clock):
         s.set_emoji("Older", "🌶️")
     s.signup("New", "password1", "1.1.1.1", "🍑")
     assert s.users() == [("New", "🍑"), ("Old", "🌶️"), ("Older", None)]
+
+
+def _old_schema_db(path):
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL, "
+                 "username_key TEXT NOT NULL UNIQUE, pw_hash TEXT NOT NULL, created_at TEXT NOT NULL)")
+    conn.commit()
+    conn.close()
+
+
+def test_migration_survives_another_process_adding_the_column(tmp_path, clock, monkeypatch):
+    path = tmp_path / "race.db"
+    _old_schema_db(path)
+    real_db = AccountStore._db
+
+    class Racy:  # after the PRAGMA check, "another process" adds the column
+        def __init__(self, conn): self.conn = conn
+        def execute(self, sql, *args):
+            cur = self.conn.execute(sql, *args)
+            if sql.startswith("PRAGMA table_info"):
+                rows = cur.fetchall()
+                other = sqlite3.connect(path)
+                other.execute("ALTER TABLE users ADD COLUMN emoji TEXT")
+                other.commit()
+                other.close()
+                return iter(rows)
+            return cur
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def racy_db(self):
+        with real_db(self) as conn:
+            yield Racy(conn)
+
+    monkeypatch.setattr(AccountStore, "_db", racy_db)
+    s = AccountStore(path, now=clock)  # the ALTER hits "duplicate column name" and carries on
+    monkeypatch.undo()
+    s.signup("New", "password1", "1.1.1.1", "🍑")
+    assert s.emoji_of("New") == "🍑"
+
+
+def test_migration_reraises_other_operational_errors(tmp_path, clock, monkeypatch):
+    path = tmp_path / "bad.db"
+    _old_schema_db(path)
+    real_db = AccountStore._db
+    from contextlib import contextmanager
+
+    class Failing:
+        def __init__(self, conn): self.conn = conn
+        def execute(self, sql, *args):
+            if sql.startswith("ALTER TABLE"):
+                raise sqlite3.OperationalError("database is locked")
+            return self.conn.execute(sql, *args)
+
+    @contextmanager
+    def failing_db(self):
+        with real_db(self) as conn:
+            yield Failing(conn)
+
+    monkeypatch.setattr(AccountStore, "_db", failing_db)
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        AccountStore(path, now=clock)

@@ -1671,6 +1671,29 @@ def check_emojis(browser, errors: list[str]) -> None:
     expect(prompt).to_be_visible()  # a new page load asks again
     p.keyboard.press("Escape")
     expect(prompt).to_be_hidden()
+    # The login FORM path: log out, ask for a gated action (it waits), log in as the emoji-less account through the
+    # form → the action runs and the prompt opens; a different emoji-less account on the same page load is asked too.
+    p.evaluate("window.ranPending = false")
+    p.click("#auth-logout")
+    expect(p.locator("#auth-login-btn")).to_be_visible()
+    p.evaluate("requireLogin(() => { window.ranPending = true; })")
+    expect(p.locator("#auth-dialog")).to_be_visible()
+    p.fill("#auth-username", "olga")
+    p.fill("#auth-password", "password1")
+    p.click("#auth-submit")
+    expect(prompt).to_be_visible()
+    expect(p.locator("#emoji-title")).to_have_text("Pick your emoji")
+    assert p.evaluate("window.ranPending") is True
+    p.click("#emoji-skip")
+    expect(prompt).to_be_hidden()
+    p.click("#auth-logout")  # same page load: logging out and in again asks again (prompted resets per user)
+    p.click("#auth-login-btn")
+    p.fill("#auth-username", "olga")
+    p.fill("#auth-password", "password1")
+    p.click("#auth-submit")
+    expect(prompt).to_be_visible()
+    p.keyboard.press("Escape")
+    expect(prompt).to_be_hidden()
     ctx_p.unroute("**/api/auth/me")
     ctx_p.unroute("**/api/users")
     p.click("#auth-name")
@@ -1678,8 +1701,8 @@ def check_emojis(browser, errors: list[str]) -> None:
     p.locator('#emoji-grid .emoji-btn[data-emoji="🐼"]').click()
     expect(prompt).to_be_hidden()
     expect(p.locator("#auth-area")).to_have_text("🐼 olga · Log out", use_inner_text=True)
-    print("PASS an account without an emoji gets the 'Pick your emoji' prompt once per page load, can skip it, shows 👤 "
-          "until it picks one")
+    print("PASS an account without an emoji gets the 'Pick your emoji' prompt once per page load (also after a login through "
+          "the form, with the pending action still run), can skip it, shows 👤 until it picks one")
     ctx_p.close()
     ctx_o.close()
     ctx_z.close()
