@@ -2454,7 +2454,8 @@ def check_overview(browser, errors: list[str]) -> None:
     ctx_a = logged_in("anna", viewport={"width": 1400, "height": 900})
     ctx_b = logged_in("bob")
     assert ctx_a and ctx_b, "anna / bob from the voting scenario should log in"
-    assert call(ctx_a, "GET", "/api/rounds/current") is None, "the overview scenario needs no open round"
+    current = call(ctx_a, "GET", "/api/rounds/current")
+    assert not current or current["status"] != "open", "the overview scenario needs no open round"
     long_name = "Overview trip two – a rather long name that has to wrap"
     t1 = call(ctx_a, "POST", "/api/saved-trips", {"name": "Overview trip one", "hikes": [HIKE], "stays": [STAY, BSTAY]})["id"]
     t2 = call(ctx_a, "POST", "/api/saved-trips", {"name": long_name, "hikes": [HIKE2], "stays": [STAY]})["id"]

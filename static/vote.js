@@ -771,7 +771,7 @@ function renderOverview(round) {
       th.append(vButton(open ? `▾ hide ${plural(more, "stay")}` : `▸ ${more} more ${more === 1 ? "stay" : "stays"}`,
         "link-btn ov-more", () => {
           vote.ovOpenStays.has(t.trip_id) ? vote.ovOpenStays.delete(t.trip_id) : vote.ovOpenStays.add(t.trip_id);
-          renderOverview(round);
+          renderOverview((vote.mode === "past" ? vote.past : vote.round) || round);  // the newest answer
         }));
       const filler = vEl("td");
       filler.colSpan = columns.length + 1;
