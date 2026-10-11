@@ -2,7 +2,8 @@ from datetime import date, datetime
 from math import isfinite
 from typing import Annotated, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
+from pydantic import (AwareDatetime, BaseModel, ConfigDict, Field, ValidationInfo, field_validator,
+                      model_validator)
 
 Badge = Literal["pets", "pets_garden", "garden", "garden_unconfirmed"]
 DriveLimit = Union[Annotated[int, Field(gt=0)], Literal["auto", "unlimited"]]
@@ -461,3 +462,122 @@ class TripItemAdd(BaseModel):
             raise ValueError("Give exactly one of hike, stay or sight")
         _check_item_numbers(given[0][1], given[0][0])
         return self
+
+
+# --- group voting rounds ---------------------------------------------------
+
+Rating = Literal["love", "ok", "nogo"]
+RoundStatus = Literal["open", "closed", "cancelled"]
+MAX_ROUND_TRIPS = 50
+
+
+class VoteIn(BaseModel):
+    """Body of PUT …/vote: a rating and an optional short comment (trimmed, empty → None)."""
+
+    rating: Rating
+    comment: str | None = Field(default=None, max_length=140)
+
+    @field_validator("comment", mode="before")
+    @classmethod
+    def _trim_comment(cls, value):
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return value
+
+
+class RoundIn(BaseModel):
+    """Body of POST /api/rounds. Deadline bounds and trip existence are checked by the store."""
+
+    title: str = Field(min_length=1, max_length=80)
+    closes_at: AwareDatetime
+    trip_ids: list[str] = Field(min_length=1, max_length=MAX_ROUND_TRIPS)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _strip_title(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+    _dedupe = field_validator("trip_ids")(_unique)
+
+
+class RoundPatch(BaseModel):
+    """Body of PATCH /api/rounds/{id} (opener only)."""
+
+    closes_at: AwareDatetime | None = None
+    add_trip_ids: list[str] = Field(default_factory=list, max_length=MAX_ROUND_TRIPS)
+
+
+class VoteOut(BaseModel):
+    username: str
+    rating: Rating
+    comment: str | None = None
+
+
+class Counts(BaseModel):
+    love: int = 0
+    ok: int = 0
+    nogo: int = 0
+
+
+class StayStanding(BaseModel):
+    stay_id: str
+    name: str
+    rank: int
+    score: int
+    counts: Counts
+    votes: list[VoteOut]
+    my_rating: Rating | None = None
+
+
+class TripStanding(BaseModel):
+    trip_id: str
+    name: str
+    rank: int
+    score: int
+    counts: Counts
+    votes: list[VoteOut]
+    my_rating: Rating | None = None
+    stays: list[StayStanding]
+
+
+class Me(BaseModel):
+    rated: int
+    total: int
+    love_trip_id: str | None = None
+
+
+class Winner(BaseModel):
+    trip_id: str
+    trip_name: str
+    stay_id: str | None = None
+    stay_name: str | None = None
+
+
+class RoundView(BaseModel):
+    id: str
+    title: str
+    opener: str
+    status: RoundStatus
+    created_at: datetime
+    closes_at: datetime
+    closed_at: datetime | None = None
+    trips: list[TripStanding]
+    waiting_for: list[str]
+    me: Me | None = None
+    winner: Winner | None = None
+
+
+class RoundSummary(BaseModel):
+    id: str
+    title: str
+    status: RoundStatus
+    opener: str
+    closes_at: datetime
+    closed_at: datetime | None = None
+    winner_name: str | None = None
+
+
+class VoteResult(BaseModel):
+    round: RoundView
+    moved_love_from: str | None = None
