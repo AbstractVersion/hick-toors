@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 from app.config import Settings
 from app.main import create_app
 from app.trips_store import TripStore
+from tests.builders import login_client
 from tests.test_api import FakeAsk, FakeEngine
 
 HIKE = {"id": "wikiloc:1", "name": "Vikos Gorge", "url": "https://es.wikiloc.com/v", "lat": 39.9, "lon": 20.7}
@@ -14,8 +15,8 @@ STAY = {"id": "airbnb:1", "source": "airbnb", "name": "Stone house", "url": "htt
 def make(tmp_path):
     settings = Settings(_env_file=None, cache_dir=tmp_path, trips_db=tmp_path / "unused.db")
     store = TripStore(tmp_path / "trips.db")
-    return TestClient(create_app(engine=FakeEngine(), ask_runner=FakeAsk(), settings=settings,
-                                 trip_store=store)), store
+    return login_client(TestClient(create_app(engine=FakeEngine(), ask_runner=FakeAsk(), settings=settings,
+                                              trip_store=store))), store
 
 
 def test_crud_flow(tmp_path):
@@ -117,7 +118,8 @@ def test_size_caps(tmp_path):
 def test_trip_count_cap(tmp_path):
     settings = Settings(_env_file=None, cache_dir=tmp_path, trips_db=tmp_path / "unused.db")
     store = TripStore(tmp_path / "trips.db", max_trips=2)
-    c = TestClient(create_app(engine=FakeEngine(), ask_runner=FakeAsk(), settings=settings, trip_store=store))
+    c = login_client(TestClient(create_app(engine=FakeEngine(), ask_runner=FakeAsk(), settings=settings,
+                                           trip_store=store)))
     assert [c.post("/api/saved-trips", json={"name": f"t{i}"}).status_code for i in range(2)] == [201, 201]
     r = c.post("/api/saved-trips", json={"name": "t3"})
     assert r.status_code == 409
@@ -176,7 +178,7 @@ def test_print_page(tmp_path):
 
 def test_default_store_uses_settings_path(tmp_path):
     settings = Settings(_env_file=None, cache_dir=tmp_path, trips_db=tmp_path / "d" / "trips.db")
-    c = TestClient(create_app(engine=FakeEngine(), ask_runner=FakeAsk(), settings=settings))
+    c = login_client(TestClient(create_app(engine=FakeEngine(), ask_runner=FakeAsk(), settings=settings)))
     c.post("/api/saved-trips", json={"name": "t"})
     assert (tmp_path / "d" / "trips.db").exists()
 

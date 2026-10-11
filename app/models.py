@@ -417,6 +417,7 @@ class SavedTrip(SavedTripIn):
     id: str
     created_at: datetime
     updated_at: datetime
+    created_by: str | None = None  # username; server-set on create, never taken from a request body
 
 
 class SavedTripSummary(BaseModel):
@@ -429,6 +430,7 @@ class SavedTripSummary(BaseModel):
     stay_count: int
     sight_count: int = 0
     updated_at: datetime
+    created_by: str | None = None
 
 
 class NearbySightsIn(BaseModel):

@@ -7,6 +7,7 @@ from app.cache import DiskCache
 from app.config import Settings
 from app.engine import NATURE_GREECE_ONLY, NATURE_UNAVAILABLE, NEARBY_MAX_TILES, NEARBY_SPREAD, Engine
 from app.main import create_app
+from tests.builders import login_client
 from app.models import Hike, Sight, Stay
 from app.sources.nature import NatureUnavailable, Tile
 
@@ -51,7 +52,7 @@ def settings(tmp_path):
 
 def make_client(settings, nature):
     engine = Engine(settings, None, [], None, None, DiskCache(settings.cache_dir), nature=nature)
-    return TestClient(create_app(engine=engine, ask_runner=object(), settings=settings))
+    return login_client(TestClient(create_app(engine=engine, ask_runner=object(), settings=settings)))
 
 
 def new_trip(c, **fields):
@@ -193,7 +194,7 @@ def test_nearby_sights_full_trip_skips_fetching(settings):
 def test_nearby_sights_limits_429(settings):
     engine = Engine(settings, None, [], None, None, DiskCache(settings.cache_dir), nature=FakeNature())
     app = create_app(engine=engine, ask_runner=object(), settings=settings)
-    c = TestClient(app)
+    c = login_client(TestClient(app))
     limits = app.state.nearby
     now = {"t": 1000.0}
     limits.clock = lambda: now["t"]

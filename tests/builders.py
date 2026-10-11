@@ -109,3 +109,10 @@ def airbnb_room_html(name="Bezeniko Amazing Arcadian Property!", lat=37.71914, l
     return (f'<html><head><meta property="og:title" content="{og_title}"/>'
             '<meta property="og:image" content="https://a0.muscache.com/og.jpeg?im_w=720&amp;width=720"/>'
             f"{scripts}</head><body><script>{blob}</script></body></html>")
+
+
+def login_client(client, username="nikos", password="password1"):
+    """Sign `username` up through the API; the TestClient keeps the session cookie."""
+    r = client.post("/api/auth/signup", json={"username": username, "password": password})
+    assert r.status_code == 201, r.text
+    return client

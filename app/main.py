@@ -4,13 +4,15 @@ from contextlib import asynccontextmanager, suppress
 from datetime import date
 from math import isfinite
 
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.accounts import AccountStore, User
 from app.ask import AskRequest, AskResult, AskRunner
+from app.auth_routes import auth_router, require_user
 from app.cache import DAY
 from app.config import BASE_DIR, Settings
 from app.engine import StayLookupFailed, lookup_stay_link, nature_box, nature_groups
@@ -49,26 +51,36 @@ def _json_safe(value):
     return value
 
 
-async def sweep_cache_daily(cache, interval: float = DAY) -> None:
-    """Sweep the disk cache now and then every `interval` seconds, in a thread; errors are only logged."""
+async def sweep_cache_daily(cache, interval: float = DAY, accounts=None) -> None:
+    """Sweep the disk cache (if any) and expired sessions now and then every `interval` seconds, in a thread;
+    errors are only logged."""
     while True:
-        try:
-            removed = await asyncio.to_thread(cache.sweep)
-            print(f"cache sweep removed {removed} files", file=sys.stderr)
-        except Exception as exc:
-            print(f"cache sweep failed: {exc!r}", file=sys.stderr)
+        if cache is not None:
+            try:
+                removed = await asyncio.to_thread(cache.sweep)
+                print(f"cache sweep removed {removed} files", file=sys.stderr)
+            except Exception as exc:
+                print(f"cache sweep failed: {exc!r}", file=sys.stderr)
+        if accounts is not None:
+            try:
+                removed = await asyncio.to_thread(accounts.sweep_sessions)
+                print(f"session sweep removed {removed} sessions", file=sys.stderr)
+            except Exception as exc:
+                print(f"session sweep failed: {exc!r}", file=sys.stderr)
         await asyncio.sleep(interval)
 
 
 def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
-               trip_store: TripStore | None = None) -> FastAPI:
+               trip_store: TripStore | None = None, accounts: AccountStore | None = None) -> FastAPI:
     settings = settings or Settings()
     engine = engine or build_engine(settings)
     cache = getattr(engine, "cache", None)
+    cache = cache if hasattr(cache, "sweep") else None
+    accounts = accounts or AccountStore(settings.trips_db)
 
     @asynccontextmanager
     async def lifespan(app):
-        task = asyncio.create_task(sweep_cache_daily(cache)) if hasattr(cache, "sweep") else None
+        task = asyncio.create_task(sweep_cache_daily(cache, accounts=accounts))
         try:
             yield
         finally:
@@ -83,6 +95,8 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
     app.state.ask = ask_runner
     trip_store = trip_store or TripStore(settings.trips_db)
     app.state.trips = trip_store
+    app.state.accounts = accounts
+    app.include_router(auth_router(accounts))
     nearby_limits = NearbyLimits()
     app.state.nearby = nearby_limits
 
@@ -162,9 +176,9 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
         return trip_store.list_trips()
 
     @app.post("/api/saved-trips", response_model=SavedTrip, status_code=201)
-    def create_saved_trip(body: SavedTripIn):
+    def create_saved_trip(body: SavedTripIn, user: User = Depends(require_user)):
         try:
-            return trip_store.create(body)
+            return trip_store.create(body, created_by=user.username)
         except TooManyTrips:
             raise HTTPException(status_code=409, detail="At most 500 saved trips – delete some first")
 
@@ -173,7 +187,7 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
         return found(trip_store.get(trip_id))
 
     @app.put("/api/saved-trips/{trip_id}", response_model=SavedTrip)
-    def replace_saved_trip(trip_id: str, body: SavedTripUpdate):
+    def replace_saved_trip(trip_id: str, body: SavedTripUpdate, user: User = Depends(require_user)):
         try:
             return found(trip_store.replace(trip_id, body, expected_updated_at=body.expected_updated_at))
         except TripConflict:
@@ -181,13 +195,13 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
                                 detail="Trip changed elsewhere – reopen it to see the latest version")
 
     @app.delete("/api/saved-trips/{trip_id}", status_code=204)
-    def delete_saved_trip(trip_id: str):
+    def delete_saved_trip(trip_id: str, user: User = Depends(require_user)):
         if not trip_store.delete(trip_id):
             raise HTTPException(status_code=404, detail="Trip not found")
         return Response(status_code=204)
 
     @app.post("/api/saved-trips/{trip_id}/items", response_model=SavedTrip)
-    def add_saved_trip_item(trip_id: str, body: TripItemAdd):
+    def add_saved_trip_item(trip_id: str, body: TripItemAdd, user: User = Depends(require_user)):
         try:
             return found(trip_store.add_item(trip_id, body))
         except TripFull as full:
@@ -197,7 +211,8 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
             raise HTTPException(status_code=413, detail=TRIP_TOO_LARGE)
 
     @app.post("/api/saved-trips/{trip_id}/nearby-sights", response_model=NearbySightsResult)
-    async def add_nearby_sights(trip_id: str, body: NearbySightsIn | None = None):
+    async def add_nearby_sights(trip_id: str, body: NearbySightsIn | None = None,
+                                user: User = Depends(require_user)):
         radius = (body or NearbySightsIn()).radius_km
         trip = found(await asyncio.to_thread(trip_store.get, trip_id))
         points = [LatLon(lat=item.lat, lon=item.lon) for item in [*trip.hikes, *trip.stays]]

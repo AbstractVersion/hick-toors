@@ -91,17 +91,18 @@ class TripStore:
         trips = [t for t in (self._parse(trip_id, doc) for trip_id, doc in rows) if t is not None]
         return [SavedTripSummary(id=t.id, name=t.name, start=t.start, end=t.end, source=t.source,
                                  hike_count=len(t.hikes), stay_count=len(t.stays), sight_count=len(t.sights),
-                                 updated_at=t.updated_at)
+                                 updated_at=t.updated_at, created_by=t.created_by)
                 for t in trips]
 
     def get(self, trip_id: str) -> SavedTrip | None:
         with self._db() as db:
             return self._load(db, trip_id)
 
-    def create(self, data: SavedTripIn) -> SavedTrip:
+    def create(self, data: SavedTripIn, created_by: str | None = None) -> SavedTrip:
         now = _now()
         trip = SavedTrip.model_validate({**data.model_dump(include=_TRIP_FIELDS), "id": uuid.uuid4().hex,
-                                         "created_at": now, "updated_at": now})
+                                         "created_at": now, "updated_at": now,
+                                         "created_by": created_by})
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")  # lock before counting: the cap holds under concurrency
             if db.execute("SELECT COUNT(*) FROM trips").fetchone()[0] >= self.max_trips:
@@ -119,7 +120,8 @@ class TripStore:
             if expected_updated_at is not None and expected_updated_at != old.updated_at:
                 raise TripConflict()  # aware datetimes compare by instant, whatever the offset
             trip = SavedTrip.model_validate({**data.model_dump(include=_TRIP_FIELDS), "id": old.id,
-                                             "created_at": old.created_at, "updated_at": _now()})
+                                             "created_at": old.created_at, "updated_at": _now(),
+                                             "created_by": old.created_by})
             self._save(db, trip)
         return trip
 
