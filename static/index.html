@@ -11,11 +11,42 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+  <!-- Login first: covers the app until /api/auth/me says who is logged in (shown from the first paint, so the app
+       never flashes); auth.js hides it after log in / sign up and shows it again after log out. -->
+  <div id="welcome" class="welcome loading" role="dialog" aria-modal="true" aria-labelledby="welcome-title">
+    <div class="welcome-card">
+      <h1 id="welcome-title" class="welcome-brand">🥾 hick-toors</h1>
+      <p class="welcome-tagline">Plan hikes and vote on trips with your friends</p>
+      <div id="welcome-invite" class="welcome-invite"></div>
+      <div id="welcome-loading" class="welcome-loading" role="status"><span class="spinner"></span> Loading…</div>
+      <form id="auth-form" class="auth-form" novalidate hidden>
+        <div class="auth-tabs" role="tablist">
+          <button type="button" id="auth-tab-login" role="tab" aria-selected="true">Log in</button>
+          <button type="button" id="auth-tab-signup" role="tab" aria-selected="false">Sign up</button>
+        </div>
+        <label>Username <input id="auth-username" autocomplete="username" maxlength="20" spellcheck="false" autocapitalize="off"></label>
+        <label>Password <input id="auth-password" type="password" autocomplete="current-password" maxlength="200"></label>
+        <label id="auth-repeat-row" hidden>Repeat password <input id="auth-repeat" type="password" autocomplete="new-password" maxlength="200"></label>
+        <div id="auth-emoji-row" class="emoji-row" hidden>
+          <div id="auth-emoji-label" class="emoji-label">Your emoji<span id="auth-emoji-picked"></span></div>
+          <div id="auth-emoji-grid" class="emoji-grid" role="group" aria-labelledby="auth-emoji-label"></div>
+        </div>
+        <p id="auth-error" class="form-error" role="alert"></p>
+        <div class="dlg-actions"><button type="submit" id="auth-submit" class="primary">Log in</button></div>
+      </form>
+    </div>
+  </div>
   <header id="controls">
     <strong class="brand">🥾 hick-toors</strong>
     <span class="goto">📍 <input type="text" id="goto-input" maxlength="200" placeholder="Go to place… (Greek or English)">
       <button type="button" id="goto-btn" class="tool-btn">Go</button>
       <span class="spinner" data-spin="goto" role="status" aria-label="Looking up place" hidden></span></span>
+    <button type="button" id="account-btn" class="tool-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="account-menu" hidden></button>
+    <div id="account-menu" class="account-menu" role="menu" aria-labelledby="account-btn" hidden>
+      <div id="account-menu-name" class="account-menu-name"></div>
+      <button type="button" id="account-emoji" role="menuitem">Change emoji</button>
+      <button type="button" id="account-logout" role="menuitem">Log out</button>
+    </div>
     <button type="button" id="menu-btn" class="tool-btn" aria-label="Search controls" aria-expanded="false" aria-controls="controls-more">☰</button>
     <div id="controls-more">
       <div class="panel-head"><h2>🥾 Search</h2>
@@ -51,6 +82,10 @@
       </span>
     </div>
   </header>
+  <div id="round-banner" class="round-banner" role="status" hidden>
+    <span id="round-banner-text" class="round-banner-text"></span>
+    <button type="button" id="round-banner-action" class="primary"></button>
+  </div>
   <div id="notices"></div>
   <main>
     <aside id="sidebar">
@@ -135,25 +170,6 @@
       </div>
     </form>
   </dialog>
-  <dialog id="auth-dialog" class="auth-dialog" aria-labelledby="auth-title">
-    <form id="auth-form" novalidate>
-      <div class="dlg-head"><h2 id="auth-title">👤 Log in</h2>
-        <button type="button" id="auth-close" class="tool-btn" aria-label="Close">✕</button></div>
-      <div class="auth-tabs" role="tablist">
-        <button type="button" id="auth-tab-login" role="tab" aria-selected="true">Log in</button>
-        <button type="button" id="auth-tab-signup" role="tab" aria-selected="false">Sign up</button>
-      </div>
-      <label>Username <input id="auth-username" autocomplete="username" maxlength="20" spellcheck="false" autocapitalize="off"></label>
-      <label>Password <input id="auth-password" type="password" autocomplete="current-password" maxlength="200"></label>
-      <label id="auth-repeat-row" hidden>Repeat password <input id="auth-repeat" type="password" autocomplete="new-password" maxlength="200"></label>
-      <div id="auth-emoji-row" class="emoji-row" hidden>
-        <div id="auth-emoji-label" class="emoji-label">Your emoji<span id="auth-emoji-picked"></span></div>
-        <div id="auth-emoji-grid" class="emoji-grid" role="group" aria-labelledby="auth-emoji-label"></div>
-      </div>
-      <p id="auth-error" class="form-error" role="alert"></p>
-      <div class="dlg-actions"><button type="submit" id="auth-submit" class="primary">Log in</button></div>
-    </form>
-  </dialog>
   <dialog id="emoji-dialog" class="auth-dialog emoji-dialog" aria-labelledby="emoji-title">
     <div class="dlg-head"><h2 id="emoji-title">Change emoji</h2>
       <button type="button" id="emoji-close" class="tool-btn" aria-label="Close">✕</button></div>
@@ -197,6 +213,7 @@
   <script src="/static/auth.js"></script>
   <script src="/static/trips.js"></script>
   <script src="/static/vote.js"></script>
+  <script src="/static/banner.js"></script>
   <script src="/static/mobile.js"></script>
 </body>
 </html>

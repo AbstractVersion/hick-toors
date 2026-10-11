@@ -79,6 +79,8 @@ function setBadge(round) {
   $("vote-left").textContent = open ? ` · ${left} left` : "";
   $("vote-left").hidden = !open;
   $("vote-btn").classList.toggle("has-left", Boolean(open) && left > 0);
+  // banner.js: every round answer (60 s badge poll, dialog polls, votes, opener actions) also feeds the banner.
+  document.dispatchEvent(new CustomEvent("round-changed", { detail: round || null }));
 }
 async function refreshBadge() {
   try { setBadge(await api("/api/rounds/current")); } catch { /* keep the last badge */ }

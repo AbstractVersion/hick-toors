@@ -36,9 +36,10 @@ window.mobile = (() => {
   // While the ☰ panel is open it is a modal dialog: everything behind it is inert (no Tab, no taps); closing it
   // gives the focus back to ☰. ☰ only exists on phones, so on desktop the panel stays plain header content.
   const panel = $("controls-more");
-  const behindPanel = () => [document.querySelector("#controls .goto"), $("menu-btn"), $("notices"),
-    document.querySelector("main"), $("ask"), $("tabbar")];
+  const behindPanel = () => [document.querySelector("#controls .goto"), $("account-btn"), $("menu-btn"),
+    $("round-banner"), $("notices"), document.querySelector("main"), $("ask"), $("tabbar")];
   function openMenu() {
+    window.closeAccountMenu?.();
     body.classList.add("menu-open");
     panel.setAttribute("role", "dialog");
     panel.setAttribute("aria-modal", "true");
@@ -163,6 +164,7 @@ window.mobile = (() => {
     window.cancelDrawing?.();
     closeMenu();
     window.closeTripMenu?.();
+    window.closeAccountMenu?.();
     setView("map");
     syncHistory();
   });
