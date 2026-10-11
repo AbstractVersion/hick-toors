@@ -1,0 +1,6 @@
+# Front door for hick-toors. SITE_ADDRESS is a domain on a public server (Caddy then gets and renews a
+# Let's Encrypt certificate and redirects http → https), or ":80" for plain http locally (the default).
+{$SITE_ADDRESS::80} {
+	encode zstd gzip
+	reverse_proxy hick-toors:8000
+}

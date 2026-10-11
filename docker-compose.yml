@@ -3,9 +3,9 @@ services:
     build: .
     image: hick-toors:local
     container_name: hick-toors
-    ports:
-      # Published on the machine's port 80 by default; override with HICK_TOORS_PORT=8080.
-      - "${HICK_TOORS_PORT:-80}:8000"
+    # Only reachable through Caddy (it passes the visitor's address on, so per-address limits keep working).
+    expose:
+      - "8000"
     env_file:
       # Optional: ORS_API_KEY, WIKILOC_COOKIE, HOME_* … (see .env.example). Never baked into the image.
       - path: .env
@@ -15,6 +15,26 @@ services:
       - hick-data:/app/data   # saved trips (SQLite) – survives rebuilds
     restart: unless-stopped
 
+  caddy:
+    image: caddy:2.8.4
+    container_name: hick-toors-caddy
+    ports:
+      # Plain http on the machine's port 80 by default (override with HICK_TOORS_PORT=8080). On a public
+      # server set SITE_ADDRESS to its domain (e.g. in docker-compose.override.yml) to get https on 443.
+      - "${HICK_TOORS_PORT:-80}:80"
+      - "${HICK_TOORS_HTTPS_PORT:-443}:443"
+    environment:
+      SITE_ADDRESS: "${SITE_ADDRESS:-:80}"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data       # certificates – keep them across restarts (Let's Encrypt rate limits)
+      - caddy-config:/config
+    depends_on:
+      - hick-toors
+    restart: unless-stopped
+
 volumes:
   hick-cache:
   hick-data:
+  caddy-data:
+  caddy-config:

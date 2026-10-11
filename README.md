@@ -23,6 +23,21 @@ docker compose logs -f      # follow logs
 docker compose down         # stop (keeps both volumes: search cache `hick-cache` and saved trips `hick-data`)
 ```
 
+Compose runs two containers: the app and **Caddy** in front of it (the app itself is not published). Locally
+Caddy serves plain http on port 80. **On a public server with a domain** point the domain at the machine,
+open ports 80 and 443, and create `docker-compose.override.yml` next to `docker-compose.yml`:
+
+```yaml
+services:
+  caddy:
+    environment:
+      SITE_ADDRESS: your.domain.example
+```
+
+then `docker compose up -d --build`: Caddy gets a Let's Encrypt certificate (kept in the `caddy-data`
+volume and renewed automatically) and redirects http to https. https also makes the 📤 Share button and
+one-tap copy work on phones.
+
 The **Ask Claude** box is unavailable inside the container (it needs your local, logged-in
 `claude` CLI) — use the non-Docker run above for that. Everything else works the same.
 
