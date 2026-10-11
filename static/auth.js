@@ -45,14 +45,13 @@ function setAuthUser(user, emoji = null) {
   const changed = auth.user !== user || auth.emoji !== emoji;
   auth.user = user;
   auth.emoji = emoji;
-  if (user && auth.users.get(user.toLowerCase()) !== emoji) {
-    auth.users.set(user.toLowerCase(), emoji);
-    if (!changed) document.dispatchEvent(new CustomEvent("users-changed"));
-  }
+  const mapChanged = Boolean(user) && auth.users.get(user.toLowerCase()) !== emoji;
+  if (mapChanged) auth.users.set(user.toLowerCase(), emoji);
   $("auth-login-btn").hidden = Boolean(user);
   $("auth-user").hidden = !user;
   $("auth-name").textContent = user ? `${emoji || NO_EMOJI} ${user}` : "";
   if (changed) document.dispatchEvent(new CustomEvent("auth-changed"));
+  if (mapChanged) document.dispatchEvent(new CustomEvent("users-changed"));  // our own name's label changed
 }
 // GET /api/auth/me. prompt: an account without an emoji gets the picker (once per page load).
 auth.refresh = async (prompt = true) => {

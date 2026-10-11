@@ -148,9 +148,10 @@ async function reloadTripList() {
 }
 async function openTripsDialog() {
   showTripsError("");
-  auth.refreshUsers();  // creators' emojis; "users-changed" redraws the names
+  const users = auth.refreshUsers();  // creators' emojis, fetched while the dialog opens (never throws)
   showTripList();
   if (!$("trips-dialog").open) $("trips-dialog").showModal();
+  await users;
   await reloadTripList();
 }
 function tripDates(t) {
@@ -398,14 +399,7 @@ async function findNearbySights() {
     renderTripItems();
     showSightsInfo([res.added > 0 ? `Added ${plural(res.added, "new sight")} (${res.found} found within ${NEARBY_KM} km)`
       : `No new named sights within ${NEARBY_KM} km`, ...(res.warnings || [])]);
-    // Names carry their emoji (auth.label): redraw them when the users map changes.
-document.addEventListener("users-changed", () => {
-  if (!$("trips-dialog").open) return;
-  if (!$("trip-editor").hidden && trips.current) showCreatedBy(trips.current);
-  else if ($("trips-list").contains(document.activeElement)) return;  // keep the keyboard focus; next open redraws
-  else renderTripList(trips.list);
-});
-refreshTrips().catch(() => {});  // only the list count: the sights are saved, don't report a failure here
+    refreshTrips().catch(() => {});  // only the list count: the sights are saved, don't report a failure here
   } catch (err) {
     if (editorOpen(tripId)) showTripsError(err.message);
   } finally {
@@ -553,5 +547,17 @@ $("trip-airbnb-url").addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;
   event.preventDefault();  // Enter here adds the link; it must not submit (save) the editor form
   requireLogin(addAirbnbLink);
+});
+// Names carry their emoji (auth.label): redraw them when the users map changes (a keyboard-focused row keeps it).
+document.addEventListener("users-changed", () => {
+  if (!$("trips-dialog").open) return;
+  if (!$("trip-editor").hidden) {
+    if (trips.current) showCreatedBy(trips.current);
+    return;
+  }
+  const rows = [...$("trips-list").children];
+  const focused = rows.indexOf(document.activeElement);
+  renderTripList(trips.list);
+  if (focused >= 0) $("trips-list").children[focused]?.focus();
 });
 refreshTrips().catch(() => { $("trips-count").textContent = ""; });

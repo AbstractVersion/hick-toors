@@ -1586,8 +1586,7 @@ def check_emojis(browser, errors: list[str]) -> None:
     expect(o.locator("#auth-area")).to_have_text("🐸 zoe · Log out", use_inner_text=True)
     o.click("#trips-btn")
     zed_row = o.locator("#trips-list li", has_text="Emoji trip")
-    expect(zed_row).to_contain_text("by 🐙 zed")
-    o.click("#trips-close")
+    expect(zed_row).to_contain_text("by 🐙 zed")  # zoe's list stays open while zed changes his emoji
 
     z.click("#auth-name")
     dlg = z.locator("#emoji-dialog")
@@ -1610,14 +1609,32 @@ def check_emojis(browser, errors: list[str]) -> None:
     expect(z.locator('#emoji-grid .emoji-btn[data-emoji="🐙"]')).not_to_have_attribute("aria-disabled", "true")
     z.click("#emoji-close")
     expect(dlg).to_be_hidden()
-    o.click("#trips-btn")
+    o.evaluate("auth.refreshUsers()")  # what a vote poll / log in does: the open list redraws, no reopening
     expect(zed_row).to_contain_text("by 🦄 zed")
+    zed_row.click()
+    expect(o.locator("#trip-created-by")).to_have_text("Created by 🦄 zed")
+    # zed changes his own emoji over his open trip editor (as the after-login prompt would): "Created by" follows,
+    # and zoe's open editor follows on her next users refresh.
+    z.click("#trips-btn")
+    z.locator("#trips-list li", has_text="Emoji trip").click()
+    expect(z.locator("#trip-created-by")).to_have_text("Created by 🦄 zed")
+    z.evaluate("openEmojiDialog(false)")
+    z.locator('#emoji-grid .emoji-btn[data-emoji="🐙"]').click()
+    expect(dlg).to_be_hidden()
+    expect(z.locator("#trips-dialog")).to_be_visible()
+    expect(z.locator("#trip-created-by")).to_have_text("Created by 🐙 zed")
+    z.click("#trips-close")
+    o.evaluate("auth.refreshUsers()")
+    expect(o.locator("#trip-created-by")).to_have_text("Created by 🐙 zed")
+    o.click("#trips-close")
+    o.click("#trips-btn")  # reopening loads the users map before drawing the list
+    expect(zed_row).to_contain_text("by 🐙 zed")
     o.click("#trips-close")
     status = z.evaluate("(id) => fetch(`/api/saved-trips/${encodeURIComponent(id)}`, {method: 'DELETE'})"
                         ".then((r) => r.status)", trip_id)
     assert status in (200, 204), status
     print("PASS Change emoji from the header name: own one highlighted, taken ones say who, 🦄 saved; "
-          "another browser's trips list shows the new emoji")
+          "open trips lists / editors (own and another browser's) redraw with the new emoji")
 
     # An account from before emojis: /api/auth/me says emoji null → the prompt opens once per page load, skippable;
     # it shows 👤 until it picks.
@@ -1645,7 +1662,7 @@ def check_emojis(browser, errors: list[str]) -> None:
     expect(prompt).to_be_hidden()
     p.wait_for_timeout(500)
     expect(prompt).to_be_hidden()  # once per page load
-    assert p.evaluate("[auth.label('olga'), auth.label('zed'), auth.label('nobody')]") == ["👤 olga", "🦄 zed", "👤 nobody"]
+    assert p.evaluate("[auth.label('olga'), auth.label('zed'), auth.label('nobody')]") == ["👤 olga", "🐙 zed", "👤 nobody"]
     p.click("#trips-btn")  # names render without an emoji too
     expect(p.locator("#trips-dialog")).to_be_visible()
     p.click("#trips-close")
