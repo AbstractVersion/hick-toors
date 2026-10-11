@@ -56,7 +56,7 @@ def auth_router(accounts: AccountStore) -> APIRouter:
     @router.post("/login")
     def login(body: Credentials, request: Request, response: Response):
         try:
-            username = accounts.login(body.username, body.password)
+            username = accounts.login(body.username, body.password, client_ip(request))
         except LoginLocked:
             raise HTTPException(status_code=429, detail="Too many attempts – wait a minute")
         except BadCredentials:

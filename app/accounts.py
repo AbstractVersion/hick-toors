@@ -22,6 +22,10 @@ MAX_USERS = 200
 SIGNUPS_PER_IP_HOUR = 10
 LOCK_AFTER_FAILURES = 5
 LOCK_SECONDS = 60
+LOGINS_PER_IP_WINDOW = 30
+LOGIN_IP_WINDOW = timedelta(minutes=10)
+SIGNUP_IP_WINDOW = timedelta(hours=1)
+SCRYPT_SLOTS = 4  # ~16 MiB each: caps hashing RAM/CPU however many requests arrive
 _USERNAME_RE = re.compile(r"[A-Za-z0-9_.-]{3,20}")
 _SCRYPT = (2 ** 14, 8, 1)
 
@@ -61,8 +65,12 @@ def _stamp(moment: datetime) -> str:
     return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
+_scrypt_slots = threading.BoundedSemaphore(SCRYPT_SLOTS)
+
+
 def _scrypt(password: str, salt: bytes, n: int, r: int, p: int) -> bytes:
-    return hashlib.scrypt(password.encode(), salt=salt, n=n, r=r, p=p, dklen=32, maxmem=128 * n * r * 2 + 2 ** 20)
+    with _scrypt_slots:
+        return hashlib.scrypt(password.encode(), salt=salt, n=n, r=r, p=p, dklen=32, maxmem=128 * n * r * 2 + 2 ** 20)
 
 
 def hash_password(password: str) -> str:
@@ -96,15 +104,17 @@ def _sha256(token: str) -> str:
 
 class AccountStore:
     def __init__(self, path: Path, now: Callable[[], datetime] = utcnow, max_users: int = MAX_USERS,
-                 signups_per_ip_hour: int = SIGNUPS_PER_IP_HOUR):
+                 signups_per_ip_hour: int = SIGNUPS_PER_IP_HOUR, logins_per_ip_window: int = LOGINS_PER_IP_WINDOW):
         self.path = Path(path)
         self.now = now
         self.max_users = max_users
         self.signups_per_ip_hour = signups_per_ip_hour
+        self.logins_per_ip_window = logins_per_ip_window
         self._lock = threading.Lock()
-        self._failures: dict[str, int] = {}
+        self._failures: dict[str, tuple[int, datetime]] = {}  # key -> (wrong passwords in a row, last one)
         self._locked_until: dict[str, datetime] = {}
-        self._signups: dict[str, list[datetime]] = {}
+        self._signups: dict[str, list[datetime]] = {}  # ip -> recent sign-up times
+        self._login_ips: dict[str, list[datetime]] = {}  # ip -> recent login attempt times
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._db() as db:
             db.execute("CREATE TABLE IF NOT EXISTS users ("
@@ -125,20 +135,38 @@ class AccountStore:
         finally:
             conn.close()
 
+    # --- in-memory throttles (call with self._lock held) -----------------
+
+    def _prune(self, now: datetime) -> None:
+        """Drop expired throttle entries so a username/IP spray cannot grow memory without bound."""
+        lock_window = timedelta(seconds=LOCK_SECONDS)
+        self._locked_until = {k: t for k, t in self._locked_until.items() if now < t}
+        self._failures = {k: v for k, v in self._failures.items() if now - v[1] < lock_window}
+        self._signups = {ip: ts for ip, ts in self._signups.items() if now - ts[-1] < SIGNUP_IP_WINDOW}
+        self._login_ips = {ip: ts for ip, ts in self._login_ips.items() if now - ts[-1] < LOGIN_IP_WINDOW}
+
+    @staticmethod
+    def _hit(windows: dict[str, list[datetime]], ip: str, now: datetime, window: timedelta, limit: int) -> bool:
+        """Record an attempt for ip unless it is over limit within window; True when allowed."""
+        recent = [t for t in windows.get(ip, []) if now - t < window]
+        if len(recent) >= limit:
+            windows[ip] = recent
+            return False
+        windows[ip] = [*recent, now]
+        return True
+
     # --- sign-up / login -------------------------------------------------
 
     def signup(self, username: str, password: str, ip: str) -> str:
         if not _USERNAME_RE.fullmatch(username):
             raise ValueError("Username must be 3-20 letters, digits, _ . -")
-        if not 8 <= len(password) <= 200:
-            raise ValueError("Password must be 8-200 characters")
+        if not 1 <= len(password) <= 200:
+            raise ValueError("Password must be 1-200 characters")
         now = self.now()
         with self._lock:
-            recent = [t for t in self._signups.get(ip, []) if now - t < timedelta(hours=1)]
-            if len(recent) >= self.signups_per_ip_hour:
-                self._signups[ip] = recent
+            self._prune(now)
+            if not self._hit(self._signups, ip, now, SIGNUP_IP_WINDOW, self.signups_per_ip_hour):
                 raise SignupRateLimited()
-            self._signups[ip] = [*recent, now]
         pw_hash = hash_password(password)  # slow: before taking the database write lock
         key = username.lower()
         with self._db() as db:
@@ -151,26 +179,29 @@ class AccountStore:
                        (username, key, pw_hash, _stamp(now)))
         return username
 
-    def login(self, username: str, password: str) -> str:
+    def login(self, username: str, password: str, ip: str | None = None) -> str:
+        """ip=None (CLI/tests) skips the per-IP limit; the HTTP route always passes the client IP."""
         key = username.lower()
         now = self.now()
-        with self._lock:
-            until = self._locked_until.get(key)
-            if until is not None:
-                if now < until:
-                    raise LoginLocked()
-                del self._locked_until[key]
+        with self._lock:  # every throttle is checked before scrypt runs
+            self._prune(now)
+            if ip is not None and not self._hit(self._login_ips, ip, now, LOGIN_IP_WINDOW,
+                                                self.logins_per_ip_window):
+                raise LoginLocked()
+            if key in self._locked_until:  # _prune just dropped the expired ones
+                raise LoginLocked()
         with self._db() as db:
             row = db.execute("SELECT username, pw_hash FROM users WHERE username_key = ?", (key,)).fetchone()
         ok = verify_password(password, row[1] if row else _DUMMY_HASH)  # unknown user: same timing
         if row is None or not ok:
             with self._lock:
-                count = self._failures.get(key, 0) + 1
+                self._prune(now)
+                count = self._failures.get(key, (0, now))[0] + 1
                 if count >= LOCK_AFTER_FAILURES:
                     self._failures.pop(key, None)
                     self._locked_until[key] = now + timedelta(seconds=LOCK_SECONDS)
                 else:
-                    self._failures[key] = count
+                    self._failures[key] = (count, now)
             raise BadCredentials()
         with self._lock:
             self._failures.pop(key, None)
@@ -221,8 +252,8 @@ class AccountStore:
         return row[0] if row else None
 
     def reset_password(self, username: str, password: str) -> None:
-        if not 8 <= len(password) <= 200:
-            raise ValueError("Password must be 8-200 characters")
+        if not 1 <= len(password) <= 200:
+            raise ValueError("Password must be 1-200 characters")
         pw_hash = hash_password(password)
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")

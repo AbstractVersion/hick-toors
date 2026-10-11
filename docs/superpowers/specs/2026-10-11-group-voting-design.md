@@ -24,7 +24,7 @@ a clear 🏆 winner (trip + stay) when the round closes.
 ## Accounts (`app/accounts.py`)
 
 - **Username:** 3–20 chars `[A-Za-z0-9_.-]`, stored as typed; uniqueness and login on the lowercase key
-  (`Nikos` and `nikos` are the same account). **Password:** 8–200 chars, any characters.
+  (`Nikos` and `nikos` are the same account). **Password:** 1–200 chars, any characters.
 - **Hashing:** `hashlib.scrypt(n=2**14, r=8, p=1, dklen=32)`, 16-byte random salt, stored as
   `scrypt$16384$8$1$<salt b64>$<hash b64>`; compare with `hmac.compare_digest`. A login for an unknown
   username still runs scrypt on a dummy hash (same timing).
@@ -35,7 +35,10 @@ a clear 🏆 winner (trip + stay) when the round closes.
   endpoint takes a JSON body (a cross-site form cannot send `application/json` without a CORS preflight,
   which the app never allows).
 - **Brute force:** 5 wrong passwords in a row for a username → that username is locked for 60 s
-  (429 "Too many attempts – wait a minute"); counter in memory, reset on success.
+  (429 "Too many attempts – wait a minute"); counter in memory, reset on success (a failure streak is
+  forgotten 60 s after its last wrong password). Also at most 30 log-in attempts per client IP per 10 min
+  (same 429), checked before scrypt runs; at most 4 scrypt computations run at once; expired throttle
+  entries are pruned on each write.
 - **Open sign-up guard rails:** at most 10 sign-ups per client IP per hour (in memory) and 200 accounts
   in total (409 "No more accounts can be created").
 - **Password reset:** no e-mail. Server command `python -m app.accounts reset-password <username>`

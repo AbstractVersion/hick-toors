@@ -1399,6 +1399,30 @@ def check_voting(browser, errors: list[str]) -> None:
     # A sees B's votes, closes the round with two clicks → 🏆 banner, buttons disabled, Start a new round.
     a.evaluate("refreshVote()")
     expect(row(a, t1).locator(".vote-nogo")).to_have_text("⚠ bob: No-go – “<b>no</b>”")
+
+    # Changing a rating while typing a comment, the desktop Safari / macOS Firefox way: the button never takes the
+    # focus (the press just blurs the comment) and the release comes later. One PUT, new rating + the typed text.
+    a.evaluate("""() => document.addEventListener('mousedown', (e) => {
+        if (e.target.closest('.vote-btn-rate')) { e.preventDefault(); document.activeElement.blur(); }
+    }, true)""")
+    puts_a: list[dict] = []
+    a.on("request", lambda req: puts_a.append(req.post_data_json)
+         if req.method == "PUT" and req.url.endswith(f"/trips/{t1}/vote") else None)
+    comment_t1 = row(a, t1).locator(".vote-comment").first
+    comment_t1.click()
+    comment_t1.fill("too far")
+    box = rate(row(a, t1), "nogo").bounding_box()
+    a.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    a.mouse.down()
+    a.wait_for_timeout(400)  # the answer + redraw land between press and release
+    a.mouse.up()
+    expect(rate(row(a, t1), "nogo")).to_have_attribute("aria-pressed", "true")
+    a.wait_for_timeout(300)
+    assert puts_a == [{"rating": "nogo", "comment": "too far"}], puts_a
+    trip_one = next(t for t in a.evaluate(get_round)["trips"] if t["trip_id"] == t1)
+    assert [(v["rating"], v["comment"]) for v in trip_one["votes"] if v["username"] == "anna"] == [("nogo", "too far")]
+    print("PASS rating changed while typing a comment (button never focused): one PUT with the new rating + text")
+
     close_btn = a.locator("#vote-tools button", has_text="Close now")
     close_btn.click()
     expect(a.locator("#vote-tools [data-arm=close]")).to_have_text("Confirm close")
@@ -1419,6 +1443,36 @@ def check_voting(browser, errors: list[str]) -> None:
     expect(a.locator("#stay-note")).to_have_text("in trip “Vote trip two”")
     print("PASS Close now (two clicks) → 🏆 banner names the top trip + stay, buttons disabled, Show on map")
 
+    # C (logged out): a failed poll's error goes away with the next good poll; Past rounds is reachable from the
+    # closed round without logging in, while Start stays behind the login.
+    ctx_c, c = new_page()
+    c.click("#vote-btn")
+    expect(c.locator("#vote-banner")).to_contain_text("🏆 Vote trip two wins")
+    c.route("**/api/rounds/current", lambda route: route.fulfill(
+        status=500, content_type="application/json", body='{"detail": "Server hiccup"}'))
+    c.evaluate("refreshVote()")
+    expect(c.locator("#vote-error")).to_be_visible()
+    c.unroute("**/api/rounds/current")
+    c.evaluate("refreshVote()")
+    expect(c.locator("#vote-error")).to_be_hidden()
+    print("PASS a failed poll's error is cleared by the next successful poll")
+    c.locator("#vote-footer button", has_text="Past rounds").click()
+    expect(c.locator("#auth-dialog")).to_be_hidden()
+    expect(c.locator("#vote-history-view")).to_be_visible()
+    past = c.locator("#vote-history button", has_text="November 🥾")
+    expect(past).to_contain_text("🏆 Vote trip two")
+    past.click()
+    expect(c.locator("#vote-round-view")).to_be_visible()
+    expect(c.locator("#vote-banner")).to_contain_text("🏆 Vote trip two wins")
+    c.locator("#vote-footer button", has_text="← Back").click()
+    c.locator("#vote-footer button", has_text="Past rounds").click()
+    c.fill("#vote-start-title", "Sneaky")
+    c.click("#vote-start-submit")
+    expect(c.locator("#auth-dialog")).to_be_visible()
+    c.click("#auth-close")
+    print("PASS logged-out C reaches Past rounds from the closed round; Start still asks to log in")
+
+    ctx_c.close()
     ctx_b.close()
     ctx_a.close()
 

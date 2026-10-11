@@ -83,8 +83,11 @@ def test_signup_errors(tmp_path):
     assert r.status_code == 409 and r.json() == {"detail": "That username is taken"}
     r = signup(c, "a b", "password1")
     assert r.status_code == 422 and r.json() == {"detail": "Username must be 3-20 letters, digits, _ . -"}
-    r = signup(c, "Maria", "short")
-    assert r.status_code == 422 and r.json() == {"detail": "Password must be 8-200 characters"}
+    r = signup(c, "Maria", "")
+    assert r.status_code == 422 and r.json() == {"detail": "Password must be 1-200 characters"}
+    assert signup(c, "Eleni", "e").status_code == 201  # a 1-character password is fine
+    c.post("/api/auth/logout")
+    assert c.post("/api/auth/login", json={"username": "eleni", "password": "e"}).status_code == 200
     assert signup(c, "x" * 21).status_code == 422
     assert signup(c, "Maria", "p" * 201).status_code == 422  # never reaches scrypt
     assert c.post("/api/auth/signup", json={"username": "Maria"}).status_code == 422
@@ -164,3 +167,11 @@ def test_sessions_swept_at_startup(tmp_path):
     with make(tmp_path, accounts=accounts):
         pass
     assert called
+
+
+def test_login_ip_limit_is_429(tmp_path):
+    c = make(tmp_path, accounts=AccountStore(tmp_path / "a.db", logins_per_ip_window=2))
+    for name in ("aaa", "bbb"):  # distinct usernames: only the per-IP limit can trip
+        assert c.post("/api/auth/login", json={"username": name, "password": "wrongwrong"}).status_code == 401
+    r = c.post("/api/auth/login", json={"username": "ccc", "password": "wrongwrong"})
+    assert r.status_code == 429 and r.json() == {"detail": "Too many attempts – wait a minute"}

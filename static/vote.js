@@ -14,8 +14,10 @@ const vote = {
   panel: null,          // opener tools: null | "extend" | "add"
   armed: {},            // two-click confirm timers: close / cancel
   pollTimer: null, focusTrip: null, toastTimer: null,
+  pollError: false,     // the error on show came from a failed poll: the next applied poll clears it
 };
 const VOTE_POLL_MS = 10000, BADGE_POLL_MS = 60000;
+const MAX_ROUND_TRIPS = 50;  // the API's cap on trips per round
 const RATINGS = [["love", "😍", "Love it"], ["ok", "🙂", "OK"], ["nogo", "🚫", "No-go"]];
 const enc = encodeURIComponent;
 const sameUser = (a, b) => Boolean(a && b) && a.toLowerCase() === b.toLowerCase();
@@ -33,7 +35,8 @@ function vButton(text, className, onClick) {
   if (onClick) b.addEventListener("click", onClick);
   return b;
 }
-function showVoteError(message) {
+function showVoteError(message, fromPoll = false) {
+  vote.pollError = Boolean(message) && fromPoll;
   $("vote-error").textContent = message || "";
   $("vote-error").hidden = !message;
 }
@@ -87,9 +90,9 @@ async function refreshVote() {
   try {
     const round = await api("/api/rounds/current");
     if (vote.writing > 0) return;
-    applyRound(round, seq);
+    if (applyRound(round, seq) && vote.pollError) showVoteError("");
   } catch (err) {
-    if ($("vote-dialog").open && vote.mode === "current") showVoteError(err.message);
+    if ($("vote-dialog").open && vote.mode === "current") showVoteError(err.message, true);
   }
 }
 // Writes (votes, opener actions) run one at a time, in click order; each applies the round it returns.
@@ -182,7 +185,11 @@ function renderRound(round, readOnly) {
   const footer = $("vote-footer");
   footer.replaceChildren();
   if (readOnly) footer.append(vButton("← Back", "tool-btn", backToCurrent));
-  else if (round.status !== "open") footer.append(vButton("Start a new round", "primary", () => requireLogin(showForm)));
+  else if (round.status !== "open") {
+    // Past rounds is open to everyone (the form's Start button stays behind the login).
+    footer.append(vButton("Start a new round", "primary", () => requireLogin(showForm)), " ",
+      vButton("Past rounds", "tool-btn", showForm));
+  }
   if (vote.focusTrip) {
     const row = $("vote-trips").querySelector(`[data-trip="${CSS.escape(vote.focusTrip)}"]`);
     vote.focusTrip = null;
@@ -371,8 +378,24 @@ function voteControls(round, item, target, open, key) {
   comment.title = item.my_rating ? "Saved with your rating" : "Rate first, then add a comment";
   comment.setAttribute("aria-label", `Comment: ${item.name}`);
   for (const [rating, emoji, label] of RATINGS) {
-    const b = vButton(`${emoji} ${label}`, "vote-btn-rate", () =>
-      requireLogin(() => castVote(target, rating, comment.disabled ? null : comment.value)));
+    const rate = () => requireLogin(() => castVote(target, rating, comment.disabled ? null : comment.value));
+    // Mouse: act on the press. Desktop Safari / macOS Firefox never focus a button, so the press blurs the comment
+    // (relatedTarget null) and the release's click can land on a row a redraw has already replaced. The rating PUT
+    // carries the comment text, so the blur that follows the press must not save the old rating. Touch, pen and
+    // keyboard keep the plain click (touch fires its events together on release; keys don't blur).
+    const b = vButton(`${emoji} ${label}`, "vote-btn-rate", () => {
+      if (b.dataset.pressed) { delete b.dataset.pressed; return; }  // already handled on the press
+      rate();
+    });
+    b.addEventListener("pointerdown", (event) => {
+      if (event.pointerType !== "mouse" || event.button !== 0 || !auth.user) return;  // logged out: click → dialog
+      b.dataset.pressed = "1";
+      row.dataset.pressing = "1";
+      // Cleared after the release's click (or at once if the release lands elsewhere and no click comes).
+      const clear = () => setTimeout(() => { delete b.dataset.pressed; delete row.dataset.pressing; }, 0);
+      document.addEventListener("pointerup", clear, { once: true });
+      rate();
+    });
     b.dataset.rating = rating;
     b.setAttribute("aria-pressed", String(item.my_rating === rating));
     b.setAttribute("aria-label", `${label}: ${item.name}`);
@@ -382,7 +405,7 @@ function voteControls(round, item, target, open, key) {
   // Saved on blur with the current rating – unless the blur is a click on a rating button of this row, which
   // sends the comment itself.
   comment.addEventListener("blur", (event) => {
-    if (event.relatedTarget?.closest?.(".vote-buttons") === row) return;
+    if (row.dataset.pressing || event.relatedTarget?.closest?.(".vote-buttons") === row) return;
     const text = comment.value.trim();
     if (!item.my_rating || text === (mine?.comment || "")) return;
     castVote(target, item.my_rating, text);
@@ -494,14 +517,18 @@ async function renderForm() {
     const list = await refreshTrips();
     if (token !== vote.formToken) return;
     box.replaceChildren();
-    for (const t of list) {
+    list.forEach((t, i) => {
       const label = vEl("label", "vote-check");
       const cb = vEl("input");
       cb.type = "checkbox";
       cb.value = t.id;
-      cb.checked = true;
+      cb.checked = i < MAX_ROUND_TRIPS;
       label.append(cb, ` ${t.name}`);
       box.append(label);
+    });
+    if (list.length > MAX_ROUND_TRIPS) {
+      box.append(vEl("span", "list-note",
+        `A round holds at most ${MAX_ROUND_TRIPS} trips – the first ${MAX_ROUND_TRIPS} are ticked.`));
     }
     if (!list.length) box.append(vEl("span", "list-note", "No saved trips yet – save some in 🧳 My trips first."));
     $("vote-start-submit").disabled = !list.length;
@@ -582,6 +609,7 @@ $("vote-start-back").addEventListener("click", backToCurrent);
 // button (its click answers with a fresh round and redraws then; redrawing now would swallow the click).
 $("vote-trips").addEventListener("focusout", (event) => {
   if (event.relatedTarget?.closest?.("#vote-dialog button")) return;
+  if ($("vote-trips").querySelector(".vote-buttons[data-pressing]")) return;  // a rating press: its answer redraws
   setTimeout(() => {
     if (vote.pendingRender && $("vote-dialog").open && vote.mode !== "form") render();
   }, 0);

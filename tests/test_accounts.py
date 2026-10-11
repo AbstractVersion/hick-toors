@@ -1,8 +1,12 @@
 import hashlib
 import sqlite3
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
+
+import app.accounts as accounts_mod
 
 from app.accounts import (AccountStore, BadCredentials, LoginLocked, SignupRateLimited, TooManyAccounts,
                           UsernameTaken, hash_password, main, verify_password)
@@ -56,10 +60,16 @@ def test_bad_usernames(store, name):
 
 
 def test_password_length_rules(store):
-    for pw in ("1234567", "x" * 201):
-        with pytest.raises(ValueError):
+    for pw in ("", "x" * 201):
+        with pytest.raises(ValueError, match="Password must be 1-200 characters"):
             store.signup("nikos", pw, "1.1.1.1")
-    assert store.signup("nikos", "12345678", "1.1.1.1") == "nikos"
+    assert store.signup("nikos", "a", "1.1.1.1") == "nikos"  # one letter is enough for a group of friends
+    assert store.login("Nikos", "a") == "nikos"
+    assert store.signup("maria", "x" * 200, "1.1.1.1") == "maria"
+    with pytest.raises(ValueError, match="Password must be 1-200 characters"):
+        store.reset_password("nikos", "")
+    store.reset_password("nikos", "b")
+    assert store.login("NIKOS", "b") == "nikos"
 
 
 def test_lockout(store, clock):
@@ -181,3 +191,82 @@ def test_no_password_leaks(store):
     with pytest.raises(UsernameTaken) as e:
         store.signup("Nikos", pw, "1.1.1.1")
     assert pw not in repr(e.value)
+
+
+def count_scrypt(monkeypatch):
+    calls = []
+    real = accounts_mod._scrypt
+    monkeypatch.setattr(accounts_mod, "_scrypt", lambda *a: calls.append(1) or real(*a))
+    return calls
+
+
+def test_login_ip_limit_checked_before_scrypt(store, clock, monkeypatch):
+    store.signup("Nikos", "password1", "1.1.1.1")
+    calls = count_scrypt(monkeypatch)
+    for i in range(30):  # distinct usernames: the per-username lock never trips
+        with pytest.raises(BadCredentials):
+            store.login(f"ghost{i}", "whatever1", ip="6.6.6.6")
+    assert len(calls) == 30
+    with pytest.raises(LoginLocked):
+        store.login("Nikos", "password1", ip="6.6.6.6")
+    assert len(calls) == 30  # the 31st attempt never ran scrypt
+    assert store.login("Nikos", "password1", ip="7.7.7.7") == "Nikos"  # another IP is fine
+    clock.advance(minutes=10, seconds=1)
+    assert store.login("Nikos", "password1", ip="6.6.6.6") == "Nikos"  # window expired
+
+
+def test_login_ip_limit_counts_successes_too(store):
+    store.signup("Nikos", "password1", "1.1.1.1")
+    for _ in range(30):
+        store.login("Nikos", "password1", ip="6.6.6.6")
+    with pytest.raises(LoginLocked):
+        store.login("Nikos", "password1", ip="6.6.6.6")
+
+
+def test_throttle_dicts_stay_bounded(store, clock, monkeypatch):
+    monkeypatch.setattr(accounts_mod, "_scrypt", lambda *a: b"x" * 32)  # speed: hashing is not under test
+    for round_ in range(20):
+        store.signup(f"user{round_}", "password1", f"9.9.{round_}.1")
+        for i in range(25):
+            ip = f"10.{round_}.0.{i}"
+            for _ in range(5):  # locks the username
+                with pytest.raises(BadCredentials):
+                    store.login(f"spray{round_}x{i}", "whatever1", ip=ip)
+            for _ in range(3):  # failures short of a lock
+                with pytest.raises(BadCredentials):
+                    store.login(f"half{round_}x{i}", "whatever1", ip=ip)
+        # Only this round's entries survive: earlier rounds were pruned on write.
+        assert len(store._locked_until) == 25
+        assert len(store._failures) == 25
+        assert len(store._login_ips) == 25
+        assert len(store._signups) == 1
+        clock.advance(minutes=61)
+    with pytest.raises(BadCredentials):
+        store.login("again", "whatever1", ip="8.8.4.4")
+    store.signup("last", "password1", "9.9.9.9")
+    assert len(store._locked_until) == 0 and len(store._failures) == 1
+    assert len(store._login_ips) == 1 and len(store._signups) == 1
+
+
+def test_scrypt_concurrency_is_bounded(monkeypatch):
+    lock = threading.Lock()
+    active = [0]
+    peak = [0]
+
+    def slow_scrypt(*a, **kw):
+        with lock:
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+        time.sleep(0.05)
+        with lock:
+            active[0] -= 1
+        return b"x" * 32
+
+    monkeypatch.setattr(accounts_mod.hashlib, "scrypt", slow_scrypt)
+    threads = [threading.Thread(target=accounts_mod._scrypt, args=("pw", b"salt", 2 ** 14, 8, 1))
+               for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert peak[0] == 4
