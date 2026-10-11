@@ -10,6 +10,14 @@ const vote = {
   seq: 0, applied: 0,   // request numbers: an answer older than the newest applied one is dropped
   writing: 0, queue: Promise.resolve(),  // votes/opener actions run one after another; polls are ignored meanwhile
   pendingRender: false, // a row was kept as it was because its comment field has the focus
+  // While someone works in the list, rows keep their places (see listBusy): the row under the pointer must stay
+  // the trip/stay it was, or the next click lands on another one.
+  hover: false,         // a mouse/pen pointer is over the list
+  calmUntil: 0,         // a tap or key in the list holds the order until then (ms timestamp)
+  pressed: false,       // a pointer is down inside the list: redraws wait for the release (deferred)
+  deferred: false, releaseTimer: null, settleTimer: null,
+  shown: null,          // {round, trips: [ids], stays: {tripId: [ids]}}: the order on screen
+  sortPending: false,   // rows are held out of rank order: re-sorted once the list is quiet
   openStays: new Set(), openNames: new Set(),
   panel: null,          // opener tools: null | "extend" | "add"
   armed: {},            // two-click confirm timers: close / cancel
@@ -17,6 +25,8 @@ const vote = {
   pollError: false,     // the error on show came from a failed poll: the next applied poll clears it
 };
 const VOTE_POLL_MS = 10000, BADGE_POLL_MS = 60000;
+const VOTE_CALM_MS = 1500;   // rows hold their places this long after a tap / key in the list
+const PRESS_GRACE_MS = 300;  // a release with no click (it landed elsewhere) ends the press after this
 const MAX_ROUND_TRIPS = 50;  // the API's cap on trips per round
 const RATINGS = [["love", "😍", "Love it"], ["ok", "🙂", "OK"], ["nogo", "🚫", "No-go"]];
 const enc = encodeURIComponent;
@@ -120,11 +130,15 @@ async function openVote(tripId) {
 function onVoteClose() {
   clearInterval(vote.pollTimer);
   vote.pollTimer = null;
+  clearTimeout(vote.releaseTimer);
+  clearTimeout(vote.settleTimer);
+  Object.assign(vote, { hover: false, calmUntil: 0, pressed: false, deferred: false, shown: null, sortPending: false });
   for (const key of Object.keys(vote.armed)) disarm(key);
 }
 
 // ---- rendering ----
 function render() {
+  if (vote.pressed) { vote.deferred = true; return; }  // the release must land on the element that was pressed
   showViews();
   if (vote.mode === "form") return;
   const round = vote.mode === "past" ? vote.past : vote.round;
@@ -318,14 +332,41 @@ function patchRound(body) {
   }));
 }
 
-// Trip rows in rank order. A row whose comment field has the focus is left in place untouched (caret kept) and
-// redrawn once the field loses the focus.
+// Is someone working in the list? Then rows keep the places they are shown in.
+function listBusy() { return vote.hover || vote.pressed || Date.now() < vote.calmUntil; }
+// items sorted by their place in shown (ids); new ones go last, in rank order (sort is stable).
+function keepOrder(items, shown, idOf) {
+  if (!shown) return items;
+  const at = new Map(shown.map((id, i) => [id, i]));
+  const place = (x) => (at.has(idOf(x)) ? at.get(idOf(x)) : shown.length);
+  return [...items].sort((x, y) => place(x) - place(y));
+}
+
+// Trip rows in rank order – except while the list is busy (listBusy): then a vote's or a poll's redraw keeps the
+// rows (and stays) where they are, with fresh ranks and scores, and they are re-sorted once the pointer leaves the
+// list / the taps and keys stop (settleOrder). Otherwise the trip you just rated jumps away and the next click lands
+// on whichever trip moved under the pointer. A row whose comment field has the focus is left in place untouched
+// (caret kept) and redrawn once the field loses the focus.
 function renderTrips(round, open) {
   const list = $("vote-trips");
   const active = document.activeElement;
   const keep = active?.matches?.("#vote-trips .vote-comment") ? active.closest(".vote-trip") : null;
   const keepId = keep && round.trips.some((t) => t.trip_id === keep.dataset.trip) ? keep.dataset.trip : null;
-  const rows = round.trips.map((t) => (t.trip_id === keepId ? keep : tripRow(round, t, open)));
+  const focusKey = active?.closest?.("#vote-trips") ? active.dataset.voteKey : null;  // keyboard: keep the place
+  const hold = listBusy() && vote.shown?.round === round.id;
+  const trips = hold ? keepOrder(round.trips, vote.shown.trips, (t) => t.trip_id) : round.trips;
+  const shown = { round: round.id, trips: trips.map((t) => t.trip_id), stays: {} };
+  const stayOrder = {};
+  let moved = trips.some((t, i) => t !== round.trips[i]);
+  for (const t of trips) {
+    const stays = hold ? keepOrder(t.stays, vote.shown.stays[t.trip_id], (s) => s.stay_id) : t.stays;
+    moved ||= stays.some((s, i) => s !== t.stays[i]);
+    shown.stays[t.trip_id] = stays.map((s) => s.stay_id);
+    stayOrder[t.trip_id] = stays;
+  }
+  vote.shown = shown;
+  vote.sortPending = moved;
+  const rows = trips.map((t) => (t.trip_id === keepId ? keep : tripRow(round, t, open, stayOrder[t.trip_id])));
   vote.pendingRender = Boolean(keepId);
   if (!keepId) {
     list.replaceChildren(...rows);
@@ -339,6 +380,29 @@ function renderTrips(round, open) {
     }
   }
   if (!round.trips.length) list.replaceChildren(vEl("li", "list-note", "No trips left in this round."));
+  if (focusKey && !list.contains(document.activeElement)) {
+    [...list.querySelectorAll("[data-vote-key]")].find((b) => b.dataset.voteKey === focusKey)?.focus();
+  }
+}
+// Re-sort the held rows once the list is quiet again.
+function settleOrder() {
+  clearTimeout(vote.settleTimer);
+  if (vote.hover || vote.pressed) return;  // pointerleave / the release call again
+  const wait = vote.calmUntil - Date.now();
+  if (wait > 0) { vote.settleTimer = setTimeout(settleOrder, wait + 20); return; }
+  if (vote.sortPending && $("vote-dialog").open && vote.mode !== "form") render();
+}
+// A press inside the list ends after its click (or PRESS_GRACE_MS after a release that brought none): then the
+// rating buttons' "pressing" marks go and a redraw that waited runs.
+function endPress(delay) {
+  clearTimeout(vote.releaseTimer);
+  vote.releaseTimer = setTimeout(() => {
+    vote.pressed = false;
+    for (const row of $("vote-trips").querySelectorAll(".vote-buttons[data-pressing]")) delete row.dataset.pressing;
+    if (vote.deferred && $("vote-dialog").open) { vote.deferred = false; render(); }
+    vote.deferred = false;
+    settleOrder();
+  }, delay);
 }
 function myVote(votes) { return votes.find((v) => sameUser(v.username, auth.user)); }
 
@@ -379,32 +443,20 @@ function voteControls(round, item, target, open, key) {
   comment.title = item.my_rating ? "Saved with your rating" : "Rate first, then add a comment";
   comment.setAttribute("aria-label", `Comment: ${item.name}`);
   for (const [rating, emoji, label] of RATINGS) {
-    const rate = () => requireLogin(() => castVote(target, rating, comment.disabled ? null : comment.value));
-    // Mouse: act on the press. Desktop Safari / macOS Firefox never focus a button, so the press blurs the comment
-    // (relatedTarget null) and the release's click can land on a row a redraw has already replaced. The rating PUT
-    // carries the comment text, so the blur that follows the press must not save the old rating. Touch, pen and
-    // keyboard keep the plain click (touch fires its events together on release; keys don't blur).
-    const b = vButton(`${emoji} ${label}`, "vote-btn-rate", () => {
-      if (b.dataset.pressed) { delete b.dataset.pressed; return; }  // already handled on the press
-      rate();
-    });
-    b.addEventListener("pointerdown", (event) => {
-      if (event.pointerType !== "mouse" || event.button !== 0 || !auth.user) return;  // logged out: click → dialog
-      b.dataset.pressed = "1";
-      row.dataset.pressing = "1";
-      // Cleared after the release's click (or at once if the release lands elsewhere and no click comes).
-      const clear = () => setTimeout(() => { delete b.dataset.pressed; delete row.dataset.pressing; }, 0);
-      document.addEventListener("pointerup", clear, { once: true });
-      rate();
-    });
+    // Cast on click only (mouse, touch, pen, keyboard alike). Between press and release no redraw replaces the
+    // pressed button (render waits while vote.pressed), so the release's click lands on it.
+    const b = vButton(`${emoji} ${label}`, "vote-btn-rate",
+      () => requireLogin(() => castVote(target, rating, comment.disabled ? null : comment.value)));
     b.dataset.rating = rating;
+    b.dataset.voteKey = `${key}:${rating}`;
     b.setAttribute("aria-pressed", String(item.my_rating === rating));
     b.setAttribute("aria-label", `${label}: ${item.name}`);
     b.disabled = !open;
     row.append(b);
   }
   // Saved on blur with the current rating – unless the blur is a click on a rating button of this row, which
-  // sends the comment itself.
+  // sends the comment itself. Desktop Safari / macOS Firefox / iOS never focus a button (relatedTarget null), so
+  // the press marks the row "pressing" (list pointerdown below) until its click has run.
   comment.addEventListener("blur", (event) => {
     if (row.dataset.pressing || event.relatedTarget?.closest?.(".vote-buttons") === row) return;
     const text = comment.value.trim();
@@ -418,7 +470,7 @@ function voteControls(round, item, target, open, key) {
   frag.append(row);
   return frag;
 }
-function tripRow(round, t, open) {
+function tripRow(round, t, open, stayList = t.stays) {
   const li = vEl("li", "vote-trip");
   li.dataset.trip = t.trip_id;
   const head = vEl("div", "vote-head");
@@ -436,7 +488,7 @@ function tripRow(round, t, open) {
       toggle.textContent = label();
     });
     actions.append(toggle);
-    for (const s of t.stays) {
+    for (const s of stayList) {
       const sli = vEl("li", "vote-stay");
       sli.dataset.stay = s.stay_id;
       const shead = vEl("div", "vote-head");
@@ -607,6 +659,28 @@ $("vote-dialog").addEventListener("close", onVoteClose);
 $("vote-dialog").addEventListener("close", () => window.mobile?.dialogClosed());  // phone: back to the previous tab
 $("vote-start").addEventListener("submit", submitStart);
 $("vote-start-back").addEventListener("click", backToCurrent);
+// Working in the list (see listBusy / settleOrder / endPress).
+$("vote-trips").addEventListener("pointerover", (event) => {
+  if (event.pointerType !== "touch") vote.hover = true;
+});
+$("vote-trips").addEventListener("pointerleave", () => {
+  vote.hover = false;
+  settleOrder();
+});
+$("vote-trips").addEventListener("pointerdown", (event) => {
+  vote.calmUntil = Date.now() + VOTE_CALM_MS;
+  vote.pressed = true;
+  clearTimeout(vote.releaseTimer);
+  // A press on a rating button: that row's comment blur must not save the old rating (the click's PUT carries it).
+  if (event.target.closest?.(".vote-btn-rate")) event.target.closest(".vote-buttons").dataset.pressing = "1";
+});
+$("vote-trips").addEventListener("keydown", () => {
+  vote.calmUntil = Date.now() + VOTE_CALM_MS;
+  settleOrder();
+});
+document.addEventListener("pointerup", () => { if (vote.pressed) endPress(PRESS_GRACE_MS); }, true);
+document.addEventListener("pointercancel", () => { if (vote.pressed) endPress(PRESS_GRACE_MS); }, true);
+document.addEventListener("click", () => { if (vote.pressed) endPress(0); });  // bubbles after the button's own click
 // A row kept because its comment had the focus is redrawn after the focus leaves it – unless the focus went to a
 // button (its click answers with a fresh round and redraws then; redrawing now would swallow the click).
 $("vote-trips").addEventListener("focusout", (event) => {

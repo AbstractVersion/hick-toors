@@ -21,7 +21,7 @@ import json
 import os
 import re
 import sys
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 from playwright.sync_api import expect, sync_playwright
 
@@ -1361,7 +1361,8 @@ def check_voting(browser, errors: list[str]) -> None:
     expect(a.locator("#vote-round-view")).to_be_visible()
     expect(a.locator("#vote-status")).to_contain_text("November 🥾")
     expect(a.locator("#vote-status")).to_contain_text("closes in 2 d 23 h")
-    expect(a.locator("#vote-status")).to_contain_text(re.compile(r"Waiting for: .*🍕 anna\b"))
+    # Only participants (opener, joiners, voters) are waited for: just anna so far.
+    expect(a.locator("#vote-status div", has_text="Waiting for")).to_have_text("Waiting for: 🍕 anna")
     expect(a.locator("#vote-status")).to_contain_text("opened by 🍕 anna")
     expect(a.locator("#vote-status")).to_contain_text("You: 0 of 2 trips rated")
     expect(a.locator("#vote-left")).to_have_text(" · 2 left")
@@ -1384,6 +1385,7 @@ def check_voting(browser, errors: list[str]) -> None:
     expect(stay_a).to_be_visible()
     expect(row(a, t2).locator("button", has_text="▾ Stays (1)")).to_be_visible()
     trips_a = a.locator("#vote-trips > .vote-trip")
+    a.mouse.move(2, 2)  # rows keep their places while the pointer is over the list; leaving it re-sorts them
     expect(trips_a.nth(0)).to_have_attribute("data-trip", t2)
     expect(trips_a.nth(0).locator(".vote-head").first).to_have_text("#1 Vote trip two · 2 pts")
     expect(trips_a.nth(1).locator(".vote-head").first).to_have_text("#2 Vote trip one · 1 pts")
@@ -1434,7 +1436,8 @@ def check_voting(browser, errors: list[str]) -> None:
     rate(row(b, t2), "ok").click()
     expect(rate(row(b, t2), "ok")).to_have_attribute("aria-pressed", "true")
     expect(b.locator("#vote-left")).to_have_text(" · 0 left")
-    expect(b.locator("#vote-status")).to_contain_text("Waiting for: 🤡 nikos")  # every account; nikos never voted
+    # Participants only (anna opened, bob voted – nikos never took part): nobody left to wait for.
+    expect(b.locator("#vote-status")).to_contain_text("Everyone has rated every trip ✓")
     names_btn = row(b, t1).locator(".vote-counts").first.locator(".count-btn").nth(2)  # 🚫 count: the names box opens
     names_btn.click()
     expect(row(b, t1).locator(".vote-names").first).to_contain_text("🚫 No-go: 🦖 bob (“<b>no</b>”)")
@@ -1460,7 +1463,8 @@ def check_voting(browser, errors: list[str]) -> None:
     expect(row(a, t1).locator(".vote-nogo")).to_have_text("⚠ 🦖 bob: No-go – “<b>no</b>”")
 
     # Changing a rating while typing a comment, the desktop Safari / macOS Firefox way: the button never takes the
-    # focus (the press just blurs the comment) and the release comes later. One PUT, new rating + the typed text.
+    # focus (the press just blurs the comment) and the release comes later. One PUT (on the click), new rating + the
+    # typed text – the comment's blur must not save the old rating.
     a.evaluate("""() => document.addEventListener('mousedown', (e) => {
         if (e.target.closest('.vote-btn-rate')) { e.preventDefault(); document.activeElement.blur(); }
     }, true)""")
@@ -1473,7 +1477,7 @@ def check_voting(browser, errors: list[str]) -> None:
     box = rate(row(a, t1), "nogo").bounding_box()
     a.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
     a.mouse.down()
-    a.wait_for_timeout(400)  # the answer + redraw land between press and release
+    a.wait_for_timeout(400)  # a slow release
     a.mouse.up()
     expect(rate(row(a, t1), "nogo")).to_have_attribute("aria-pressed", "true")
     a.wait_for_timeout(300)
@@ -1481,6 +1485,105 @@ def check_voting(browser, errors: list[str]) -> None:
     trip_one = next(t for t in a.evaluate(get_round)["trips"] if t["trip_id"] == t1)
     assert [(v["rating"], v["comment"]) for v in trip_one["votes"] if v["username"] == "anna"] == [("nogo", "too far")]
     print("PASS rating changed while typing a comment (button never focused): one PUT with the new rating + text")
+
+    # The rows move with the ranking: a press must still rate the trip/stay that was pressed, and a quick second
+    # click must not land on another trip that moved under the pointer (the reported "wrong option updated").
+    round_id = a.evaluate(get_round)["id"]
+    all_puts: list[tuple[str, dict]] = []
+    a.on("request", lambda req: all_puts.append((req.url.split(f"/rounds/{round_id}/")[1], req.post_data_json))
+         if req.method == "PUT" else None)
+    bob_vote = """([path, rating, comment]) => fetch(path, {method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({rating, comment: comment || null})}).then((r) => r.status)"""
+
+    def anna_votes() -> dict:
+        out = {}
+        for t in a.evaluate(get_round)["trips"]:
+            out[t["trip_id"]] = [(v["rating"], v["comment"]) for v in t["votes"] if v["username"] == "anna"]
+            for s in t["stays"]:
+                out[(t["trip_id"], s["stay_id"])] = [v["rating"] for v in s["votes"] if v["username"] == "anna"]
+        return out
+
+    def slow_press(button, during) -> None:
+        """Press, let others vote + a poll redraw arrive, then release: the pressed button must still be there."""
+        handle = button.element_handle()
+        box = button.bounding_box()
+        a.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        a.mouse.down()
+        during()
+        a.evaluate("refreshVote()")  # the 10 s poll, between press and release
+        a.wait_for_timeout(400)
+        if not handle.evaluate("(el) => el.isConnected"):
+            raise SystemExit("FAIL a redraw replaced the pressed rating button before the release")
+        a.mouse.up()
+
+    def puts_settled(count: int) -> None:
+        for _ in range(30):
+            if len(all_puts) >= count and a.evaluate("vote.writing") == 0:
+                break
+            a.wait_for_timeout(100)
+        a.wait_for_timeout(300)
+
+    a.mouse.move(2, 2)
+    a.evaluate("refreshVote()")
+    expect(trips_a.nth(0)).to_have_attribute("data-trip", t2)
+    expect(trips_a.nth(1)).to_have_attribute("data-trip", t1)
+    before = anna_votes()
+    # (a) trip row: anna presses 🙂 OK on #2 Vote trip one; meanwhile bob's votes put trip one first.
+    slow_press(rate(row(a, t1), "ok"), lambda: [
+        b.evaluate(bob_vote, [f"/api/rounds/{round_id}/trips/{t1}/vote", "love"]),
+        b.evaluate(bob_vote, [f"/api/rounds/{round_id}/trips/{t2}/vote", "nogo"])])
+    puts_settled(1)
+    assert [(path, body["rating"]) for path, body in all_puts] == [(f"trips/{t1}/vote", "ok")], all_puts
+    after = anna_votes()
+    assert after[t1] == [("ok", "too far")], after[t1]
+    assert {k: v for k, v in after.items() if k != t1} == {k: v for k, v in before.items() if k != t1}, after
+    # The pointer is still over the list: trip one keeps its place (second row) with its new rank, #1.
+    expect(trips_a.nth(1)).to_have_attribute("data-trip", t1)
+    expect(trips_a.nth(1).locator(".vote-head").first).to_contain_text("#1 Vote trip one")
+    expect(rate(row(a, t1), "ok")).to_have_attribute("aria-pressed", "true")
+    print("PASS slow press on a trip while the ranking changes + a poll redraw: one PUT, only the pressed trip rated")
+
+    # (c) a quick second click on the same spot right after a vote that changed the ranking: still trip one.
+    all_puts.clear()
+    box = rate(row(a, t1), "nogo").bounding_box()
+    a.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    a.wait_for_timeout(250)
+    a.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    puts_settled(2)
+    assert [(path, body["rating"]) for path, body in all_puts] == [(f"trips/{t1}/vote", "nogo")] * 2, all_puts
+    assert anna_votes()[t2] == before[t2], anna_votes()[t2]
+    expect(trips_a.nth(1)).to_have_attribute("data-trip", t1)  # still held in its place
+    a.mouse.move(2, 2)  # leaving the list re-sorts the rows into rank order
+    ranked = [t["trip_id"] for t in a.evaluate(get_round)["trips"]]
+    expect(trips_a.nth(0)).to_have_attribute("data-trip", ranked[0])
+    expect(trips_a.nth(1)).to_have_attribute("data-trip", ranked[1])
+    print("PASS a quick second click after a rank-changing vote lands on the same trip; leaving the list re-sorts")
+
+    # (b) stay row: anna presses 😍 on #2 Area house of trip one; meanwhile bob's 🙂 puts Area house first.
+    all_puts.clear()
+    stays_t1 = row(a, t1).locator(".vote-stay")
+    expect(stays_t1.nth(0)).to_have_attribute("data-stay", BSTAY["id"])
+    stay_area = row(a, t1).locator(f'.vote-stay[data-stay="{STAY["id"]}"]')
+    before = anna_votes()
+    slow_press(rate(stay_area, "love"), lambda: b.evaluate(
+        bob_vote, [f"/api/rounds/{round_id}/trips/{t1}/stays/{quote(STAY['id'], safe='')}/vote", "ok"]))
+    puts_settled(1)
+    assert [(path, body["rating"]) for path, body in all_puts] == [
+        (f"trips/{t1}/stays/{quote(STAY['id'], safe='')}/vote", "love")], all_puts
+    after = anna_votes()
+    assert after[(t1, STAY["id"])] == ["love"], after
+    key = (t1, STAY["id"])
+    assert {k: v for k, v in after.items() if k != key} == {k: v for k, v in before.items() if k != key}, after
+    expect(stays_t1.nth(1)).to_have_attribute("data-stay", STAY["id"])  # kept in place while the pointer is over
+    a.mouse.move(2, 2)
+    expect(stays_t1.nth(0)).to_have_attribute("data-stay", STAY["id"])
+    print("PASS slow press on a stay while the stay ranking changes + a poll redraw: one PUT, only that stay rated")
+    # bob's votes as they were (trip two wins below).
+    b.evaluate(bob_vote, [f"/api/rounds/{round_id}/trips/{t1}/vote", "nogo", "<b>no</b>"])
+    b.evaluate(bob_vote, [f"/api/rounds/{round_id}/trips/{t2}/vote", "ok"])
+    a.evaluate("refreshVote()")
+    expect(trips_a.nth(0)).to_have_attribute("data-trip", t2)
 
     close_btn = a.locator("#vote-tools button", has_text="Close now")
     close_btn.click()
