@@ -405,6 +405,7 @@ function decodePolyline(text) {
         b = text.charCodeAt(index++) - 63;
         result |= (b & 0x1f) << shift;
         shift += 5;
+        if (shift > 30 && b >= 0x20) throw new Error("polyline value too long");
       } while (b >= 0x20);
       delta.push(result & 1 ? ~(result >> 1) : result >> 1);
     }
@@ -432,13 +433,13 @@ function drawRoute(h, color) {
   const line = L.polyline(points, { ...common, color, weight: 5, opacity: 1, className: "route-line" })
     .bindPopup(hikePopup(h));
   casing.on("click", (event) => line.openPopup(event.latlng));
-  const start = L.marker(points[0], { keyboard: false, title: `Start: ${h.name}`,
+  const start = L.marker(points[0], { keyboard: false, title: `Start: ${h.name}`, interactive: !drawing(),
     icon: L.divIcon({ className: "route-start", iconSize: [18, 18], html: `<span style="background:${color}">▶</span>` }) })
     .bindPopup(hikePopup(h));
   const layers = [casing, line, start];
   const last = points[points.length - 1];
   if (map.distance(points[0], last) > 50) {
-    layers.push(L.marker(last, { keyboard: false, title: `End: ${h.name}`,
+    layers.push(L.marker(last, { keyboard: false, title: `End: ${h.name}`, interactive: !drawing(),
       icon: L.divIcon({ className: "route-end", iconSize: [22, 22], iconAnchor: [4, 20], html: "🏁" }) })
       .bindPopup(hikePopup(h)));
   }
@@ -454,7 +455,13 @@ const drawing = () => routeDrawing;
 function setRoutesInteractive(on) {
   routeDrawing = !on;
   for (const { layers } of state.routes.values()) {
-    for (const layer of layers) if (layer instanceof L.Polyline) layer.options.interactive = on;
+    for (const layer of layers) {
+      layer.options.interactive = on;  // canvas lines: read on every hit test
+      if (layer instanceof L.Marker) {  // ▶ / 🏁: DOM icons, so switch their pointer events too
+        const el = layer.getElement();
+        if (el) { el.style.pointerEvents = on ? "" : "none"; el.classList.toggle("leaflet-interactive", on); }
+      }
+    }
   }
 }
 map.on(L.Draw.Event.DRAWSTART, () => setRoutesInteractive(false));

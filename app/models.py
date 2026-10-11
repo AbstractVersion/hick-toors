@@ -34,20 +34,22 @@ class BBox(BaseModel):
     east: float
 
 
-MAX_ROUTE_CHARS = 8000  # ≤ 400 points of a Google polyline stay well under this
-
-
 def _check_route(value):
     """'' → None; otherwise a decodable Google polyline (precision 5) of real coordinates."""
     if value is None or value == "":
         return None
-    if not isinstance(value, str) or len(value) > MAX_ROUTE_CHARS:
-        raise ValueError(f"route must be an encoded polyline of at most {MAX_ROUTE_CHARS} characters")
-    from app.sources.wikiloc_route import decode_polyline  # local: the sources import this module
-    points = decode_polyline(value)  # ValueError on a bad / truncated string
-    if any(not (-90 <= lat <= 90 and -180 <= lon <= 180) for lat, lon in points):
-        raise ValueError("route points must be real coordinates")
+    from app.sources.wikiloc_route import polyline_problem  # local: the sources import this module
+    problem = polyline_problem(value)
+    if problem:
+        raise ValueError(problem)
     return value
+
+
+def _valid_route(value) -> bool:
+    try:
+        return _check_route(value) is not None
+    except ValueError:
+        return False
 
 
 class Hike(BaseModel):
@@ -386,9 +388,9 @@ def trip_size(trip: "SavedTripIn") -> int:
 def with_routes(trip, routes: dict[str, str | None]):
     """Copy of `trip` (any model with `hikes`) where hikes without a route get routes[hike.id].
 
-    A hike that already has a route keeps it. Added routes that would push the trip past MAX_TRIP_BYTES are
-    dropped, last first (the hikes stay)."""
-    added = [i for i, h in enumerate(trip.hikes) if not h.route and routes.get(h.id)]
+    A hike that already has a route keeps it; a route Hike would reject is never attached (model_copy skips
+    validation). Added routes that would push the trip past MAX_TRIP_BYTES are dropped, last first (the hikes stay)."""
+    added = [i for i, h in enumerate(trip.hikes) if not h.route and _valid_route(routes.get(h.id))]
     if not added:
         return trip
     while added:

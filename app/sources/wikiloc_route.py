@@ -26,7 +26,9 @@ ROUTE_TTL = 365 * 86400  # tracks don't change: a fetched route is kept for a ye
 ROUTE_DEADLINE_S = 15.0
 ROUTE_CONCURRENCY = 4
 ROUTE_COOLDOWN_S = 600.0  # after a blocked/failed page fetch, don't try Wikiloc again for 10 minutes
+NO_TRACK_TTL = 86400  # a page without a usable track: not asked again for a day
 CACHE_PREFIX = "route:v1:"
+MAX_ROUTE_CHARS = 8000  # ≤ 400 points of a Google polyline stay well under this
 
 LatLonPoint = tuple[float, float]
 FetchPage = Callable[[str], Awaitable[str | None]]
@@ -120,7 +122,7 @@ def parse_route(html: str) -> list[LatLonPoint] | None:
         data, _ = json.JSONDecoder().raw_decode(html, match.end())
         geom = data["mapData"][0]["geom"]
         raw = base64.b64decode(geom + "=" * (-len(geom) % 4), validate=True)
-    except (ValueError, KeyError, IndexError, TypeError, binascii.Error):
+    except (ValueError, KeyError, IndexError, TypeError, binascii.Error, RecursionError):  # deeply nested JSON too
         return None
     lines = decode_twkb(raw)
     if not lines:
@@ -178,6 +180,8 @@ def decode_polyline(text: str) -> list[LatLonPoint]:
                 shift += 5
                 if b < 0x20:
                     break
+                if shift > 30:  # no real coordinate needs more than 7 chunks
+                    raise ValueError("polyline value too long")
             deltas.append(~(result >> 1) if result & 1 else result >> 1)
         lat += deltas[0]
         lon += deltas[1]
@@ -185,14 +189,30 @@ def decode_polyline(text: str) -> list[LatLonPoint]:
     return points
 
 
+def polyline_problem(text) -> str | None:
+    """Why `text` can't be a stored route (None: it can) – a decodable polyline of real coordinates."""
+    if not isinstance(text, str) or not text:
+        return "route must be a non-empty encoded polyline"
+    if len(text) > MAX_ROUTE_CHARS:
+        return f"route must be an encoded polyline of at most {MAX_ROUTE_CHARS} characters"
+    try:
+        points = decode_polyline(text)
+    except (ValueError, OverflowError) as exc:
+        return f"route is not a valid encoded polyline ({exc})"
+    if any(not (-90 <= lat <= 90 and -180 <= lon <= 180) for lat, lon in points):
+        return "route points must be real coordinates"
+    return None
+
+
 def route_points(points: list[LatLonPoint] | None) -> str | None:
-    """Raw track → stored polyline (None when there is no usable line)."""
-    if not points:
+    """Raw track → stored polyline (None when there is no usable, valid line)."""
+    if not points or any(not (-90 <= lat <= 90 and -180 <= lon <= 180) for lat, lon in points):
         return None
     simple = simplify_route(points)
     if len(simple) < 2 or all(p == simple[0] for p in simple):
         return None
-    return encode_polyline(simple)
+    encoded = encode_polyline(simple)
+    return None if polyline_problem(encoded) else encoded
 
 
 def wikiloc_number(hike_id: str) -> str | None:
@@ -247,21 +267,35 @@ class RouteFetcher:
         self._clock = clock
         self._blocked_until = 0.0
 
+    def _lookup(self, number: str) -> tuple[bool, str | None]:
+        """(known, route): a valid cached route, or known=True with None for a recent "no track" answer."""
+        if self.cache is None:
+            return False, None
+        value = self.cache.get(CACHE_PREFIX + number)
+        if value == "":
+            return True, None
+        if isinstance(value, str) and polyline_problem(value) is None:
+            return True, value
+        return False, None
+
     def cached(self, hike_id: str) -> str | None:
         number = wikiloc_number(hike_id)
-        if number is None or self.cache is None:
-            return None
-        value = self.cache.get(CACHE_PREFIX + number)
-        return value if isinstance(value, str) and value else None
+        return None if number is None else self._lookup(number)[1]
 
     async def route(self, hike_id: str) -> str | None:
         number = wikiloc_number(hike_id)
         if number is None:
             return None
-        if self.cache is not None:
-            hit = await asyncio.to_thread(self.cached, hike_id)
-            if hit:
-                return hit
+        known, hit = await asyncio.to_thread(self._lookup, number)
+        if known:
+            return hit
+        try:
+            return await self._fetch_route(number)
+        except Exception as exc:  # a route is optional: never let a bad page break a save
+            print(f"wikiloc route {number} failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return None
+
+    async def _fetch_route(self, number: str) -> str | None:
         if not self.online or self._clock() < self._blocked_until:
             return None
         if self._semaphore is None:  # created lazily: it belongs to the running event loop
@@ -278,8 +312,9 @@ class RouteFetcher:
                 self._blocked_until = self._clock() + self._cooldown
                 return None
             route = route_points(await asyncio.to_thread(parse_route, html))
-        if route and self.cache is not None:
-            await asyncio.to_thread(self.cache.set, CACHE_PREFIX + number, route, ROUTE_TTL)
+        if self.cache is not None:  # the site answered: a track for a year, or "no track" for a day
+            await asyncio.to_thread(self.cache.set, CACHE_PREFIX + number, route or "",
+                                    ROUTE_TTL if route else NO_TRACK_TTL)
         return route
 
     async def many(self, hike_ids: list[str]) -> dict[str, str | None]:

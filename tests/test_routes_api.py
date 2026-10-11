@@ -147,3 +147,38 @@ def test_default_app_with_an_injected_engine_does_not_fetch(tmp_path):
     assert c.get("/api/config").json()["route_fetch"] is False
     assert c.post("/api/saved-trips", json={"name": "T", "hikes": [HIKE]}).json()["hikes"][0]["route"] is None
 
+
+
+def test_an_out_of_range_track_never_breaks_the_trip(tmp_path):
+    from tests.test_wikiloc_route import out_of_range_page
+
+    c, store, _, _ = make(tmp_path, pages=FakePages(html=out_of_range_page()))
+    tid = new_trip(c, hikes=[HIKE2])["id"]
+    r = c.post(f"/api/saved-trips/{tid}/items", json={"hike": HIKE})
+    assert r.status_code == 200 and r.json()["hikes"][1]["route"] is None
+    assert c.get(f"/api/saved-trips/{tid}").status_code == 200
+    assert [t["id"] for t in c.get("/api/saved-trips").json()] == [tid]
+    assert c.put(f"/api/saved-trips/{tid}", json={"name": "T", "hikes": [HIKE, HIKE2]}).status_code == 200
+    assert c.post("/api/saved-trips", json={"name": "U", "hikes": [{**HIKE, "id": "wikiloc:7"}]}).status_code == 201
+
+
+def test_a_broken_page_never_breaks_a_save(tmp_path):
+    c, _, _, _ = make(tmp_path, pages=FakePages(html="<script>var mapData = " + "[" * 200000 + "</script>"))
+    assert c.post("/api/saved-trips", json={"name": "T", "hikes": [HIKE]}).status_code == 201
+
+
+def test_a_crafted_route_in_a_body_is_a_422(tmp_path):
+    c, _, _, _ = make(tmp_path)
+    bad = {**HIKE, "route": "~" * 300 + "??"}
+    assert c.post("/api/saved-trips", json={"name": "T", "hikes": [bad]}).status_code == 422
+    tid = new_trip(c)["id"]
+    assert c.post(f"/api/saved-trips/{tid}/items", json={"hike": bad}).status_code == 422
+    assert c.put(f"/api/saved-trips/{tid}", json={"name": "T", "hikes": [bad]}).status_code == 422
+
+
+def test_route_endpoint_does_not_refetch_a_trail_without_track(tmp_path):
+    pages = FakePages(html="<html>no map</html>")
+    c, _, _, _ = make(tmp_path, pages=pages)
+    assert c.get("/api/hikes/8/route").json() == {"route": None}
+    assert c.get("/api/hikes/8/route").json() == {"route": None}
+    assert len(pages.urls) == 1

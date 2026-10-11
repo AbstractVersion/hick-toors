@@ -317,3 +317,61 @@ async def test_route_fetcher_many_returns_a_map(tmp_path):
     fetcher = RouteFetcher(cache=DiskCache(tmp_path), fetch_page=FakePages())
     got = await fetcher.many(["wikiloc:1", "airbnb:2", "wikiloc:1"])
     assert set(got) == {"wikiloc:1", "airbnb:2"} and got["wikiloc:1"] and got["airbnb:2"] is None
+
+
+# --- review fixes: never return / cache a route Hike would reject; never raise ------------------------------
+
+def out_of_range_page() -> str:
+    geom = base64.b64encode(twkb(2, [[(20.7, 1000.0), (20.8, 1000.1), (20.9, 1000.0)]])).decode()
+    return page(geom)
+
+
+def test_out_of_range_track_gives_no_route():
+    points = parse_route(out_of_range_page())
+    assert points and points[0][0] == 1000.0  # decoded, but...
+    assert route_points(points) is None  # ...never becomes a route
+
+
+async def test_route_fetcher_out_of_range_track_is_no_route(tmp_path):
+    cache = DiskCache(tmp_path)
+    fetcher = RouteFetcher(cache=cache, fetch_page=FakePages(html=out_of_range_page()))
+    assert await fetcher.route("wikiloc:5") is None
+    assert cache.get("route:v1:5") == ""  # a day's "no track", not a bad polyline
+
+
+def test_parse_route_survives_deeply_nested_json():
+    assert parse_route("<script>var mapData = " + "[" * 200000 + "</script>") is None
+
+
+async def test_route_fetcher_never_raises(tmp_path):
+    async def broken(url):
+        raise RuntimeError("boom")
+
+    fetcher = RouteFetcher(cache=DiskCache(tmp_path), fetch_page=broken)
+    assert await fetcher.route("wikiloc:5") is None
+
+
+def test_decode_polyline_overlong_value_is_a_value_error():
+    with pytest.raises(ValueError):
+        decode_polyline("~" * 300 + "??")
+
+
+async def test_no_track_is_cached_for_a_day_and_not_refetched(tmp_path):
+    clock = [1000.0]
+    cache = DiskCache(tmp_path, clock=lambda: clock[0])
+    pages = FakePages(html="<html>no map</html>")
+    fetcher = RouteFetcher(cache=cache, fetch_page=pages)
+    assert await fetcher.route("wikiloc:5") is None
+    assert await fetcher.route("wikiloc:5") is None
+    assert fetcher.cached("wikiloc:5") is None
+    assert len(pages.urls) == 1
+    clock[0] += 86401
+    pages.html = page(FIXTURE["geom"])
+    assert await fetcher.route("wikiloc:5")
+    assert len(pages.urls) == 2
+
+
+def test_cached_ignores_an_invalid_cached_value(tmp_path):
+    cache = DiskCache(tmp_path)
+    cache.set("route:v1:5", "~" * 300 + "??", ROUTE_TTL)
+    assert RouteFetcher(cache=cache, fetch_page=FakePages()).cached("wikiloc:5") is None

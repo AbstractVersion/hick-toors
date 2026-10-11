@@ -1406,7 +1406,7 @@ def check_routes(browser, errors: list[str]) -> None:
         assert info["pin93"] and not info["pin95"] and info["pins"] == 1, info  # only the trackless hike keeps its pin
         assert info["renderer"] == 10, info
         print(f"PASS {where}: tracks drawn (casing 8 px white + 5 px colour), ▶ ×3, 🏁 ×2 (not on the loop), "
-              "map fits the tracks; the trackless hike keeps its 🥾 pin; the lazily found track replaced its pin")
+              "map fits the tracks; the trackless hike keeps its 🥾 pin; the found track (wikiloc:95) is drawn instead of its pin")
 
     def click_line(pg, hike_id: str, name: str, tap: bool = False) -> None:
         x, y = pg.evaluate("""(id) => {
@@ -1445,12 +1445,21 @@ def check_routes(browser, errors: list[str]) -> None:
     pg.locator("#trips-list li", has_text="Zagori tracks").click()
     expect(pg.locator("#trip-editor")).to_be_visible()
     dots = pg.locator("#trip-hikes .route-dot")
-    expect(dots).to_have_count(2)
-    colours = [d.evaluate("(el) => getComputedStyle(el).backgroundColor") for d in dots.all()]
+    expect(dots).to_have_count(3)  # 2 stored + wikiloc:95, found by the editor's lookup (a dot appears late)
+    rows = pg.locator("#trip-hikes li")
+    expect(rows.nth(2).locator(".route-dot")).to_have_count(0)  # wikiloc:93: the server knows no track
+    colours = [rows.nth(i).locator(".route-dot").evaluate("(el) => getComputedStyle(el).backgroundColor")
+               for i in (0, 1, 3)]
+    pg.click("#trip-save")  # Save stores the found track: it is never looked up again
+    pg.wait_for_function("""(id) => fetch(`/api/saved-trips/${encodeURIComponent(id)}`).then((r) => r.json())
+        .then((t) => !!t.hikes[3].route)""", arg=trip["id"])
+    stored = pg.evaluate("(id) => fetch(`/api/saved-trips/${encodeURIComponent(id)}`).then((r) => r.json())", trip["id"])
+    assert [h.get("route") for h in stored["hikes"]] == [ROUTE_TRAVERSE, ROUTE_LOOP, None, lazy], stored["hikes"]
+    print("PASS the editor looks up hikes without a stored track: a late dot for the found one; Save stores it")
     pg.click("#trip-show")
     expect(pg.locator("#trips-dialog")).to_be_hidden()
     assert_drawn(pg, "desktop Show on map")
-    line_colours = pg.evaluate("""() => ['wikiloc:91', 'wikiloc:92'].map((id) => {
+    line_colours = pg.evaluate("""() => ['wikiloc:91', 'wikiloc:92', 'wikiloc:95'].map((id) => {
         const el = document.createElement('i'); el.style.color = state.routes.get(id).line.options.color;
         document.body.appendChild(el); const c = getComputedStyle(el).color; el.remove(); return c; })""")
     assert colours == line_colours, (colours, line_colours)
@@ -1471,6 +1480,17 @@ def check_routes(browser, errors: list[str]) -> None:
     pg.wait_for_timeout(600)  # tiles
     shot(pg, "routes-desktop.png")
     print("PASS clicking a track opens its hike popup; a list row focuses its track")
+
+    # Drawing a search area: the tracks and their ▶ / 🏁 markers let clicks through to Leaflet.draw.
+    pg.click("#draw-rect-btn")
+    off = pg.evaluate("""() => [...state.routes.values()].flatMap((r) => r.layers).map((l) =>
+        l instanceof L.Marker ? getComputedStyle(l.getElement()).pointerEvents : String(l.options.interactive))""")
+    assert set(off) == {"none", "false"}, off
+    pg.evaluate("stopDrawing()")
+    on = pg.evaluate("""() => [...state.routes.values()].flatMap((r) => r.layers).map((l) =>
+        l instanceof L.Marker ? getComputedStyle(l.getElement()).pointerEvents : String(l.options.interactive))""")
+    assert "none" not in on and "false" not in on, on
+    print("PASS while drawing, tracks + ▶/🏁 markers are not clickable; they are again after the draw")
 
     # A new search clears the tracks with the trip.
     pg.evaluate("clearAll()")

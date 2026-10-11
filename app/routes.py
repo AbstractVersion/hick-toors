@@ -111,7 +111,7 @@ def load_routes_file(path: Path) -> dict[str, str]:
         try:
             if isinstance(hike_id, str) and _check_route(route):
                 routes[hike_id] = route
-        except ValueError:
+        except (ValueError, OverflowError):
             print(f"skipping invalid route for {hike_id}", file=sys.stderr)
     return routes
 

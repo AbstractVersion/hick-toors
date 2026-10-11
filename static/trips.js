@@ -201,6 +201,7 @@ async function openTrip(id) {
   renderTripItems();
   $("trips-list-view").hidden = true;
   $("trip-editor").hidden = false;
+  lookupMissingRoutes(t, (h, i) => addEditorDot(t, i));  // dots for tracks the server knows; Save stores them
 }
 // "🗳️ #2 in '<title>' · 😍1 🙂2 🚫1 → Vote" when the trip is in the open round; Vote opens vote.js's dialog there.
 async function showRoundLine(tripId) {
@@ -512,18 +513,31 @@ function showTripOnMap(t = trips.current, name = $("trip-name").value.trim() || 
   fitLayers([...hikeLayer.getLayers(), ...routeLayer.getLayers(), ...stayLayer.getLayers(), ...sightMarkers]);
   fillMissingRoutes(t);
 }
-// Hikes saved without a track: ask the server (its cache first) once per showing; a found track replaces the pin and
-// is kept on the trip object, so the editor's Save stores it and it is never looked up again.
-function fillMissingRoutes(t) {
-  const gen = state.hikeGen;
+// Hikes saved without a track: ask the server (its cache first). A found track is kept on the trip object, so
+// the editor's Save stores it and it is never looked up again; onFound(h, i) shows it.
+function lookupMissingRoutes(t, onFound) {
   t.hikes.forEach(async (h, i) => {
     if (h.route || !/^wikiloc:\d+$/.test(h.id)) return;
     let data;
     try { data = await api(`/api/hikes/${encodeURIComponent(h.id)}/route`); } catch { return; }
-    if (!data?.route || gen !== state.hikeGen) return;  // another trip / search is shown by now
+    if (!data?.route || h.route) return;
     h.route = data.route;
-    replacePinWithRoute(h, routeColor(i));
+    onFound(h, i);
   });
+}
+// On the map: a found track replaces the hike's pin (unless another trip / search is shown by now).
+function fillMissingRoutes(t) {
+  const gen = state.hikeGen;
+  lookupMissingRoutes(t, (h, i) => {
+    if (gen === state.hikeGen) replacePinWithRoute(h, routeColor(i));
+    addEditorDot(t, i);
+  });
+}
+// The open editor's row of a lazily routed hike gets its colour dot too (rows are in trip order).
+function addEditorDot(t, i) {
+  if (trips.current !== t || $("trip-editor").hidden) return;
+  const label = $("trip-hikes").children[i]?.firstElementChild;
+  if (label && !label.querySelector(".route-dot")) label.prepend(routeDot(routeColor(i)));
 }
 function resetDelete() {
   clearTimeout(trips.deleteTimer);

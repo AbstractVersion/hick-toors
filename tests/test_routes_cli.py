@@ -129,3 +129,20 @@ def test_apply_missing_db_or_bad_file(tmp_path):
     db, _, _, _ = seeded(tmp_path)
     with pytest.raises(SystemExit):
         main(["apply", str(routes_file), "--db", str(db)])
+
+
+def test_apply_skips_a_crafted_route_cleanly(tmp_path, capsys):
+    db, store, a, _ = seeded(tmp_path)
+    routes_file = tmp_path / "routes.json"
+    routes_file.write_text(json.dumps({"routes": {"wikiloc:1": "~" * 300 + "??", "wikiloc:3": "_p~iF~ps|U"}}))
+    assert main(["apply", str(routes_file), "--db", str(db)]) == 0
+    assert "1 routes in" in capsys.readouterr().out
+    assert store.get(a.id).hikes[0].route is None
+
+
+def test_with_routes_never_attaches_an_invalid_route():
+    from app.models import with_routes
+
+    trip = SavedTripIn(name="T", hikes=[hike(1), hike(2)])
+    filled = with_routes(trip, {"wikiloc:1": "~" * 300 + "??", "wikiloc:2": "_ibE_seK"})
+    assert [h.route for h in filled.hikes] == [None, "_ibE_seK"]
