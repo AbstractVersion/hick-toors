@@ -972,8 +972,42 @@ def main() -> None:
         page.unroute(nearby_re)
         print("PASS 🌿 Find nearby sights: nothing new, API error and a stale answer are handled")
 
+        # Logged out: ⬇ Export and 🖨️ PDF of the stored trip work with no login dialog and no save (PUT).
+        page.click("#trips-close")
+        page.click("#auth-logout")
+        expect(auth_area).to_have_text("👤 Log in", use_inner_text=True)
+        page.click("#trips-btn")
         rows.first.click()
+        expect(page.locator("#trip-editor")).to_be_visible()
+        writes: list[str] = []
+
+        def on_write(req) -> None:
+            if req.method in ("PUT", "POST", "DELETE") and "/api/saved-trips" in req.url:
+                writes.append(f"{req.method} {req.url}")
+
+        page.on("request", on_write)
+        with page.expect_download() as download_info:
+            page.click("#trip-export")
+        assert download_info.value.suggested_filename.endswith(".md"), download_info.value.suggested_filename
+        with page.context.expect_page() as pdf_info:
+            page.click("#trip-pdf")
+        pdf_tab = pdf_info.value
+        pdf_tab.wait_for_url(re.compile(r"/api/saved-trips/[^/?]+/print$"))
+        expect(pdf_tab.locator("h1")).to_be_visible()
+        pdf_tab.close()
+        expect(auth_dlg).to_be_hidden()
+        expect(page.locator("#trips-error")).to_be_hidden()
+        page.remove_listener("request", on_write)
+        assert not writes, writes
+        print("PASS logged out: ⬇ Export downloads the .md and 🖨️ PDF opens …/print, no login dialog, no save")
+
+        # Logged-out Delete asks to log in first, then carries on (arms the two-click confirm).
         page.click("#trip-delete")
+        expect(auth_dlg).to_be_visible()
+        page.fill("#auth-username", "nikos")
+        page.fill("#auth-password", "password1")
+        page.press("#auth-password", "Enter")
+        expect(auth_dlg).to_be_hidden()
         expect(page.locator("#trip-delete")).to_have_text("Confirm delete")
         page.click("#trip-delete")
         expect(rows).to_have_count(0)
@@ -981,7 +1015,7 @@ def main() -> None:
         expect(page.locator("#trips-count")).to_have_text("(0)")
         page.click("#trips-close")
         expect(dlg).to_be_hidden()
-        print("PASS Delete needs two clicks; list empty, count (0)")
+        print("PASS logged-out Delete asks to log in, then needs two clicks; list empty, count (0)")
 
         # ---- 🌿 Nature layer (canned /api/nature; the trip part uses the real saved-trips API) ----
         def nature_settle(ms: int = 900) -> None:

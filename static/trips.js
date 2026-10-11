@@ -217,7 +217,7 @@ function renderTripItems() {
         b.title = title;
         b.setAttribute("aria-label", `${title}: ${item.name}`);
         b.disabled = disabled;
-        b.addEventListener("click", () => requireLogin(action));  // the list changes are saved with Save changes
+        b.addEventListener("click", action);  // only the editor changes; Save changes (gated) stores it
         tools.appendChild(b);
       };
       tool("↑", "Move up", i === 0, () => moveItem(kind, i, -1));
@@ -429,14 +429,21 @@ async function saveNow() {
   setTimeout(() => { $("trip-save").textContent = "Save changes"; }, 1500);
 }
 async function exportTrip() {
-  // Export what is on screen: save first, then download the server's Markdown.
-  if (!trips.current || !(await persistTrip())) return;
+  // Export what is on screen: save first, then download the server's Markdown. Logged out nothing can be saved
+  // (the export itself is open), so the stored trip is downloaded as it is.
+  if (!trips.current || (auth.user && !(await persistTrip()))) return;
   window.location.href = tripPath(trips.current.id, "/export.md");
 }
 async function printTrip() {
   // Same as export, but opens the printable page (its print dialog offers "Save as PDF"). The tab is opened
   // right in the click: Safari blocks a window.open that comes after an await (the save) as a pop-up.
   if (!trips.current || trips.busy) return;
+  if (!auth.user) {  // logged out: no save (it would get a 401) – open the stored trip's page straight away
+    const direct = window.open(tripPath(trips.current.id, "/print"), "_blank");
+    if (direct) direct.opener = null;
+    else showTripsError("Allow pop-ups to open the PDF page");
+    return;
+  }
   const tab = window.open("", "_blank");
   if (tab) {
     tab.opener = null;
