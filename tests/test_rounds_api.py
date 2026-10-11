@@ -74,7 +74,7 @@ def test_no_round_current_is_null_and_history_empty(env):
 def test_open_round_and_read_it_logged_out(env):
     view = open_round(env)
     assert view["title"] == "Autumn" and view["opener"] == "Nikos" and view["status"] == "open"
-    assert view["me"] == {"rated": 0, "total": 2, "love_trip_id": None}
+    assert view["me"] == {"rated": 0, "total": 2, "love_trip_id": None, "joined": True}
     cur = env.anon.get("/api/rounds/current").json()
     assert cur["id"] == view["id"] and cur["me"] is None
     assert all(t["my_rating"] is None for t in cur["trips"])
@@ -91,7 +91,7 @@ def test_vote_trip_and_moved_love(env):
     view = r.json()["round"]
     ta = next(t for t in view["trips"] if t["trip_id"] == a)
     assert ta["my_rating"] == "love" and ta["votes"] == [{"username": "Maria", "rating": "love", "comment": "great"}]
-    assert view["me"] == {"rated": 1, "total": 2, "love_trip_id": a}
+    assert view["me"] == {"rated": 1, "total": 2, "love_trip_id": a, "joined": True}
     r = env.maria.put(f"/api/rounds/{rid}/trips/{b}/vote", json={"rating": "love"})
     assert r.json()["moved_love_from"] == a
     r = env.maria.delete(f"/api/rounds/{rid}/trips/{b}/vote")
@@ -220,7 +220,20 @@ async def test_vote_standings_without_me_or_my_rating(standings):
     env.maria.put(f"/api/rounds/{rid}/trips/{a}/stays/airbnb:1/vote", json={"rating": "ok"})
     rnd = json.loads(await tools.vote_standings())["round"]
     assert rnd["id"] == rid and "me" not in rnd and sorted(rnd["waiting_for"]) == ["Maria", "Nikos"]
+    assert rnd["participants"] == ["Nikos", "Maria"]
     assert all(t["my_rating"] is None and all(s["my_rating"] is None for s in t["stays"]) for t in rnd["trips"])
     ta = next(t for t in rnd["trips"] if t["trip_id"] == a)
     assert ta["votes"][0] == {"username": "Maria", "rating": "love", "comment": "<b>"}
     assert ta["counts"]["love"] == 1
+
+
+def test_join_route(env):
+    rid = open_round(env)["id"]
+    assert env.anon.post(f"/api/rounds/{rid}/join").status_code == 401
+    r = env.maria.post(f"/api/rounds/{rid}/join")
+    assert r.status_code == 200 and r.json()["participants"] == ["Nikos", "Maria"] and r.json()["me"]["joined"] is True
+    assert env.maria.post(f"/api/rounds/{rid}/join").json()["participants"] == ["Nikos", "Maria"]
+    assert env.maria.post("/api/rounds/nope/join").status_code == 404
+    env.nikos.post(f"/api/rounds/{rid}/close")
+    r = env.maria.post(f"/api/rounds/{rid}/join")
+    assert r.status_code == 409 and r.json()["detail"] == "This round is closed"

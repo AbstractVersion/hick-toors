@@ -89,6 +89,9 @@ class RoundStore:
                        "round_id TEXT NOT NULL, trip_id TEXT NOT NULL, stay_id TEXT NOT NULL, "
                        "user_id INTEGER NOT NULL, rating TEXT NOT NULL, comment TEXT, updated_at TEXT NOT NULL, "
                        "PRIMARY KEY (round_id, trip_id, stay_id, user_id))")
+            db.execute("CREATE TABLE IF NOT EXISTS round_participants ("
+                       "round_id TEXT NOT NULL, user_id INTEGER NOT NULL, joined_at TEXT NOT NULL, "
+                       "PRIMARY KEY (round_id, user_id))")
             db.execute("CREATE INDEX IF NOT EXISTS rounds_status ON rounds (status)")
 
     def __repr__(self) -> str:
@@ -184,21 +187,43 @@ class RoundStore:
                 stay = winner(top.stays, lambda s: s.counts)
                 won = Winner(trip_id=top.trip_id, trip_name=top.name,
                              stay_id=stay.stay_id if stay else None, stay_name=stay.name if stay else None)
+        participants = self._participants(db, round_id, opener, created_at)
         waiting = []
         if status == "open":
             rated: dict[str, int] = {}
             for t in ranked:
                 for v in t.votes:
                     rated[v.username] = rated.get(v.username, 0) + 1
-            names = [r[0] for r in db.execute("SELECT username FROM users").fetchall()]
-            waiting = sorted((n for n in names if rated.get(n, 0) < len(ranked)), key=lambda n: (n.lower(), n))
+            waiting = sorted((n for n in participants if rated.get(n, 0) < len(ranked)),
+                             key=lambda n: (n.lower(), n))
         return RoundView(id=round_id, title=title, opener=opener or "—", status=status,
                          created_at=_parse(created_at), closes_at=_parse(closes_at), closed_at=_parse(closed_at),
-                         trips=ranked, waiting_for=waiting, me=None, winner=won)
+                         trips=ranked, waiting_for=waiting, participants=participants, me=None, winner=won)
+
+    @staticmethod
+    def _participants(db, round_id: str, opener: str | None, created_at: str) -> list[str]:
+        """Opener first, then everyone else by join time: table rows ∪ voters (rounds from before joining existed)."""
+        when: dict[str, str] = {}
+        queries = (
+            "SELECT u.username, MIN(p.joined_at) FROM round_participants p JOIN users u ON u.id = p.user_id "
+            "WHERE p.round_id = ? GROUP BY u.username",
+            "SELECT u.username, MIN(v.updated_at) FROM trip_votes v JOIN users u ON u.id = v.user_id "
+            "WHERE v.round_id = ? GROUP BY u.username",
+            "SELECT u.username, MIN(v.updated_at) FROM stay_votes v JOIN users u ON u.id = v.user_id "
+            "WHERE v.round_id = ? GROUP BY u.username")
+        for query in queries:
+            for name, at in db.execute(query, (round_id,)):
+                if name not in when or at < when[name]:
+                    when[name] = at
+        if opener:
+            when[opener] = ""  # sorts before every timestamp
+        return sorted(when, key=lambda n: (when[n], n.lower(), n))
 
     def _view(self, db, row, viewer: User | None) -> RoundView:
         result = row[8]
         view = RoundView.model_validate_json(result) if result else self._live_view(db, row)
+        if result and not view.participants:  # frozen before participants existed
+            view = view.model_copy(update={"participants": _voters(view)})
         return _personalize(view, viewer)
 
     def _load_row(self, db, round_id: str):
@@ -263,6 +288,17 @@ class RoundStore:
                        (round_id, data.title, user.id, _stamp(now), _stamp(data.closes_at)))
             db.executemany("INSERT INTO round_trips (round_id, trip_id, position) VALUES (?, ?, ?)",
                            [(round_id, trip_id, i) for i, trip_id in enumerate(data.trip_ids)])
+            self._join(db, round_id, user)
+            return self._view(db, self._row(db, round_id), user)
+
+    def _join(self, db, round_id: str, user: User) -> None:
+        db.execute("INSERT OR IGNORE INTO round_participants (round_id, user_id, joined_at) VALUES (?, ?, ?)",
+                   (round_id, user.id, _stamp(self.now())))
+
+    def join(self, round_id: str, user: User) -> RoundView:
+        with self._write() as db:
+            self._open_row(db, round_id)
+            self._join(db, round_id, user)
             return self._view(db, self._row(db, round_id), user)
 
     def _check_trips(self, db, trip_ids: list[str]) -> None:
@@ -336,6 +372,7 @@ class RoundStore:
                     db.execute("UPDATE trip_votes SET rating = 'ok', updated_at = ? WHERE round_id = ? "
                                "AND user_id = ? AND rating = 'love' AND trip_id != ?",
                                (_stamp(self.now()), round_id, user.id, trip_id))
+            self._join(db, round_id, user)
             db.execute("INSERT OR REPLACE INTO trip_votes (round_id, trip_id, user_id, rating, comment, updated_at) "
                        "VALUES (?, ?, ?, ?, ?, ?)",
                        (round_id, trip_id, user.id, vote.rating, vote.comment, _stamp(self.now())))
@@ -362,6 +399,7 @@ class RoundStore:
                     moved = old[0][0]
                     db.execute(f"UPDATE stay_votes SET rating = 'ok', updated_at = ? WHERE {where}",
                                (_stamp(self.now()), *args))
+            self._join(db, round_id, user)
             db.execute("INSERT OR REPLACE INTO stay_votes "
                        "(round_id, trip_id, stay_id, user_id, rating, comment, updated_at) "
                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -377,6 +415,13 @@ class RoundStore:
             return VoteResult(round=self._view(db, self._row(db, round_id), user), moved_love_from=None)
 
 
+def _voters(view: RoundView) -> list[str]:
+    names = {v.username for t in view.trips for v in [*t.votes, *(x for s in t.stays for x in s.votes)]}
+    names.add(view.opener)
+    names.discard("—")
+    return sorted(names, key=lambda n: (n != view.opener, n.lower(), n))
+
+
 def _personalize(view: RoundView, viewer: User | None) -> RoundView:
     """Fill `me` and every `my_rating` for the viewer from the view's own votes lists (null when logged out)."""
     if viewer is None:
@@ -390,5 +435,6 @@ def _personalize(view: RoundView, viewer: User | None) -> RoundView:
         stays = [s.model_copy(update={"my_rating": mine(s.votes)}) for s in t.stays]
         trips.append(t.model_copy(update={"my_rating": mine(t.votes), "stays": stays}))
     me = Me(rated=sum(1 for t in trips if t.my_rating is not None), total=len(trips),
-            love_trip_id=next((t.trip_id for t in trips if t.my_rating == "love"), None))
+            love_trip_id=next((t.trip_id for t in trips if t.my_rating == "love"), None),
+            joined=viewer.username in view.participants)
     return view.model_copy(update={"trips": trips, "me": me})

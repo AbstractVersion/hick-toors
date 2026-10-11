@@ -227,7 +227,7 @@ async def vote_standings() -> str:
     """Current group-voting standings (read-only): who is winning and who has not voted yet.
 
     Returns JSON {"round": {id, title, opener, status, closes_at, trips: [{trip_id, name, rank, score,
-    counts, votes, stays}], waiting_for: [username], winner}} for the open round (or the one that closed
+    counts, votes, stays}], participants: [username], waiting_for: [username], winner}} for the open round (or the one that closed
     in the last 7 days), or {"round": null} when there is none.
     """
     view = round_store().current(None)

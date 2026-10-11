@@ -50,6 +50,10 @@ def rounds_router(rounds: RoundStore) -> APIRouter:
     def patch_round(round_id: str, body: RoundPatch, user: User = Depends(require_user)):
         return call(rounds.patch, round_id, user, body)
 
+    @router.post("/{round_id}/join", response_model=RoundView)
+    def join_round(round_id: str, user: User = Depends(require_user)):
+        return call(rounds.join, round_id, user)
+
     @router.post("/{round_id}/close", response_model=RoundView)
     def close_round(round_id: str, user: User = Depends(require_user)):
         return call(rounds.close, round_id, user)

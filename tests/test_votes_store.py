@@ -191,19 +191,20 @@ def test_me_and_waiting_for(env):
     rid = open_round(env).id
     a, b, c = env.ids["A"], env.ids["B"], env.ids["C"]
     view = env.store.get(rid, env.nikos)
-    assert view.me.model_dump() == {"rated": 0, "total": 3, "love_trip_id": None}
-    assert view.waiting_for == ["Kostas", "Maria", "Nikos"]
+    assert view.me.model_dump() == {"rated": 0, "total": 3, "love_trip_id": None, "joined": True}
+    assert view.waiting_for == ["Nikos"]  # only participants: the opener is the only one in so far
     for t in (a, b):
         env.store.vote_trip(rid, t, env.nikos, VoteIn(rating="ok"))
     env.store.vote_stay(rid, c, "airbnb:C1", env.nikos, VoteIn(rating="love"))  # stays don't count
     view = env.store.get(rid, env.nikos)
-    assert view.me.model_dump() == {"rated": 2, "total": 3, "love_trip_id": None}
+    assert view.me.model_dump() == {"rated": 2, "total": 3, "love_trip_id": None, "joined": True}
     assert "Nikos" in view.waiting_for
     env.store.vote_trip(rid, c, env.nikos, VoteIn(rating="love"))
+    env.store.join(rid, env.kostas)
     for t in (a, b, c):
         env.store.vote_trip(rid, t, env.maria, VoteIn(rating="nogo"))
     view = env.store.get(rid, env.nikos)
-    assert view.me.model_dump() == {"rated": 3, "total": 3, "love_trip_id": c}
+    assert view.me.model_dump() == {"rated": 3, "total": 3, "love_trip_id": c, "joined": True}
     assert view.waiting_for == ["Kostas"]
 
 
@@ -318,7 +319,7 @@ def test_lazy_close_freezes_result(env):
     after = env.store.get(rid, env.nikos)
     assert after == before
     assert by_id(after)[a].my_rating == "love"
-    assert after.me.model_dump() == {"rated": 1, "total": 3, "love_trip_id": a}
+    assert after.me.model_dump() == {"rated": 1, "total": 3, "love_trip_id": a, "joined": True}
     anon = env.store.get(rid, None)
     assert anon.me is None and all(t.my_rating is None for t in anon.trips)
     with sqlite3.connect(env.path) as db:
@@ -354,7 +355,7 @@ def test_deleted_trip_and_removed_stay_before_close(env):
     env.trips.replace(b, SavedTripIn(name=trip_b.name, stays=[trip_b.stays[1]]))
     view = env.store.get(rid, env.nikos)
     assert a not in by_id(view)
-    assert view.me.model_dump() == {"rated": 0, "total": 2, "love_trip_id": None}
+    assert view.me.model_dump() == {"rated": 0, "total": 2, "love_trip_id": None, "joined": True}
     stays_b = by_id(view)[b].stays
     assert [s.stay_id for s in stays_b] == ["airbnb:B2"] and stays_b[0].my_rating is None
     with pytest.raises(NotInRound):
@@ -441,3 +442,93 @@ def test_concurrent_loves_keep_one(env):
         loves = db.execute("SELECT COUNT(*) FROM trip_votes WHERE round_id = ? AND user_id = ? AND rating = 'love'",
                            (rid, env.nikos.id)).fetchone()[0]
     assert loves == 1
+
+
+# --- participants -----------------------------------------------------------------
+
+def test_opener_auto_joined_and_join_idempotent(env):
+    rid = open_round(env).id
+    assert env.store.get(rid, env.maria).me.joined is False
+    assert env.store.get(rid, None).me is None
+    env.clock.advance(minutes=5)
+    view = env.store.join(rid, env.maria)
+    assert view.participants == ["Nikos", "Maria"] and view.me.joined is True
+    env.clock.advance(minutes=5)
+    env.store.join(rid, env.kostas)
+    again = env.store.join(rid, env.maria)  # idempotent, keeps its place
+    assert again.participants == ["Nikos", "Maria", "Kostas"]
+    assert again.waiting_for == ["Kostas", "Maria", "Nikos"]
+    assert env.store.get(rid, env.nikos).me.joined is True
+
+
+def test_any_vote_joins(env):
+    rid = open_round(env).id
+    env.store.vote_trip(rid, env.ids["A"], env.maria, VoteIn(rating="ok"))
+    env.clock.advance(minutes=1)
+    env.store.vote_stay(rid, env.ids["A"], "airbnb:A1", env.kostas, VoteIn(rating="love"))
+    assert env.store.get(rid, None).participants == ["Nikos", "Maria", "Kostas"]
+
+
+def test_join_closed_or_cancelled_or_unknown(env):
+    rid = open_round(env).id
+    env.store.close(rid, env.nikos)
+    with pytest.raises(RoundClosed) as exc:
+        env.store.join(rid, env.maria)
+    assert str(exc.value) == "This round is closed"
+    rid2 = open_round(env).id
+    env.store.cancel(rid2, env.nikos)
+    with pytest.raises(RoundClosed):
+        env.store.join(rid2, env.maria)
+    with pytest.raises(RoundNotFound):
+        env.store.join("nope", env.maria)
+
+
+def test_participants_union_for_round_without_rows(env):
+    """A round from before participants existed: no rows, but opener and voters count."""
+    rid = open_round(env).id
+    env.store.vote_trip(rid, env.ids["A"], env.maria, VoteIn(rating="ok"))
+    env.store.vote_stay(rid, env.ids["B"], "airbnb:B1", env.kostas, VoteIn(rating="ok"))
+    with sqlite3.connect(env.path) as db:
+        db.execute("DELETE FROM round_participants")
+        db.execute("UPDATE trip_votes SET updated_at = '2026-10-11T13:00:00.000000Z'")
+        db.execute("UPDATE stay_votes SET updated_at = '2026-10-11T12:30:00.000000Z'")
+    view = env.store.get(rid, env.kostas)
+    assert view.participants == ["Nikos", "Kostas", "Maria"]  # opener, then first vote time
+    assert view.me.joined is True
+    assert env.store.get(rid, env.nikos).waiting_for == ["Kostas", "Maria", "Nikos"]
+    assert env.store.get(rid, None).participants == ["Nikos", "Kostas", "Maria"]
+
+
+def test_waiting_for_excludes_non_participants(env):
+    rid = open_round(env).id
+    view = env.store.get(rid, env.maria)
+    assert "Maria" not in view.waiting_for and "Kostas" not in view.waiting_for
+    assert view.me.joined is False
+
+
+def test_frozen_result_keeps_participants_and_recomputes_joined(env):
+    rid = open_round(env).id
+    env.store.join(rid, env.maria)
+    env.store.vote_trip(rid, env.ids["A"], env.maria, VoteIn(rating="love"))
+    env.clock.advance(hours=49)
+    kostas = env.store.get(rid, env.kostas)
+    assert kostas.status == "closed" and kostas.participants == ["Nikos", "Maria"] and kostas.me.joined is False
+    assert env.store.get(rid, env.maria).me.joined is True
+    with sqlite3.connect(env.path) as db:
+        frozen = db.execute("SELECT result FROM rounds WHERE id = ?", (rid,)).fetchone()[0]
+    assert '"participants":["Nikos","Maria"]' in frozen
+    assert '"joined"' not in frozen  # per-viewer, never frozen
+
+
+def test_old_frozen_result_without_participants_falls_back_to_voters(env):
+    import json
+    rid = open_round(env).id
+    env.store.vote_trip(rid, env.ids["A"], env.maria, VoteIn(rating="love"))
+    env.clock.advance(hours=49)
+    env.store.get(rid, None)
+    with sqlite3.connect(env.path) as db:
+        data = json.loads(db.execute("SELECT result FROM rounds WHERE id = ?", (rid,)).fetchone()[0])
+        del data["participants"]
+        db.execute("UPDATE rounds SET result = ? WHERE id = ?", (json.dumps(data), rid))
+    assert env.store.get(rid, env.maria).participants == ["Nikos", "Maria"]
+    assert env.store.get(rid, env.maria).me.joined is True

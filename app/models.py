@@ -545,6 +545,7 @@ class Me(BaseModel):
     rated: int
     total: int
     love_trip_id: str | None = None
+    joined: bool = False
 
 
 class Winner(BaseModel):
@@ -564,6 +565,7 @@ class RoundView(BaseModel):
     closed_at: datetime | None = None
     trips: list[TripStanding]
     waiting_for: list[str]
+    participants: list[str] = []
     me: Me | None = None
     winner: Winner | None = None
 
