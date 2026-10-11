@@ -603,6 +603,7 @@ function startRound() {
 $("vote-btn").addEventListener("click", () => openVote());
 $("vote-close").addEventListener("click", () => $("vote-dialog").close());
 $("vote-dialog").addEventListener("close", onVoteClose);
+$("vote-dialog").addEventListener("close", () => window.mobile?.dialogClosed());  // phone: back to the previous tab
 $("vote-start").addEventListener("submit", submitStart);
 $("vote-start-back").addEventListener("click", backToCurrent);
 // A row kept because its comment had the focus is redrawn after the focus leaves it – unless the focus went to a

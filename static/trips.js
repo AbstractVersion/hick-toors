@@ -486,6 +486,7 @@ async function printTrip() {
 // Shows a trip (default: the one in the editor, under the name typed there) on the map; the vote dialog passes its own.
 function showTripOnMap(t = trips.current, name = $("trip-name").value.trim() || t?.name) {
   if (!t) return;
+  window.mobile?.showMap();  // phone: from the 📋 List tab too, the trip is shown on the map
   clearAll();
   t.hikes.forEach(addHike);
   t.stays.forEach(addStay);
@@ -522,6 +523,7 @@ async function deleteTrip() {
 
 $("trips-btn").addEventListener("click", () => openTripsDialog());
 $("trips-close").addEventListener("click", () => $("trips-dialog").close());
+$("trips-dialog").addEventListener("close", () => window.mobile?.dialogClosed());  // phone: back to the previous tab
 $("trip-back").addEventListener("click", () => { showTripsError(""); showTripList(); reloadTripList(); });
 $("trip-editor").addEventListener("submit", saveTrip);
 $("trip-show").addEventListener("click", () => showTripOnMap());

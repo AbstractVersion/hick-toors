@@ -13,36 +13,43 @@
 <body>
   <header id="controls">
     <strong class="brand">🥾 hick-toors</strong>
-    <button type="button" id="trips-btn" class="tool-btn">🧳 My trips <span id="trips-count"></span></button>
-    <button type="button" id="vote-btn" class="tool-btn" title="Group vote on saved trips">🗳️ Vote<span id="vote-left" hidden></span></button>
-    <button type="button" id="nature-btn" class="tool-btn" aria-pressed="false" title="Show nature sights (OpenStreetMap) on the map">🌿 Nature</button>
     <span class="goto">📍 <input type="text" id="goto-input" maxlength="200" placeholder="Go to place… (Greek or English)">
       <button type="button" id="goto-btn" class="tool-btn">Go</button>
       <span class="spinner" data-spin="goto" role="status" aria-label="Looking up place" hidden></span></span>
-    <label>📅 <input type="date" id="start"> → <input type="date" id="end"></label>
-    <span id="home-label">🏠 Athens</span>
-    <label>🚗 <input type="range" id="drive" min="0" max="9" step="1" value="0">
-      <span id="drive-label">Auto</span></label>
-    <label class="dog"><input type="checkbox" id="dog" checked> 🐕 Dog</label>
-    <button type="button" id="hike-filters-btn" class="tool-btn" disabled>⚙️ Hike filters <span id="hike-filter-count" class="count" hidden></span></button>
-    <button type="button" id="stay-filters-btn" class="tool-btn" disabled>⚙️ Stay filters <span id="stay-filter-count" class="count" hidden></span></button>
-    <span class="draw-group">✏️ Draw:
-      <button type="button" id="draw-rect-btn" class="tool-btn">▭ Rectangle</button>
-      <button type="button" id="draw-circle-btn" class="tool-btn">◯ Circle</button>
-    </span>
-    <fieldset id="modes">
-      <label><input type="radio" name="mode" value="near_home" checked> Near home</label>
-      <label><input type="radio" name="mode" value="place"> Place</label>
-      <label><input type="radio" name="mode" value="drawn"> Drawn area</label>
-    </fieldset>
-    <input type="text" id="place" placeholder="e.g. Pelion, Zagori, Olympus" hidden>
-    <button id="search" title="Hikes only – stays already on the map stay">🔍 Search hikes</button>
-    <button id="search-all" title="Hikes + stays: clears the map; a drawn area also loads its stays">🔍 Search all</button>
-    <button id="suggest-trips">⭐ Suggest trips</button>
-    <span id="auth-area" class="auth-area">
-      <button type="button" id="auth-login-btn" class="tool-btn">👤 Log in</button>
-      <span id="auth-user" hidden>👤 <span id="auth-name"></span> · <button type="button" id="auth-logout" class="link-btn">Log out</button></span>
-    </span>
+    <button type="button" id="menu-btn" class="tool-btn" aria-label="Search controls" aria-expanded="false" aria-controls="controls-more">☰</button>
+    <div id="controls-more">
+      <div class="panel-head"><h2>🥾 Search</h2>
+        <button type="button" id="menu-close" class="tool-btn" aria-label="Close">✕</button></div>
+      <button type="button" id="trips-btn" class="tool-btn">🧳 My trips <span id="trips-count"></span></button>
+      <button type="button" id="vote-btn" class="tool-btn" title="Group vote on saved trips">🗳️ Vote<span id="vote-left" hidden></span></button>
+      <button type="button" id="nature-btn" class="tool-btn" aria-pressed="false" title="Show nature sights (OpenStreetMap) on the map">🌿 Nature</button>
+      <label>📅 <input type="date" id="start"> → <input type="date" id="end"></label>
+      <span id="home-label">🏠 Athens</span>
+      <label>🚗 <input type="range" id="drive" min="0" max="9" step="1" value="0">
+        <span id="drive-label">Auto</span></label>
+      <label class="dog"><input type="checkbox" id="dog" checked> 🐕 Dog</label>
+      <button type="button" id="hike-filters-btn" class="tool-btn" disabled>⚙️ Hike filters <span id="hike-filter-count" class="count" hidden></span></button>
+      <button type="button" id="stay-filters-btn" class="tool-btn" disabled>⚙️ Stay filters <span id="stay-filter-count" class="count" hidden></span></button>
+      <span class="draw-group">✏️ Draw:
+        <button type="button" id="draw-rect-btn" class="tool-btn">▭ Rectangle</button>
+        <button type="button" id="draw-circle-btn" class="tool-btn">◯ Circle</button>
+      </span>
+      <fieldset id="modes">
+        <label><input type="radio" name="mode" value="near_home" checked> Near home</label>
+        <label><input type="radio" name="mode" value="place"> Place</label>
+        <label><input type="radio" name="mode" value="drawn"> Drawn area</label>
+      </fieldset>
+      <input type="text" id="place" placeholder="e.g. Pelion, Zagori, Olympus" hidden>
+      <div class="search-row">
+        <button id="search" title="Hikes only – stays already on the map stay">🔍 Search hikes</button>
+        <button id="search-all" title="Hikes + stays: clears the map; a drawn area also loads its stays">🔍 Search all</button>
+        <button id="suggest-trips">⭐ Suggest trips</button>
+      </div>
+      <span id="auth-area" class="auth-area">
+        <button type="button" id="auth-login-btn" class="tool-btn">👤 Log in</button>
+        <span id="auth-user" hidden>👤 <span id="auth-name"></span> · <button type="button" id="auth-logout" class="link-btn">Log out</button></span>
+      </span>
+    </div>
   </header>
   <div id="notices"></div>
   <main>
@@ -79,6 +86,12 @@
     <div><span class="spinner" data-spin="ask" role="status" aria-label="Claude is thinking" hidden></span> <span id="ask-status"></span></div>
     <div id="ask-answer"></div>
   </footer>
+  <nav id="tabbar" aria-label="Views">
+    <button type="button" data-tab="map" aria-pressed="true">🗺️ Map</button>
+    <button type="button" data-tab="list" aria-pressed="false">📋 List<span id="tab-badge-list" class="tab-badge" hidden></span></button>
+    <button type="button" data-tab="trips" aria-pressed="false">🧳 Trips<span id="tab-badge-trips" class="tab-badge" hidden></span></button>
+    <button type="button" data-tab="vote" aria-pressed="false">🗳️ Vote<span id="tab-badge-vote" class="tab-badge" hidden></span></button>
+  </nav>
   <div id="trip-menu" class="trip-menu" role="menu" hidden></div>
   <dialog id="trips-dialog" class="trips-dialog" aria-labelledby="trips-title">
     <div class="dlg-head"><h2 id="trips-title">🧳 My trips</h2>
@@ -171,5 +184,6 @@
   <script src="/static/auth.js"></script>
   <script src="/static/trips.js"></script>
   <script src="/static/vote.js"></script>
+  <script src="/static/mobile.js"></script>
 </body>
 </html>

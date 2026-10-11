@@ -44,7 +44,7 @@ const tiles = {
   Satellite: L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
     maxZoom: 18, attribution: "Tiles © Esri" }),
 };
-tiles.Topo.addTo(map);
+tiles.Streets.addTo(map);
 L.control.layers(tiles).addTo(map);
 const hikeLayer = L.markerClusterGroup();
 const stayLayer = L.markerClusterGroup();
@@ -53,6 +53,21 @@ map.addLayer(hikeLayer);
 map.addLayer(stayLayer);
 overlay.addTo(map);
 let reachCircle = null;
+// Phone layout (mobile.js): the 📋 List tab hides the map. A fit asked for meanwhile waits, and mobile.js calls
+// mapShown() once the map is visible again so Leaflet re-measures it (no grey band) and runs that fit.
+let pendingFit = null;
+const mapHidden = () => map.getContainer().offsetWidth === 0;
+function whenMapShown(fit) {
+  if (mapHidden()) pendingFit = fit;
+  else fit();
+}
+window.mapShown = () => {
+  if (mapHidden()) return;
+  map.invalidateSize();
+  const fit = pendingFit;
+  pendingFit = null;
+  fit?.();
+};
 
 // ---- drawn search area (Leaflet.draw: rectangle + circle only, one shape at a time) ----
 const SHAPE_STYLE = { color: "#b5562f", weight: 2, fillOpacity: 0.08 };
@@ -273,7 +288,10 @@ function listItem(ul, id, title, meta, badge, onClick) {
     b.textContent = BADGES[badge];
     li.appendChild(b);
   }
-  li.addEventListener("click", onClick);
+  li.addEventListener("click", (event) => {
+    if (window.mobile?.isPhone()) window.mobile.showMap();  // the zoom/select below happens on a visible map
+    onClick(event);
+  });
   li.addEventListener("mouseenter", () => li.classList.add("active"));
   li.addEventListener("mouseleave", () => li.classList.remove("active"));
   ul.appendChild(li);
@@ -374,8 +392,9 @@ function addStay(s) {
   const open = openLink(s.url, site, `Open this stay on ${site} in a new tab`);
   if (open) li.appendChild(open);
 }
+// maxZoom 17: a single result zooms as close as it did on the old Topo base map (Streets goes to 19).
 function fitLayers(layers) {
-  if (layers.length) map.fitBounds(L.featureGroup(layers).getBounds().pad(0.15));
+  if (layers.length) whenMapShown(() => map.fitBounds(L.featureGroup(layers).getBounds().pad(0.15), { maxZoom: 17 }));
 }
 function fitAll() {
   fitLayers([...hikeLayer.getLayers(), ...stayLayer.getLayers()]);
@@ -529,8 +548,10 @@ function selectHike(id) {
     baseWarnings: () => [],
     afterMerge: () => {
       const layers = [state.markers.get(id), ...stayLayer.getLayers()].filter(Boolean);
-      if (layers.length > 1) map.fitBounds(L.featureGroup(layers).getBounds().pad(0.2));
-      else if (hike) map.setView([hike.lat, hike.lon], 12);
+      whenMapShown(() => {
+        if (layers.length > 1) map.fitBounds(L.featureGroup(layers).getBounds().pad(0.2));
+        else if (hike) map.setView([hike.lat, hike.lon], 12);
+      });
     },
   });
 }

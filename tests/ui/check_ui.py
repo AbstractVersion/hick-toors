@@ -159,6 +159,12 @@ def main() -> None:
         expect(page.locator("#hike-filter-count")).to_be_hidden()
         expect(page.locator("#stay-filter-count")).to_be_hidden()
         print("PASS buttons enabled, no badges on defaults")
+        if not page.evaluate("map.hasLayer(tiles.Streets) && !map.hasLayer(tiles.Topo) && !map.hasLayer(tiles.Satellite)"):
+            raise SystemExit("FAIL the map should start on the Streets layer")
+        expect(page.locator("#tabbar")).to_be_hidden()
+        expect(page.locator("#menu-btn")).to_be_hidden()
+        expect(page.locator("#search-all")).to_be_visible()
+        print("PASS Streets base map on load; desktop has no tab bar / ☰")
 
         # Hike popup: generated from the catalogue, Apply stores and shows the badge.
         page.click("#hike-filters-btn")
@@ -329,7 +335,9 @@ def main() -> None:
         expect(page.locator("#hike-list li")).to_have_count(1)
         expect(page.locator("#stay-list li")).to_have_count(1)
         expect(page.locator("#stay-note")).to_have_text("in drawn area")
-        expect(page.locator(".leaflet-marker-icon.pin.airbnb, .marker-cluster")).not_to_have_count(0)
+        # The stay keeps its pin in the stay layer. (Not a DOM check: the fit zooms in on the lone hike and the
+        # cluster layer drops the off-screen pin once the zoom animation ends – a DOM check only passed mid-animation.)
+        page.wait_for_function(f"stayLayer.hasLayer(state.markers.get({json.dumps(STAY['id'])}))", timeout=5000)
         page.wait_for_timeout(300)
         assert len([r for r in requests if r[0] == "/api/stays"]) == stays_before, "Search hikes fetched stays"
         print("PASS 🔍 Search hikes keeps the stays on the map; 🔍 Search all reloads them")
@@ -1254,6 +1262,7 @@ def main() -> None:
         print("PASS nature toggle + chips persisted; corrupt storage falls back to all groups")
 
         check_voting(browser, errors)
+        check_mobile(browser, errors)
         browser.close()
     if errors:
         raise SystemExit(f"FAIL page errors: {errors}")
@@ -1475,6 +1484,145 @@ def check_voting(browser, errors: list[str]) -> None:
     ctx_c.close()
     ctx_b.close()
     ctx_a.close()
+
+
+def check_mobile(browser, errors: list[str]) -> None:
+    """📱 Phone shell at 390×844: tab bar, ☰ panel, List / Map tabs, full-screen Trips / Vote dialogs."""
+    ctx = browser.new_context(viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True,
+                              device_scale_factor=3)
+    pg = ctx.new_page()
+    pg.on("pageerror", lambda exc: errors.append(str(exc)))
+
+    def answer(route):
+        path = "/" + route.request.url.split("/", 3)[3].split("?")[0]
+        body = route.request.post_data_json if route.request.post_data else {}
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(CANNED[path](body)))
+
+    for path in ("/api/hikes", "/api/stays"):
+        pg.route(f"**{path}", answer)
+    pg.goto(BASE)
+    pg.wait_for_function("typeof mobile === 'object' && typeof openVote === 'function' && auth.ready")
+    expect(pg.locator("#hike-filters-btn")).to_be_enabled(timeout=15000)
+
+    def no_side_scroll(where: str) -> None:
+        if not pg.evaluate("document.documentElement.scrollWidth <= innerWidth"):
+            raise SystemExit(f"FAIL horizontal page scroll on the phone ({where})")
+
+    def map_fills_element() -> None:
+        size = pg.evaluate("""() => { const s = map.getSize(), el = map.getContainer();
+            return [s.x, s.y, el.clientWidth, el.clientHeight]; }""")
+        if size[0] != size[2] or size[1] != size[3] or size[0] < 300 or size[1] < 400:
+            raise SystemExit(f"FAIL Leaflet size {size[:2]} vs map element {size[2:]}")
+
+    def fills_viewport(selector: str) -> None:
+        box = pg.locator(selector).bounding_box()
+        if not box or (round(box["x"]), round(box["y"]), round(box["width"]), round(box["height"])) != (0, 0, 390, 844):
+            raise SystemExit(f"FAIL {selector} is not full-screen: {box}")
+
+    tabs = {name: pg.locator(f'#tabbar button[data-tab="{name}"]') for name in ("map", "list", "trips", "vote")}
+
+    def active(name: str) -> None:
+        for other, tab in tabs.items():
+            expect(tab).to_have_attribute("aria-pressed", "true" if other == name else "false")
+
+    expect(pg.locator("#tabbar")).to_be_visible()
+    for name, label in (("map", "🗺️ Map"), ("list", "📋 List"), ("trips", "🧳 Trips"), ("vote", "🗳️ Vote")):
+        expect(tabs[name]).to_contain_text(label)
+    for hidden in ("#controls .brand", "#search-all", "#start", "#trips-btn", "#vote-btn", "#auth-login-btn", "#sidebar"):
+        expect(pg.locator(hidden)).to_be_hidden()
+    expect(pg.locator("#goto-input")).to_be_visible()
+    expect(pg.locator("#menu-btn")).to_be_visible()
+    active("map")
+    if not pg.evaluate("document.body.classList.contains('phone-tab-map') && map.hasLayer(tiles.Streets)"):
+        raise SystemExit("FAIL the phone starts on the Map tab with Streets")
+    map_fills_element()
+    no_side_scroll("map tab")
+    print("PASS phone: tab bar, top bar 📍 + ☰, desktop controls hidden, Map tab")
+
+    pg.locator("#menu-btn").tap()
+    expect(pg.locator("#controls-more")).to_be_visible()
+    fills_viewport("#controls-more")
+    for shown in ("#start", "#end", "#hike-filters-btn", "#stay-filters-btn", "#draw-rect-btn", "#draw-circle-btn",
+                  "#nature-btn", "#auth-login-btn", "#search", "#search-all", "#suggest-trips", "#menu-close"):
+        expect(pg.locator(shown)).to_be_visible()
+    for small in ("#menu-close", "#search-all", "#draw-rect-btn", "#hike-filters-btn", "#nature-btn"):
+        box = pg.locator(small).bounding_box()
+        if box["height"] < 40:
+            raise SystemExit(f"FAIL {small} is {box['height']} px tall on the phone")
+    no_side_scroll("panel")
+    pg.locator("#menu-close").tap()
+    expect(pg.locator("#controls-more")).to_be_hidden()
+    print("PASS ☰ opens the full-screen panel (dates, filters, draw, nature, login, search); ✕ closes it")
+
+    pg.locator("#menu-btn").tap()
+    pg.locator("#search-all").tap()
+    expect(pg.locator("#controls-more")).to_be_hidden()
+    active("map")
+    expect(pg.locator("#tab-badge-list")).to_have_text("1")
+    print("PASS Search all from the panel closes it, stays on Map, 📋 List badge shows the hike count")
+
+    tabs["list"].tap()
+    active("list")
+    expect(pg.locator("#sidebar")).to_be_visible()
+    expect(pg.locator("#ask")).to_be_visible()
+    expect(pg.locator("#map")).to_be_hidden()
+    fills = pg.evaluate("[document.querySelector('#sidebar').getBoundingClientRect().width, innerWidth]")
+    if fills[0] != fills[1]:
+        raise SystemExit(f"FAIL the List tab is {fills[0]} px wide, the screen {fills[1]}")
+    no_side_scroll("list tab")
+    pg.locator("#hike-list li").first.tap()
+    active("map")
+    expect(pg.locator("#map")).to_be_visible()
+    expect(pg.locator("#sidebar")).to_be_hidden()
+    map_fills_element()
+    print("PASS List tab shows the sidebar + Ask; tapping a hike → Map tab, Leaflet sized to the map (no grey band)")
+
+    tabs["list"].tap()
+    tabs["trips"].tap()
+    expect(pg.locator("#trips-dialog")).to_be_visible()
+    fills_viewport("#trips-dialog")
+    active("trips")
+    pg.locator("#trips-close").tap()
+    expect(pg.locator("#trips-dialog")).to_be_hidden()
+    active("list")
+    expect(pg.locator("#sidebar")).to_be_visible()
+    tabs["map"].tap()
+    tabs["trips"].tap()
+    expect(pg.locator("#trips-dialog")).to_be_visible()
+    pg.keyboard.press("Escape")
+    expect(pg.locator("#trips-dialog")).to_be_hidden()
+    active("map")
+    map_fills_element()
+    print("PASS Trips tab: full-screen dialog; ✕ / Escape return to the previous tab")
+
+    tabs["vote"].tap()
+    expect(pg.locator("#vote-dialog")).to_be_visible()
+    fills_viewport("#vote-dialog")
+    active("vote")
+    pg.locator("#vote-close").tap()
+    expect(pg.locator("#vote-dialog")).to_be_hidden()
+    active("map")
+    tabs["list"].tap()
+    tabs["vote"].tap()
+    expect(pg.locator("#vote-dialog")).to_be_visible()
+    pg.evaluate("document.querySelector('#vote-dialog').close()")  # a programmatic close (e.g. after an action)
+    active("list")
+    print("PASS Vote tab: full-screen dialog; closing returns to the previous tab")
+
+    tabs["map"].tap()
+    pg.locator("#menu-btn").tap()
+    pg.locator("#auth-login-btn").tap()
+    expect(pg.locator("#auth-dialog")).to_be_visible()
+    fills_viewport("#auth-dialog")
+    pg.locator("#auth-close").tap()
+    pg.locator("#hike-filters-btn").tap()
+    expect(pg.locator("#hike-dialog")).to_be_visible()
+    fills_viewport("#hike-dialog")
+    pg.locator('#hike-dialog [data-act="cancel"]').tap()
+    pg.locator("#menu-close").tap()
+    no_side_scroll("after dialogs")
+    print("PASS login + filters dialogs are full-screen on the phone; no horizontal scroll")
+    ctx.close()
 
 
 if __name__ == "__main__":

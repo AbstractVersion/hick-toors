@@ -27,6 +27,7 @@ The **Ask Claude** box is unavailable inside the container (it needs your local,
 `claude` CLI) — use the non-Docker run above for that. Everything else works the same.
 
 ## How it works
+- **📱 Phones:** on a narrow screen (≤ 760 px) the map fills the screen with a 📍 Go to bar and a ☰ panel holding all the other controls, and bottom tabs 🗺️ Map / 📋 List / 🧳 Trips / 🗳️ Vote; the map starts on Streets (Topo and Satellite are in the layer switcher).
 - **Dates → reach:** 1 day ≈ 1.5 h drive, 2–3 days ≈ 4 h, 4+ days anywhere (islands marked ⛴️). The 🚗 slider overrides it.
 - **Where vs what:** the mode radios say *where* – *Near home* (around Athens), *Place* (e.g. "Zagori") or *Drawn area*. Three buttons say *what*: **🔍 Search hikes** lists hikes there and leaves the stays already on the map (e.g. a trip you showed) where they are; **🔍 Search all** clears the map and lists hikes, and in a drawn area also loads the stays inside it; **⭐ Suggest trips** ranks hike + stay combos (score /100) for the same *where* (a drawn shape, the place text, or the drive limit) and shows them in the **Trip picks** section, which stays hidden until there is something to show. Search hikes / Search all hide it again. The MCP `plan_trip` tool takes optional `place` / `area` too.
 - **📍 Go to place:** type a place in Greek or English in the header box and press Enter (or Go): the map flies there and drops a 📍 pin. It is navigation only – no hike or stay search runs and your results stay. The pin survives new searches (`GET /api/locate?q=`, Nominatim, cached 30 days).
