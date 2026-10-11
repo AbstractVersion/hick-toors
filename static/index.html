@@ -14,6 +14,7 @@
   <header id="controls">
     <strong class="brand">🥾 hick-toors</strong>
     <button type="button" id="trips-btn" class="tool-btn">🧳 My trips <span id="trips-count"></span></button>
+    <button type="button" id="vote-btn" class="tool-btn" title="Group vote on saved trips">🗳️ Vote<span id="vote-left" hidden></span></button>
     <button type="button" id="nature-btn" class="tool-btn" aria-pressed="false" title="Show nature sights (OpenStreetMap) on the map">🌿 Nature</button>
     <span class="goto">📍 <input type="text" id="goto-input" maxlength="200" placeholder="Go to place… (Greek or English)">
       <button type="button" id="goto-btn" class="tool-btn">Go</button>
@@ -91,6 +92,7 @@
       <button type="button" id="trip-back" class="link-btn">← All trips</button>
       <label class="wide">Name <input id="trip-name" maxlength="120" required></label>
       <p id="trip-created-by" class="list-note" hidden></p>
+      <p id="trip-round" class="list-note" hidden></p>
       <div class="row">
         <label>📅 <input type="date" id="trip-start"></label> → <input type="date" id="trip-end" aria-label="End date">
         <label>👥 <input type="number" id="trip-guests" min="1" max="16" step="1"></label>
@@ -134,6 +136,31 @@
       <div class="dlg-actions"><button type="submit" id="auth-submit" class="primary">Log in</button></div>
     </form>
   </dialog>
+  <dialog id="vote-dialog" class="vote-dialog" aria-labelledby="vote-title">
+    <div class="dlg-head"><h2 id="vote-title">🗳️ Vote</h2>
+      <button type="button" id="vote-close" class="tool-btn" aria-label="Close">✕</button></div>
+    <div id="vote-error" class="notice" role="alert" hidden></div>
+    <div id="vote-toast" class="vote-toast" role="status" hidden></div>
+    <div id="vote-round-view" hidden>
+      <div id="vote-banner" class="vote-banner" hidden></div>
+      <div id="vote-status" class="vote-status"></div>
+      <div id="vote-tools" class="vote-tools" hidden></div>
+      <ol id="vote-trips" class="vote-trips"></ol>
+      <div id="vote-footer" class="dlg-actions"></div>
+    </div>
+    <form id="vote-start" class="vote-start" hidden novalidate>
+      <button type="button" id="vote-start-back" class="link-btn" hidden>← Back to the last round</button>
+      <label class="wide">Title <input id="vote-start-title" maxlength="80" placeholder="e.g. Where do we go in November?"></label>
+      <label class="wide">Closes <input id="vote-start-at" type="datetime-local"></label>
+      <fieldset id="vote-start-fieldset"><legend>Trips</legend><div id="vote-start-trips"></div></fieldset>
+      <div class="dlg-actions"><button type="submit" id="vote-start-submit" class="primary">Start the round</button></div>
+    </form>
+    <div id="vote-history-view" hidden>
+      <h3>Past rounds</h3>
+      <ul id="vote-history" class="vote-history"></ul>
+      <p id="vote-history-empty" class="list-note" hidden>None yet.</p>
+    </div>
+  </dialog>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
   <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
@@ -143,5 +170,6 @@
   <script src="/static/nature.js"></script>
   <script src="/static/auth.js"></script>
   <script src="/static/trips.js"></script>
+  <script src="/static/vote.js"></script>
 </body>
 </html>

@@ -3,6 +3,7 @@
 // Loaded after app.js, nature.js and auth.js and uses their globals ($, esc, state, api, notices, dates, guests,
 // clearAll, showTripSights, SIGHT_EMOJI, requireLogin, ...). Every action that writes to the server goes through
 // requireLogin; fields that only change what is on screen (name, dates, notes, prices) are not gated.
+// The editor's 🗳️ round line calls openVote (vote.js, loaded after this file); vote.js reuses showTripOnMap/openTrip.
 const trips = { list: [], current: null, deleteTimer: null, busy: 0, saving: Promise.resolve() };
 const LAST_TRIP_KEY = "hick-toors:last-trip";
 
@@ -181,6 +182,7 @@ async function openTrip(id) {
   $("trip-notes").value = t.notes || "";
   $("trip-created-by").textContent = t.created_by ? `Created by ${t.created_by}` : "";
   $("trip-created-by").hidden = !t.created_by;
+  showRoundLine(t.id);
   $("trip-airbnb-url").value = "";
   showAirbnbInfo([]);
   showSightsInfo([]);
@@ -188,6 +190,24 @@ async function openTrip(id) {
   renderTripItems();
   $("trips-list-view").hidden = true;
   $("trip-editor").hidden = false;
+}
+// "🗳️ #2 in '<title>' · 😍1 🙂2 🚫1 → Vote" when the trip is in the open round; Vote opens vote.js's dialog there.
+async function showRoundLine(tripId) {
+  const line = $("trip-round");
+  line.hidden = true;
+  line.replaceChildren();
+  let round;
+  try { round = await api("/api/rounds/current"); } catch { return; }
+  const standing = round?.status === "open" && round.trips.find((x) => x.trip_id === tripId);
+  if (!standing || trips.current?.id !== tripId) return;
+  const { love, ok, nogo } = standing.counts;
+  const go = document.createElement("button");
+  go.type = "button";
+  go.className = "link-btn";
+  go.textContent = "Vote";
+  go.addEventListener("click", () => { $("trips-dialog").close(); openVote(tripId); });
+  line.replaceChildren(`🗳️ #${standing.rank} in '${round.title}' · 😍${love} 🙂${ok} 🚫${nogo} → `, go);
+  line.hidden = false;
 }
 function renderTripItems() {
   for (const kind of ["hikes", "stays", "sights"]) {
@@ -463,10 +483,9 @@ async function printTrip() {
   if (late) late.opener = null;
   else showTripsError("Allow pop-ups to open the PDF page");
 }
-function showTripOnMap() {
-  const t = trips.current;
+// Shows a trip (default: the one in the editor, under the name typed there) on the map; the vote dialog passes its own.
+function showTripOnMap(t = trips.current, name = $("trip-name").value.trim() || t?.name) {
   if (!t) return;
-  const name = $("trip-name").value.trim() || t.name;
   clearAll();
   t.hikes.forEach(addHike);
   t.stays.forEach(addStay);
@@ -505,7 +524,7 @@ $("trips-btn").addEventListener("click", () => openTripsDialog());
 $("trips-close").addEventListener("click", () => $("trips-dialog").close());
 $("trip-back").addEventListener("click", () => { showTripsError(""); showTripList(); reloadTripList(); });
 $("trip-editor").addEventListener("submit", saveTrip);
-$("trip-show").addEventListener("click", showTripOnMap);
+$("trip-show").addEventListener("click", () => showTripOnMap());
 $("trip-export").addEventListener("click", exportTrip);
 $("trip-pdf").addEventListener("click", printTrip);
 $("trip-delete").addEventListener("click", () => requireLogin(deleteTrip));

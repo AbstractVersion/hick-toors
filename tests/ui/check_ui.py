@@ -10,6 +10,8 @@ canned JSON, so no Wikiloc/Airbnb/Booking/Overpass request is made; the captured
 asserted instead. The saved-trips API (/api/saved-trips...) is NOT mocked: the trips scenario
 creates, edits, exports and deletes a real trip, so it refuses to run unless the trips list is empty.
 The auth API is real too: the check signs up `nikos` (a fresh TRIPS_DB has no accounts).
+The 🗳️ voting scenario at the end uses the real rounds API with two browser contexts (`anna` opens a round,
+logged-out `bob` watches, signs up from a vote click, votes; anna closes the round) – it needs no open round.
 """
 
 import json
@@ -1251,10 +1253,174 @@ def main() -> None:
         assert status in (200, 204), status
         print("PASS nature toggle + chips persisted; corrupt storage falls back to all groups")
 
+        check_voting(browser, errors)
         browser.close()
     if errors:
         raise SystemExit(f"FAIL page errors: {errors}")
     print("ALL UI CHECKS PASSED")
+
+
+def check_voting(browser, errors: list[str]) -> None:
+    """🗳️ Voting round with two people in two browser contexts (real rounds API, no mocks)."""
+    def new_page():
+        ctx = browser.new_context(viewport={"width": 1400, "height": 900})
+        pg = ctx.new_page()
+        pg.on("pageerror", lambda exc: errors.append(str(exc)))
+        pg.goto(BASE)
+        pg.wait_for_function("typeof openVote === 'function' && auth.ready")
+        return ctx, pg
+
+    def sign_up(pg, name: str) -> None:
+        if not pg.locator("#auth-dialog").is_visible():
+            pg.click("#auth-login-btn")
+        pg.click("#auth-tab-signup")
+        pg.fill("#auth-username", name)
+        pg.fill("#auth-password", "password1")
+        pg.fill("#auth-repeat", "password1")
+        pg.press("#auth-repeat", "Enter")
+        expect(pg.locator("#auth-dialog")).to_be_hidden()
+        expect(pg.locator("#auth-area")).to_have_text(f"👤 {name} · Log out", use_inner_text=True)
+
+    def row(pg, trip_id: str):
+        return pg.locator(f'#vote-trips .vote-trip[data-trip="{trip_id}"]')
+
+    def rate(scope, rating: str):
+        return scope.locator(".vote-buttons").first.locator(f'[data-rating="{rating}"]')
+
+    ctx_a, a = new_page()
+    sign_up(a, "anna")
+    seed = """(body) => fetch('/api/saved-trips', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body)}).then((r) => r.json())"""
+    t1 = a.evaluate(seed, {"name": "Vote trip one", "hikes": [HIKE], "stays": [STAY, BSTAY]})["id"]
+    t2 = a.evaluate(seed, {"name": "Vote trip two", "hikes": [HIKE2], "stays": [STAY]})["id"]
+    a.reload()
+    a.wait_for_function("typeof openVote === 'function' && auth.ready")
+    expect(a.locator("#vote-left")).to_be_hidden()
+
+    # No round yet: the Start a round form, closing default ≈ now + 3 days, every trip ticked.
+    a.click("#vote-btn")
+    dlg_a = a.locator("#vote-dialog")
+    expect(a.locator("#vote-start")).to_be_visible()
+    expect(a.locator("#vote-start-trips input:checked")).to_have_count(2)
+    in_days = a.evaluate("(new Date(document.getElementById('vote-start-at').value) - Date.now()) / 86400000")
+    assert 2.9 < in_days <= 3.01, in_days
+    a.fill("#vote-start-title", "November 🥾")
+    a.click("#vote-start-submit")
+    expect(a.locator("#vote-round-view")).to_be_visible()
+    expect(a.locator("#vote-status")).to_contain_text("November 🥾")
+    expect(a.locator("#vote-status")).to_contain_text("closes in 2 d 23 h")
+    expect(a.locator("#vote-status")).to_contain_text(re.compile(r"Waiting for: .*\banna\b"))
+    expect(a.locator("#vote-status")).to_contain_text("You: 0 of 2 trips rated")
+    expect(a.locator("#vote-left")).to_have_text(" · 2 left")
+    expect(a.locator("#vote-btn")).to_have_class(re.compile(r"\bhas-left\b"))
+    print("PASS Start a round: form defaults, round view, badge · 2 left")
+
+    rate(row(a, t1), "love").click()
+    expect(rate(row(a, t1), "love")).to_have_attribute("aria-pressed", "true")
+    expect(a.locator("#vote-status")).to_contain_text("😍 Your Love: Vote trip one")
+    rate(row(a, t2), "love").click()
+    expect(a.locator("#vote-toast")).to_have_text("Moved your Love from Vote trip one to Vote trip two")
+    expect(rate(row(a, t1), "ok")).to_have_attribute("aria-pressed", "true")
+    expect(rate(row(a, t2), "love")).to_have_attribute("aria-pressed", "true")
+    # A stay: ▸ Stays (1) on trip two stays open across the re-render the vote causes.
+    row(a, t2).locator("button", has_text="Stays (1)").click()
+    stay_a = row(a, t2).locator(f'.vote-stay[data-stay="{STAY["id"]}"]')
+    expect(stay_a).to_be_visible()
+    rate(stay_a, "love").click()
+    expect(rate(stay_a, "love")).to_have_attribute("aria-pressed", "true")
+    expect(stay_a).to_be_visible()
+    expect(row(a, t2).locator("button", has_text="▾ Stays (1)")).to_be_visible()
+    trips_a = a.locator("#vote-trips > .vote-trip")
+    expect(trips_a.nth(0)).to_have_attribute("data-trip", t2)
+    expect(trips_a.nth(0).locator(".vote-head").first).to_have_text("#1 Vote trip two · 2 pts")
+    expect(trips_a.nth(1).locator(".vote-head").first).to_have_text("#2 Vote trip one · 1 pts")
+    expect(a.locator("#vote-left")).to_have_text(" · 0 left")
+    expect(a.locator("#vote-btn")).not_to_have_class(re.compile(r"\bhas-left\b"))
+    # 💬 comment: saved on Enter/blur with the current rating.
+    comment_a = row(a, t2).locator(".vote-comment").first
+    expect(comment_a).to_be_enabled()
+    comment_a.fill("can't wait 🥾")
+    comment_a.press("Enter")
+    expect(row(a, t2).locator(".count-btn").first).to_have_attribute("title", "Love it: anna")
+    get_round = "fetch('/api/rounds/current').then((r) => r.json())"
+    for _ in range(30):
+        trip_two = next(t for t in a.evaluate(get_round)["trips"] if t["trip_id"] == t2)
+        mine = [v for v in trip_two["votes"] if v["username"] == "anna"]
+        if mine and mine[0]["comment"] == "can't wait 🥾":
+            break
+        a.wait_for_timeout(100)
+    else:
+        raise SystemExit(f"FAIL comment not saved: {mine}")
+    print("PASS votes: Love moves with a toast, stay vote, rank order, badge · 0 left, comment saved on Enter")
+
+    # B (logged out) watches; A's next vote shows up within one poll (10 s) without any click.
+    ctx_b, b = new_page()
+    b.click("#vote-btn")
+    expect(b.locator("#vote-round-view")).to_be_visible()
+    expect(b.locator("#vote-left")).to_be_hidden()
+    expect(row(b, t2).locator(".count-btn").first).to_have_text("😍1")
+    expect(b.locator("#vote-status")).to_contain_text("log in to vote")
+    bstay_count = row(b, t1).locator(f'.vote-stay[data-stay="{BSTAY["id"]}"] .count-btn').nth(1)
+    expect(bstay_count).to_have_text("🙂0")
+    row(a, t1).locator("button", has_text="Stays (2)").click()
+    rate(row(a, t1).locator(f'.vote-stay[data-stay="{BSTAY["id"]}"]'), "ok").click()
+    expect(bstay_count).to_have_text("🙂1", timeout=12000)
+    print("PASS logged-out B sees the ranking; A's new vote appears in B's dialog within one poll")
+
+    # B's No-go asks to log in first (sign up), then is cast; the comment is shown as text.
+    rate(row(b, t1), "nogo").click()
+    expect(b.locator("#auth-dialog")).to_be_visible()
+    sign_up(b, "bob")
+    expect(rate(row(b, t1), "nogo")).to_have_attribute("aria-pressed", "true")
+    comment_b = row(b, t1).locator(".vote-comment").first
+    comment_b.fill("<b>no</b>")
+    comment_b.press("Enter")
+    nogo_line = row(b, t1).locator(".vote-nogo")
+    expect(nogo_line).to_have_text("⚠ bob: No-go – “<b>no</b>”")
+    expect(b.locator("#vote-dialog b")).to_have_count(0)
+    rate(row(b, t2), "ok").click()
+    expect(rate(row(b, t2), "ok")).to_have_attribute("aria-pressed", "true")
+    expect(b.locator("#vote-left")).to_have_text(" · 0 left")
+    expect(b.locator("#vote-status")).to_contain_text("Waiting for: nikos")  # every account; nikos never voted
+    expect(b.locator("#vote-tools")).to_be_hidden()  # not the opener
+    print("PASS B: No-go after sign-up carries on, comment <b>no</b> rendered as text, badge · 0 left")
+
+    # Trip editor line → Vote opens the dialog at that trip.
+    b.click("#vote-close")
+    b.click("#trips-btn")
+    b.locator("#trips-list li", has_text="Vote trip one").click()
+    expect(b.locator("#trip-round")).to_have_text("🗳️ #2 in 'November 🥾' · 😍0 🙂1 🚫1 → Vote")
+    b.locator("#trip-round button", has_text="Vote").click()
+    expect(b.locator("#trips-dialog")).to_be_hidden()
+    expect(b.locator("#vote-dialog")).to_be_visible()
+    expect(row(b, t1)).to_have_class(re.compile(r"\bfocus\b"))
+    print("PASS trip editor shows the round line; → Vote opens the dialog at the trip")
+
+    # A sees B's votes, closes the round with two clicks → 🏆 banner, buttons disabled, Start a new round.
+    a.evaluate("refreshVote()")
+    expect(row(a, t1).locator(".vote-nogo")).to_have_text("⚠ bob: No-go – “<b>no</b>”")
+    close_btn = a.locator("#vote-tools button", has_text="Close now")
+    close_btn.click()
+    expect(a.locator("#vote-tools [data-arm=close]")).to_have_text("Confirm close")
+    expect(a.locator("#vote-banner")).to_be_hidden()
+    a.locator("#vote-tools [data-arm=close]").click()
+    expect(a.locator("#vote-banner")).to_contain_text("🏆 Vote trip two wins – stay: Area house")
+    expect(a.locator("#vote-tools")).to_be_hidden()
+    rate_buttons = a.locator("#vote-trips .vote-btn-rate")
+    assert rate_buttons.count() > 0
+    for i in range(rate_buttons.count()):
+        expect(rate_buttons.nth(i)).to_be_disabled()
+    expect(a.locator("#vote-footer button", has_text="Start a new round")).to_be_visible()
+    expect(a.locator("#vote-left")).to_be_hidden()
+    b.evaluate("refreshVote()")
+    expect(b.locator("#vote-banner")).to_contain_text("🏆 Vote trip two wins – stay: Area house")
+    a.locator("#vote-banner button", has_text="Show on map").click()
+    expect(dlg_a).to_be_hidden()
+    expect(a.locator("#stay-note")).to_have_text("in trip “Vote trip two”")
+    print("PASS Close now (two clicks) → 🏆 banner names the top trip + stay, buttons disabled, Show on map")
+
+    ctx_b.close()
+    ctx_a.close()
 
 
 if __name__ == "__main__":
