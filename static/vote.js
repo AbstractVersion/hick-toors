@@ -107,6 +107,7 @@ function write(fn) {
 // ---- opening / closing the dialog ----
 async function openVote(tripId) {
   vote.focusTrip = tripId || null;
+  setVoteTab(tripId ? "vote" : storedVoteTab(), false);  // "→ Vote" at a trip: its rating row, whatever tab was last used
   vote.mode = "current";
   vote.panel = null;
   showVoteError("");
@@ -121,6 +122,7 @@ function onVoteClose() {
   clearInterval(vote.pollTimer);
   vote.pollTimer = null;
   for (const key of Object.keys(vote.armed)) disarm(key);
+  hideOvPop();
 }
 
 // ---- rendering ----
@@ -191,13 +193,17 @@ function renderRound(round, readOnly) {
     footer.append(vButton("Start a new round", "primary", () => requireLogin(showForm)), " ",
       vButton("Past rounds", "tool-btn", showForm));
   }
-  if (vote.focusTrip) {
-    const row = $("vote-trips").querySelector(`[data-trip="${CSS.escape(vote.focusTrip)}"]`);
-    vote.focusTrip = null;
-    if (row) {
-      row.classList.add("focus");
-      row.scrollIntoView({ block: "center" });
-    }
+  renderOverview(round);
+  focusTripRow();
+}
+function focusTripRow() {
+  if (!vote.focusTrip) return;
+  if (vote.tab !== "vote") { vote.focusTrip = null; return; }
+  const row = $("vote-trips").querySelector(`[data-trip="${CSS.escape(vote.focusTrip)}"]`);
+  vote.focusTrip = null;
+  if (row) {
+    row.classList.add("focus");
+    row.scrollIntoView({ block: "center" });
   }
 }
 
@@ -600,6 +606,209 @@ function startRound() {
     }
   });
 }
+
+// ---- 📊 Overview: who voted what – participants as columns, trips (and their stays) as rows ----
+// Re-rendered from the same RoundView as the Vote tab (polls, writes, past rounds). The tab choice is kept per
+// browser; storage can be missing or throw (private mode), then the Vote tab is the default.
+const VOTE_TAB_KEY = "hick-toors:vote-tab";
+const RATING_INFO = Object.fromEntries(RATINGS.map(([rating, emoji, label]) => [rating, { emoji, label }]));
+function storedVoteTab() {
+  try { return localStorage.getItem(VOTE_TAB_KEY) === "overview" ? "overview" : "vote"; } catch { return "vote"; }
+}
+vote.tab = storedVoteTab();
+vote.ovOpenStays = new Set();  // trips whose further stays are shown (kept across refreshes)
+vote.ovPopKey = null;          // the cell whose comment popover is open
+
+function setVoteTab(tab, remember = true) {
+  vote.tab = tab === "overview" ? "overview" : "vote";
+  if (remember) {
+    try { localStorage.setItem(VOTE_TAB_KEY, vote.tab); } catch { /* not remembered: fine */ }
+  }
+  for (const b of $("vote-tabs").querySelectorAll("[data-vtab]")) {
+    b.setAttribute("aria-selected", String(b.dataset.vtab === vote.tab));
+  }
+  $("vote-pane").hidden = vote.tab !== "vote";
+  $("vote-overview").hidden = vote.tab !== "overview";
+}
+function ratedEverything(round, name) {
+  return round.trips.every((t) => t.votes.some((v) => sameUser(v.username, name)));
+}
+// The round's participants (join order); a round from an older server: opener + whoever voted.
+function ovParticipants(round) {
+  if (round.participants?.length) return round.participants;
+  const names = [round.opener];
+  for (const t of round.trips) {
+    for (const v of [...t.votes, ...t.stays.flatMap((s) => s.votes)]) {
+      if (!names.some((n) => sameUser(n, v.username))) names.push(v.username);
+    }
+  }
+  return names.filter(Boolean);
+}
+function signed(score) { return score > 0 ? `+${score}` : score < 0 ? `−${-score}` : "0"; }
+
+function renderOverview(round) {
+  setVoteTab(vote.tab, false);
+  const people = ovParticipants(round);
+  const done = people.filter((p) => ratedEverything(round, p));
+  const columns = [...done, ...people.filter((p) => !done.includes(p))];
+  // Header: title · closes in / closed + 🏆 · leader · n/m people done
+  const head = $("vote-ov-head");
+  head.replaceChildren(vEl("h3", "vote-round-title", round.title));
+  const when = round.status === "open" ? closesIn(round.closes_at)
+    : `${round.status === "closed" ? "Closed" : "Cancelled"} ${localWhen(round.closed_at || round.closes_at)}`;
+  head.append(vEl("div", "meta", when));
+  if (round.status === "closed") {
+    const w = round.winner;
+    head.append(vEl("div", "ov-winner", w ? `🏆 ${w.trip_name} wins${w.stay_name ? ` – stay: ${w.stay_name}` : ""}`
+      : "No winner – nobody voted"));
+  }
+  const top = round.trips[0];
+  const anyVote = round.trips.some((t) => t.votes.length);
+  head.append(vEl("div", "ov-leader", top && anyVote ? `Leader: ${top.name} (${signed(top.score)})` : "Leader: none yet"));
+  head.append(vEl("div", "ov-done", `${done.length}/${people.length} people done`));
+
+  const box = $("vote-ov-scroll");
+  if (!round.trips.length) {
+    box.replaceChildren(vEl("p", "list-note", "No trips left in this round."));
+    return;
+  }
+  const table = vEl("table", "ov-grid");
+  const thead = vEl("thead");
+  const hr = vEl("tr");
+  hr.append(vEl("th", "ov-name ov-corner", "Trip"));
+  for (const p of columns) {
+    const th = vEl("th", "ov-person");
+    th.scope = "col";
+    th.title = done.includes(p) ? `${p} – done` : p;
+    th.append(vEl("span", "ov-emoji", auth.emojiOf(p) || NO_EMOJI), vEl("span", "ov-pname", p));
+    if (sameUser(p, auth.user)) th.classList.add("me");
+    if (!done.includes(p)) th.classList.add("ov-pending");
+    hr.append(th);
+  }
+  hr.append(vEl("th", "ov-score", "Score"));
+  thead.append(hr);
+  const tbody = vEl("tbody");
+  for (const t of round.trips) {
+    const won = round.status === "closed" && round.winner?.trip_id === t.trip_id;
+    const name = vEl("th", "ov-name");
+    name.scope = "row";
+    const link = vButton(t.name, "link-btn ov-trip", () => goToTrip(t.trip_id));
+    link.title = "Rate it in the 🗳️ Vote tab";
+    name.append(vEl("span", "ov-rank", `#${t.rank} `), link);
+    if (won) name.append(" 🏆");
+    const row = ovRow(t, name, columns, `t:${t.trip_id}`, "ov-trip-row");
+    row.dataset.trip = t.trip_id;
+    tbody.append(row);
+    const stays = [...t.stays].sort((a, b) => a.rank - b.rank);
+    const open = vote.ovOpenStays.has(t.trip_id);
+    stays.forEach((s, i) => {
+      if (i > 0 && !open) return;
+      const sname = vEl("th", "ov-name ov-stay");
+      sname.scope = "row";
+      sname.append(vEl("span", null, `🏡 #${s.rank} `), vEl("span", null, s.name));
+      if (won && round.winner?.stay_id === s.stay_id) sname.append(" 🏆");
+      const srow = ovRow(s, sname, columns, `s:${t.trip_id}:${s.stay_id}`, "ov-stay-row");
+      srow.dataset.trip = t.trip_id;
+      srow.dataset.stay = s.stay_id;
+      tbody.append(srow);
+    });
+    if (stays.length > 1) {
+      const more = stays.length - 1;
+      const tr = vEl("tr", "ov-more-row");
+      const th = vEl("th", "ov-name ov-stay");
+      th.append(vButton(open ? `▾ hide ${plural(more, "stay")}` : `▸ ${more} more ${more === 1 ? "stay" : "stays"}`,
+        "link-btn ov-more", () => {
+          vote.ovOpenStays.has(t.trip_id) ? vote.ovOpenStays.delete(t.trip_id) : vote.ovOpenStays.add(t.trip_id);
+          renderOverview(round);
+        }));
+      const filler = vEl("td");
+      filler.colSpan = columns.length + 1;
+      tr.append(th, filler);
+      tbody.append(tr);
+    }
+  }
+  table.append(thead, tbody);
+  const scrollLeft = box.scrollLeft;
+  box.replaceChildren(table);
+  box.scrollLeft = scrollLeft;  // a poll must not jump a phone's sideways scroll back
+}
+// One row: the name cell, a cell per participant (😍 / 🙂 / 🚫 or · ; a comment adds a dot + popover), the score.
+function ovRow(item, nameCell, columns, key, className) {
+  const tr = vEl("tr", className);
+  tr.append(nameCell);
+  let nogo = false;
+  for (const p of columns) {
+    const v = item.votes.find((x) => sameUser(x.username, p));
+    const td = vEl("td", "ov-cell");
+    td.dataset.user = p;
+    if (sameUser(p, auth.user)) td.classList.add("me");
+    if (!v) {
+      td.append(vEl("span", "ov-none", "·"));
+      td.title = `${p}: not rated`;
+    } else {
+      const info = RATING_INFO[v.rating];
+      td.dataset.rating = v.rating;
+      if (v.rating === "nogo") { nogo = true; td.classList.add("nogo"); }
+      if (v.comment) {
+        const cellKey = `${key}:${p}`;
+        const b = vButton(info.emoji, "ov-cell-btn", (event) => toggleOvPop(event.currentTarget, cellKey, p, info.label, v.comment));
+        b.append(vEl("span", "ov-dot"));
+        b.setAttribute("aria-label", `${p}: ${info.label} – comment`);
+        td.append(b);
+      } else {
+        td.append(vEl("span", null, info.emoji));
+        td.title = `${p}: ${info.label}`;
+      }
+    }
+    tr.append(td);
+  }
+  const score = vEl("td", "ov-score", String(item.score));
+  if (nogo) {
+    const warn = vEl("span", "ov-warn", " ⚠");
+    warn.title = "Someone said No-go";
+    score.append(warn);
+  }
+  tr.append(score);
+  return tr;
+}
+function toggleOvPop(anchor, key, name, label, comment) {
+  if (vote.ovPopKey === key) return hideOvPop();
+  const pop = $("vote-ov-pop");
+  pop.textContent = `${auth.emojiOf(name) || NO_EMOJI} ${name}: ${label} – “${comment}”`;
+  pop.hidden = false;
+  vote.ovPopKey = key;
+  const r = anchor.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight;
+  pop.style.left = `${Math.max(8, Math.min(r.left, innerWidth - w - 8))}px`;
+  pop.style.top = `${r.bottom + 4 + h > innerHeight - 8 ? Math.max(8, r.top - h - 4) : r.bottom + 4}px`;
+}
+function hideOvPop() {
+  vote.ovPopKey = null;
+  $("vote-ov-pop").hidden = true;
+}
+// Trip name → the Vote tab at that trip.
+function goToTrip(tripId) {
+  hideOvPop();
+  setVoteTab("vote");
+  vote.focusTrip = tripId;
+  focusTripRow();
+}
+$("vote-tabs").addEventListener("click", (event) => {
+  const b = event.target.closest("[data-vtab]");
+  if (!b) return;
+  hideOvPop();
+  setVoteTab(b.dataset.vtab);
+});
+// Escape closes the popover (not the dialog); so do a press outside it (other than on a comment cell) and a scroll.
+$("vote-dialog").addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && vote.ovPopKey) { event.preventDefault(); event.stopPropagation(); hideOvPop(); }
+});
+$("vote-dialog").addEventListener("cancel", (event) => {
+  if (vote.ovPopKey) { event.preventDefault(); hideOvPop(); }
+});
+document.addEventListener("pointerdown", (event) => {
+  if (vote.ovPopKey && !event.target.closest?.("#vote-ov-pop, .ov-cell-btn")) hideOvPop();
+}, true);
+$("vote-dialog").addEventListener("scroll", () => { if (vote.ovPopKey) hideOvPop(); }, true);
 
 $("vote-btn").addEventListener("click", () => openVote());
 $("vote-close").addEventListener("click", () => $("vote-dialog").close());
