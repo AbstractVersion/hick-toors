@@ -5,7 +5,7 @@ from app.config import Settings
 from app.main import create_app
 from app.models import SavedTrip, SavedTripIn
 from app.trips_store import TripStore
-from tests.builders import login_client
+from tests.builders import emoji_for, login_client
 from tests.test_api import FakeAsk, FakeEngine
 
 
@@ -17,8 +17,9 @@ def make(tmp_path, accounts=None, base_url="http://testserver"):
     return TestClient(app, base_url=base_url)
 
 
-def signup(c, username="Nikos", password="password1"):
-    return c.post("/api/auth/signup", json={"username": username, "password": password})
+def signup(c, username="Nikos", password="password1", emoji=None):
+    return c.post("/api/auth/signup", json={"username": username, "password": password,
+                                            "emoji": emoji or emoji_for(username)})
 
 
 def test_signup_sets_cookie_flags_and_logs_in(tmp_path):
@@ -30,28 +31,28 @@ def test_signup_sets_cookie_flags_and_logs_in(tmp_path):
     low = cookie.lower()
     assert "httponly" in low and "samesite=lax" in low and "path=/" in low and "max-age=2592000" in low
     assert "secure" not in low
-    assert c.get("/api/auth/me").json() == {"username": "Nikos"}
+    assert c.get("/api/auth/me").json() == {"username": "Nikos", "emoji": emoji_for("Nikos")}
 
 
 def test_secure_follows_the_request_scheme_only(tmp_path):
     c = make(tmp_path / "a", base_url="https://testserver")
     assert "secure" in signup(c).headers["set-cookie"].lower()
     c = make(tmp_path / "b", base_url="http://testserver")
-    r = c.post("/api/auth/signup", json={"username": "Eve", "password": "password1"},
+    r = c.post("/api/auth/signup", json={"username": "Eve", "password": "password1", "emoji": emoji_for("Eve")},
                headers={"X-Forwarded-Proto": "https"})
     assert "secure" not in r.headers["set-cookie"].lower()
 
 
 def test_me_logout_and_old_cookie_dies(tmp_path):
     c = make(tmp_path)
-    assert c.get("/api/auth/me").json() == {"username": None}
+    assert c.get("/api/auth/me").json() == {"username": None, "emoji": None}
     signup(c)
     token = c.cookies.get("hick_session")
     r = c.post("/api/auth/logout")
     assert r.status_code == 204 and r.content == b""
-    assert c.get("/api/auth/me").json() == {"username": None}
+    assert c.get("/api/auth/me").json() == {"username": None, "emoji": None}
     c.cookies.set("hick_session", token)
-    assert c.get("/api/auth/me").json() == {"username": None}
+    assert c.get("/api/auth/me").json() == {"username": None, "emoji": None}
     assert c.post("/api/auth/logout").status_code == 204  # logging out when logged out is fine
 
 
@@ -73,7 +74,7 @@ def test_login_ok_sets_cookie(tmp_path):
     r = c.post("/api/auth/login", json={"username": "NIKOS", "password": "password1"})
     assert r.status_code == 200 and r.json() == {"username": "Nikos"}
     assert "hick_session=" in r.headers["set-cookie"]
-    assert c.get("/api/auth/me").json() == {"username": "Nikos"}
+    assert c.get("/api/auth/me").json() == {"username": "Nikos", "emoji": emoji_for("Nikos")}
 
 
 def test_signup_errors(tmp_path):
@@ -154,9 +155,9 @@ def test_validation_errors_never_echo_the_password(tmp_path):
     secret = "s3cret-" + "x" * 200
     r = c.post("/api/auth/signup", json={"password": "hunter2hunter2"})
     assert r.status_code == 422 and "hunter2hunter2" not in r.text
-    r = c.post("/api/auth/login", json={"username": "nikos", "password": secret})
+    r = c.post("/api/auth/login", json={"username": "nikos", "password": secret, "emoji": "🤡"})
     assert r.status_code == 422 and "s3cret" not in r.text
-    r = c.post("/api/auth/signup", json={"username": "nikos", "password": secret})
+    r = c.post("/api/auth/signup", json={"username": "nikos", "password": secret, "emoji": "🤡"})
     assert r.status_code == 422 and "s3cret" not in r.text
 
 
@@ -175,3 +176,74 @@ def test_login_ip_limit_is_429(tmp_path):
         assert c.post("/api/auth/login", json={"username": name, "password": "wrongwrong"}).status_code == 401
     r = c.post("/api/auth/login", json={"username": "ccc", "password": "wrongwrong"})
     assert r.status_code == 429 and r.json() == {"detail": "Too many attempts – wait a minute"}
+
+
+# --- emojis -------------------------------------------------------------
+
+def test_signup_emoji_rules(tmp_path):
+    c = make(tmp_path)
+    for body in ({"emoji": "nope"}, {"emoji": "🇬🇷"}, {"emoji": ""}):
+        r = c.post("/api/auth/signup", json={"username": "Nikos", "password": "password1", **body})
+        assert r.status_code == 422 and r.json() == {"detail": "Pick an emoji from the list"}
+    assert c.post("/api/auth/signup", json={"username": "Nikos", "password": "password1"}).status_code == 422
+    assert c.get("/api/auth/me").json() == {"username": None, "emoji": None}
+    assert signup(c, "Nikos", emoji="🌶️").status_code == 201
+    assert c.get("/api/auth/me").json() == {"username": "Nikos", "emoji": "🌶️"}
+    other = make(tmp_path / "x", accounts=c.app.state.accounts)
+    r = signup(other, "Maria", emoji="🌶️")
+    assert r.status_code == 409 and r.json() == {"detail": "That emoji is taken – pick another"}
+    assert other.get("/api/auth/me").json() == {"username": None, "emoji": None}
+
+
+def test_signup_when_every_emoji_is_taken(tmp_path, monkeypatch):
+    import app.accounts as accounts_mod
+    monkeypatch.setattr(accounts_mod, "_scrypt", lambda *a: b"x" * 32)
+    accounts = AccountStore(tmp_path / "a.db", signups_per_ip_hour=1000)
+    for i, e in enumerate(accounts_mod.EMOJIS):
+        accounts.signup(f"user{i}", "pw", "9.9.9.9", e)
+    c = make(tmp_path, accounts=accounts)
+    r = signup(c, "Late", emoji="🤡")
+    assert r.status_code == 409 and r.json() == {"detail": "All emojis are taken"}
+
+
+def test_emojis_and_users_are_public(tmp_path):
+    from app.accounts import EMOJIS
+    c = make(tmp_path)
+    assert c.get("/api/auth/emojis").json() == {"emojis": list(EMOJIS), "taken": []}
+    assert c.get("/api/users").json() == []
+    signup(c, "maria", emoji="🍆")
+    c.post("/api/auth/logout")
+    signup(c, "Anna", emoji="🤡")
+    c.post("/api/auth/logout")
+    assert c.get("/api/auth/emojis").json()["taken"] == ["🤡", "🍆"]
+    assert c.get("/api/users").json() == [{"username": "Anna", "emoji": "🤡"}, {"username": "maria", "emoji": "🍆"}]
+
+
+def test_change_emoji(tmp_path):
+    c = make(tmp_path)
+    assert c.put("/api/auth/emoji", json={"emoji": "🤡"}).status_code == 401
+    signup(c, "maria", emoji="🍆")
+    c.post("/api/auth/logout")
+    signup(c, "Nikos", emoji="🤡")
+    assert c.put("/api/auth/emoji", json={"emoji": "🤡"}).json() == {"username": "Nikos", "emoji": "🤡"}
+    r = c.put("/api/auth/emoji", json={"emoji": "🍆"})
+    assert r.status_code == 409 and r.json() == {"detail": "That emoji is taken – pick another"}
+    r = c.put("/api/auth/emoji", json={"emoji": "x"})
+    assert r.status_code == 422 and r.json() == {"detail": "Pick an emoji from the list"}
+    assert c.put("/api/auth/emoji", json={"emoji": "☠️"}).status_code == 200
+    assert c.get("/api/auth/me").json() == {"username": "Nikos", "emoji": "☠️"}
+    assert c.get("/api/auth/emojis").json()["taken"] == ["🍆", "☠️"]
+
+
+def test_old_account_without_emoji(tmp_path):
+    import sqlite3
+    accounts = AccountStore(tmp_path / "a.db")
+    with sqlite3.connect(tmp_path / "a.db") as db:
+        db.execute("INSERT INTO users (username, username_key, pw_hash, created_at) "
+                   "VALUES ('Old', 'old', ?, 'x')", (__import__("app.accounts").accounts.hash_password("pw"),))
+    c = make(tmp_path, accounts=accounts)
+    assert c.post("/api/auth/login", json={"username": "old", "password": "pw"}).status_code == 200
+    assert c.get("/api/auth/me").json() == {"username": "Old", "emoji": None}
+    assert c.get("/api/users").json() == [{"username": "Old", "emoji": None}]
+    assert c.put("/api/auth/emoji", json={"emoji": "🌶️"}).status_code == 200
+    assert c.get("/api/auth/me").json()["emoji"] == "🌶️"

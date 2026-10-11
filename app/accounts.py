@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
+PICK_FROM_LIST = "Pick an emoji from the list"
 SESSION_DAYS = 30
 COOKIE_NAME = "hick_session"
 MAX_USERS = 200
@@ -26,6 +27,21 @@ LOGINS_PER_IP_WINDOW = 30
 LOGIN_IP_WINDOW = timedelta(minutes=10)
 SIGNUP_IP_WINDOW = timedelta(hours=1)
 SCRYPT_SLOTS = 4  # ~16 MiB each: caps hashing RAM/CPU however many requests arrive
+# The funny set users pick from, funniest first. Stored exactly as written here (some carry U+FE0F).
+EMOJIS: tuple[str, ...] = (
+    "🤡", "🍆", "🍑", "💩", "👽", "🤖", "👻", "🦄", "🐸", "🐔",
+    "🦆", "🐙", "🦖", "🌶️", "🥑", "🍕", "🌮", "🧀", "🦩", "🐷",
+    "🙈", "🦥", "🦦", "🐌", "🦀", "🍄", "🌵", "🎃", "🤠", "🥸",
+    "🤓", "😈", "👹", "💀", "🧟", "🧛", "🧙", "🥷", "🐉", "🦈",
+    "🐊", "🦔", "🦇", "🐝", "🔥", "💣", "🎸", "🛸", "🚀", "🍌",
+    "🥥", "🥒", "🍔", "🍩", "🍺", "🦑", "🐧", "🦉", "🦜", "🐮",
+    "🐵", "🦍", "🐼", "🐨", "🦘", "🦒", "🐘", "🦛", "🐫", "🦙",
+    "🐢", "🐍", "🦎", "🦞", "🦐", "🪲", "🦋", "🐛", "🕷️", "🦂",
+    "🧌", "🧞", "🧜", "🧚", "👾", "☠️", "🤪", "🥴", "🤯", "🥳",
+    "🍟", "🌭", "🥓", "🧇", "🍉", "🍍", "🍓", "🥔", "🧅", "🥦",
+    "🍦", "🧁", "🍪", "🥨", "🥐", "🍣", "🍜", "🥟", "🧄", "🪿",
+)
+_EMOJI_SET = frozenset(EMOJIS)
 _USERNAME_RE = re.compile(r"[A-Za-z0-9_.-]{3,20}")
 _SCRYPT = (2 ** 14, 8, 1)
 
@@ -40,6 +56,14 @@ class TooManyAccounts(Exception):
 
 class SignupRateLimited(Exception):
     """Too many sign-ups from this IP in the last hour."""
+
+
+class EmojiTaken(Exception):
+    """Another account already uses this emoji."""
+
+
+class NoEmojisLeft(Exception):
+    """Every emoji in the set belongs to someone."""
 
 
 class BadCredentials(Exception):
@@ -119,7 +143,10 @@ class AccountStore:
         with self._db() as db:
             db.execute("CREATE TABLE IF NOT EXISTS users ("
                        "id INTEGER PRIMARY KEY, username TEXT NOT NULL, username_key TEXT NOT NULL UNIQUE, "
-                       "pw_hash TEXT NOT NULL, created_at TEXT NOT NULL)")
+                       "pw_hash TEXT NOT NULL, created_at TEXT NOT NULL, emoji TEXT)")
+            if "emoji" not in {r[1] for r in db.execute("PRAGMA table_info(users)")}:
+                db.execute("ALTER TABLE users ADD COLUMN emoji TEXT")  # database from before emojis
+            db.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_emoji ON users (emoji) WHERE emoji IS NOT NULL")
             db.execute("CREATE TABLE IF NOT EXISTS sessions ("
                        "token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, expires_at TEXT NOT NULL)")
 
@@ -157,11 +184,13 @@ class AccountStore:
 
     # --- sign-up / login -------------------------------------------------
 
-    def signup(self, username: str, password: str, ip: str) -> str:
+    def signup(self, username: str, password: str, ip: str, emoji: str) -> str:
         if not _USERNAME_RE.fullmatch(username):
             raise ValueError("Username must be 3-20 letters, digits, _ . -")
         if not 1 <= len(password) <= 200:
             raise ValueError("Password must be 1-200 characters")
+        if emoji not in _EMOJI_SET:
+            raise ValueError(PICK_FROM_LIST)
         now = self.now()
         with self._lock:
             self._prune(now)
@@ -175,9 +204,50 @@ class AccountStore:
                 raise UsernameTaken()
             if db.execute("SELECT COUNT(*) FROM users").fetchone()[0] >= self.max_users:
                 raise TooManyAccounts()
-            db.execute("INSERT INTO users (username, username_key, pw_hash, created_at) VALUES (?, ?, ?, ?)",
-                       (username, key, pw_hash, _stamp(now)))
+            if db.execute("SELECT 1 FROM users WHERE emoji = ?", (emoji,)).fetchone():
+                if db.execute("SELECT COUNT(*) FROM users WHERE emoji IS NOT NULL").fetchone()[0] >= len(EMOJIS):
+                    raise NoEmojisLeft()
+                raise EmojiTaken()
+            try:
+                db.execute("INSERT INTO users (username, username_key, pw_hash, created_at, emoji) "
+                           "VALUES (?, ?, ?, ?, ?)", (username, key, pw_hash, _stamp(now), emoji))
+            except sqlite3.IntegrityError:  # lost a race on the unique index
+                raise EmojiTaken()
         return username
+
+    def set_emoji(self, username: str, emoji: str) -> None:
+        """Give an existing account this emoji (its own current one is fine)."""
+        if emoji not in _EMOJI_SET:
+            raise ValueError(PICK_FROM_LIST)
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT id, emoji FROM users WHERE username_key = ?", (username.lower(),)).fetchone()
+            if row is None:
+                raise KeyError(username)
+            if row[1] == emoji:
+                return
+            if db.execute("SELECT 1 FROM users WHERE emoji = ?", (emoji,)).fetchone():
+                raise EmojiTaken()
+            try:
+                db.execute("UPDATE users SET emoji = ? WHERE id = ?", (emoji, row[0]))
+            except sqlite3.IntegrityError:
+                raise EmojiTaken()
+
+    def emoji_of(self, username: str) -> str | None:
+        with self._db() as db:
+            row = db.execute("SELECT emoji FROM users WHERE username_key = ?", (username.lower(),)).fetchone()
+        return row[0] if row else None
+
+    def users(self) -> list[tuple[str, str | None]]:
+        with self._db() as db:
+            rows = db.execute("SELECT username, emoji FROM users").fetchall()
+        return sorted(((r[0], r[1]) for r in rows), key=lambda u: (u[0].lower(), u[0]))
+
+    def taken_emojis(self) -> list[str]:
+        with self._db() as db:
+            rows = db.execute("SELECT emoji FROM users WHERE emoji IS NOT NULL").fetchall()
+        taken = {r[0] for r in rows}
+        return [e for e in EMOJIS if e in taken]
 
     def login(self, username: str, password: str, ip: str | None = None) -> str:
         """ip=None (CLI/tests) skips the per-IP limit; the HTTP route always passes the client IP."""

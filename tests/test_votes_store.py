@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from app.accounts import AccountStore, User
 from app.models import Counts, RoundIn, RoundPatch, SavedTripIn, Stay, VoteIn
 from app.trips_store import TripStore
+from tests.builders import emoji_for
 from app.vote_ranking import rank
 from app.votes_store import NotInRound, NotOpener, RoundAlreadyOpen, RoundClosed, RoundNotFound, RoundStore
 
@@ -41,7 +42,7 @@ def env(tmp_path):
     e.accounts = AccountStore(e.path, now=e.clock)
     users = {}
     for name in ("Nikos", "Maria", "Kostas"):
-        e.accounts.signup(name, "password1", "1.1.1.1")
+        e.accounts.signup(name, "password1", "1.1.1.1", emoji_for(name))
         users[name] = User(id=e.accounts.user_id(name), username=name)
     e.nikos, e.maria, e.kostas = users["Nikos"], users["Maria"], users["Kostas"]
     e.ids = {key: e.trips.create(SavedTripIn(name=f"Trip {key}", stays=[stay(key, 1), stay(key, 2)])).id

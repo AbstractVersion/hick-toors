@@ -111,8 +111,23 @@ def airbnb_room_html(name="Bezeniko Amazing Arcadian Property!", lat=37.71914, l
             f"{scripts}</head><body><script>{blob}</script></body></html>")
 
 
-def login_client(client, username="nikos", password="password1"):
+_TEST_EMOJIS: dict[str, str] = {}
+
+
+def emoji_for(username):
+    """A distinct emoji per (case-insensitive) username, stable for the whole test run."""
+    from app.accounts import EMOJIS
+
+    key = username.lower()
+    if key not in _TEST_EMOJIS:
+        assert len(_TEST_EMOJIS) < len(EMOJIS), "tests use more distinct usernames than there are emojis"
+        _TEST_EMOJIS[key] = EMOJIS[len(_TEST_EMOJIS)]
+    return _TEST_EMOJIS[key]
+
+
+def login_client(client, username="nikos", password="password1", emoji=None):
     """Sign `username` up through the API; the TestClient keeps the session cookie."""
-    r = client.post("/api/auth/signup", json={"username": username, "password": password})
+    emoji = emoji or emoji_for(username)
+    r = client.post("/api/auth/signup", json={"username": username, "password": password, "emoji": emoji})
     assert r.status_code == 201, r.text
     return client

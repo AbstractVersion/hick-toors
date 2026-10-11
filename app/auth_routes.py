@@ -3,8 +3,8 @@
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from app.accounts import (COOKIE_NAME, SESSION_DAYS, AccountStore, BadCredentials, LoginLocked, SignupRateLimited,
-                          TooManyAccounts, User, UsernameTaken)
+from app.accounts import (COOKIE_NAME, EMOJIS, SESSION_DAYS, AccountStore, BadCredentials, EmojiTaken, LoginLocked,
+                          NoEmojisLeft, SignupRateLimited, TooManyAccounts, User, UsernameTaken)
 
 LOG_IN_FIRST = "Log in first"
 
@@ -12,6 +12,17 @@ LOG_IN_FIRST = "Log in first"
 class Credentials(BaseModel):
     username: str = Field(max_length=20)
     password: str = Field(max_length=200)  # oversized passwords never reach scrypt
+
+
+class SignupBody(Credentials):
+    emoji: str = Field(max_length=64)
+
+
+class EmojiBody(BaseModel):
+    emoji: str = Field(max_length=64)
+
+
+EMOJI_TAKEN = "That emoji is taken – pick another"
 
 
 def current_user(request: Request) -> User | None:
@@ -40,11 +51,15 @@ def auth_router(accounts: AccountStore) -> APIRouter:
 
     # Sync handlers: sqlite and scrypt run in FastAPI's threadpool.
     @router.post("/signup", status_code=201)
-    def signup(body: Credentials, request: Request, response: Response):
+    def signup(body: SignupBody, request: Request, response: Response):
         try:
-            username = accounts.signup(body.username, body.password, client_ip(request))
+            username = accounts.signup(body.username, body.password, client_ip(request), body.emoji)
         except UsernameTaken:
             raise HTTPException(status_code=409, detail="That username is taken")
+        except NoEmojisLeft:
+            raise HTTPException(status_code=409, detail="All emojis are taken")
+        except EmojiTaken:
+            raise HTTPException(status_code=409, detail=EMOJI_TAKEN)
         except TooManyAccounts:
             raise HTTPException(status_code=409, detail="No more accounts can be created")
         except SignupRateLimited:
@@ -73,6 +88,22 @@ def auth_router(accounts: AccountStore) -> APIRouter:
     @router.get("/me")
     def me(request: Request):
         user = current_user(request)
-        return {"username": user.username if user else None}
+        return {"username": user.username if user else None,
+                "emoji": accounts.emoji_of(user.username) if user else None}
+
+    @router.get("/emojis")
+    def emojis():
+        return {"emojis": list(EMOJIS), "taken": accounts.taken_emojis()}
+
+    @router.put("/emoji")
+    def set_emoji(body: EmojiBody, request: Request):
+        user = require_user(request)
+        try:
+            accounts.set_emoji(user.username, body.emoji)
+        except EmojiTaken:
+            raise HTTPException(status_code=409, detail=EMOJI_TAKEN)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        return {"username": user.username, "emoji": body.emoji}
 
     return router

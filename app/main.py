@@ -114,6 +114,10 @@ def create_app(engine=None, ask_runner=None, settings: Settings | None = None,
             errors = [{k: v for k, v in e.items() if k not in ("input", "ctx")} for e in errors]
         return JSONResponse(status_code=422, content={"detail": _json_safe(jsonable_encoder(errors))})
 
+    @app.get("/api/users")
+    def users():
+        return [{"username": name, "emoji": emoji} for name, emoji in accounts.users()]
+
     @app.get("/api/config")
     async def config():
         return {

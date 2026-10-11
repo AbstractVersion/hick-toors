@@ -7,9 +7,9 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 import app.accounts as accounts_mod
-
-from app.accounts import (AccountStore, BadCredentials, LoginLocked, SignupRateLimited, TooManyAccounts,
-                          UsernameTaken, hash_password, main, verify_password)
+from tests.builders import emoji_for
+from app.accounts import (EMOJIS, AccountStore, BadCredentials, EmojiTaken, LoginLocked, NoEmojisLeft,
+                          SignupRateLimited, TooManyAccounts, UsernameTaken, hash_password, main, verify_password)
 
 
 class Clock:
@@ -47,25 +47,25 @@ def test_verify_malformed_is_false(bad):
 
 
 def test_signup_login_case_insensitive(store):
-    assert store.signup("Nikos", "password1", "1.1.1.1") == "Nikos"
+    assert store.signup("Nikos", "password1", "1.1.1.1", emoji_for("Nikos")) == "Nikos"
     with pytest.raises(UsernameTaken):
-        store.signup("nikos", "password1", "1.1.1.1")
+        store.signup("nikos", "password1", "1.1.1.1", emoji_for("nikos"))
     assert store.login("NIKOS", "password1") == "Nikos"
 
 
 @pytest.mark.parametrize("name", ["ab", "a" * 21, "bad name", "νίκος"])
 def test_bad_usernames(store, name):
     with pytest.raises(ValueError):
-        store.signup(name, "password1", "1.1.1.1")
+        store.signup(name, "password1", "1.1.1.1", emoji_for(name))
 
 
 def test_password_length_rules(store):
     for pw in ("", "x" * 201):
         with pytest.raises(ValueError, match="Password must be 1-200 characters"):
-            store.signup("nikos", pw, "1.1.1.1")
-    assert store.signup("nikos", "a", "1.1.1.1") == "nikos"  # one letter is enough for a group of friends
+            store.signup("nikos", pw, "1.1.1.1", emoji_for("nikos"))
+    assert store.signup("nikos", "a", "1.1.1.1", emoji_for("nikos")) == "nikos"  # one letter is enough for a group of friends
     assert store.login("Nikos", "a") == "nikos"
-    assert store.signup("maria", "x" * 200, "1.1.1.1") == "maria"
+    assert store.signup("maria", "x" * 200, "1.1.1.1", emoji_for("maria")) == "maria"
     with pytest.raises(ValueError, match="Password must be 1-200 characters"):
         store.reset_password("nikos", "")
     store.reset_password("nikos", "b")
@@ -73,7 +73,7 @@ def test_password_length_rules(store):
 
 
 def test_lockout(store, clock):
-    store.signup("Nikos", "password1", "1.1.1.1")
+    store.signup("Nikos", "password1", "1.1.1.1", emoji_for("Nikos"))
     for _ in range(5):
         with pytest.raises(BadCredentials):
             store.login("nikos", "wrong")
@@ -84,7 +84,7 @@ def test_lockout(store, clock):
 
 
 def test_success_resets_counter(store):
-    store.signup("Nikos", "password1", "1.1.1.1")
+    store.signup("Nikos", "password1", "1.1.1.1", emoji_for("Nikos"))
     for _ in range(4):
         with pytest.raises(BadCredentials):
             store.login("Nikos", "wrong")
@@ -105,24 +105,24 @@ def test_unknown_user_counts_toward_lockout(store):
 
 def test_ip_limit(store, clock):
     for i in range(10):
-        store.signup(f"user{i}", "password1", "1.2.3.4")
+        store.signup(f"user{i}", "password1", "1.2.3.4", emoji_for(f"user{i}"))
     with pytest.raises(SignupRateLimited):
-        store.signup("user10", "password1", "1.2.3.4")
-    store.signup("user10", "password1", "5.6.7.8")
+        store.signup("user10", "password1", "1.2.3.4", emoji_for("user10"))
+    store.signup("user10", "password1", "5.6.7.8", emoji_for("user10"))
     clock.advance(hours=1, seconds=1)
-    store.signup("user11", "password1", "1.2.3.4")
+    store.signup("user11", "password1", "1.2.3.4", emoji_for("user11"))
 
 
 def test_max_users(tmp_path, clock):
     s = AccountStore(tmp_path / "t.db", now=clock, max_users=3)
     for i in range(3):
-        s.signup(f"user{i}", "password1", "1.1.1.1")
+        s.signup(f"user{i}", "password1", "1.1.1.1", emoji_for(f"user{i}"))
     with pytest.raises(TooManyAccounts):
-        s.signup("user3", "password1", "1.1.1.1")
+        s.signup("user3", "password1", "1.1.1.1", emoji_for("user3"))
 
 
 def test_sessions(store, clock, tmp_path):
-    store.signup("Nikos", "password1", "1.1.1.1")
+    store.signup("Nikos", "password1", "1.1.1.1", emoji_for("Nikos"))
     token = store.create_session("Nikos")
     user = store.session_user(token)
     assert user.username == "Nikos" and user.id == store.user_id("nikos")
@@ -136,7 +136,7 @@ def test_sessions(store, clock, tmp_path):
 
 
 def test_delete_and_sweep(store, clock):
-    store.signup("Nikos", "password1", "1.1.1.1")
+    store.signup("Nikos", "password1", "1.1.1.1", emoji_for("Nikos"))
     t1 = store.create_session("Nikos")
     store.delete_session(t1)
     assert store.session_user(t1) is None
@@ -149,7 +149,7 @@ def test_delete_and_sweep(store, clock):
 
 
 def test_reset_password(store):
-    store.signup("Nikos", "password1", "1.1.1.1")
+    store.signup("Nikos", "password1", "1.1.1.1", emoji_for("Nikos"))
     token = store.create_session("nikos")
     store.reset_password("nikos", "newpassword")
     assert store.session_user(token) is None
@@ -162,13 +162,13 @@ def test_reset_password(store):
 
 def test_usernames_sorted(store):
     for n in ("bob", "Alice", "carl"):
-        store.signup(n, "password1", "1.1.1.1")
+        store.signup(n, "password1", "1.1.1.1", emoji_for(n))
     assert store.usernames() == ["Alice", "bob", "carl"]
 
 
 def test_cli(tmp_path, clock, capsys):
     path = tmp_path / "trips.db"
-    AccountStore(path, now=clock).signup("Nikos", "password1", "1.1.1.1")
+    AccountStore(path, now=clock).signup("Nikos", "password1", "1.1.1.1", emoji_for("Nikos"))
 
     def feed(*answers):
         it = iter(answers)
@@ -183,13 +183,13 @@ def test_cli(tmp_path, clock, capsys):
 
 def test_no_password_leaks(store):
     pw = "s3cretPassw0rd"
-    store.signup("Nikos", pw, "1.1.1.1")
+    store.signup("Nikos", pw, "1.1.1.1", emoji_for("Nikos"))
     assert pw not in repr(store)
     with pytest.raises(BadCredentials) as e:
         store.login("Nikos", pw + "x")
     assert pw not in repr(e.value) and pw not in str(e.value)
     with pytest.raises(UsernameTaken) as e:
-        store.signup("Nikos", pw, "1.1.1.1")
+        store.signup("Nikos", pw, "1.1.1.1", emoji_for("Nikos"))
     assert pw not in repr(e.value)
 
 
@@ -201,7 +201,7 @@ def count_scrypt(monkeypatch):
 
 
 def test_login_ip_limit_checked_before_scrypt(store, clock, monkeypatch):
-    store.signup("Nikos", "password1", "1.1.1.1")
+    store.signup("Nikos", "password1", "1.1.1.1", emoji_for("Nikos"))
     calls = count_scrypt(monkeypatch)
     for i in range(30):  # distinct usernames: the per-username lock never trips
         with pytest.raises(BadCredentials):
@@ -216,7 +216,7 @@ def test_login_ip_limit_checked_before_scrypt(store, clock, monkeypatch):
 
 
 def test_login_ip_limit_counts_successes_too(store):
-    store.signup("Nikos", "password1", "1.1.1.1")
+    store.signup("Nikos", "password1", "1.1.1.1", emoji_for("Nikos"))
     for _ in range(30):
         store.login("Nikos", "password1", ip="6.6.6.6")
     with pytest.raises(LoginLocked):
@@ -226,7 +226,7 @@ def test_login_ip_limit_counts_successes_too(store):
 def test_throttle_dicts_stay_bounded(store, clock, monkeypatch):
     monkeypatch.setattr(accounts_mod, "_scrypt", lambda *a: b"x" * 32)  # speed: hashing is not under test
     for round_ in range(20):
-        store.signup(f"user{round_}", "password1", f"9.9.{round_}.1")
+        store.signup(f"user{round_}", "password1", f"9.9.{round_}.1", emoji_for(f"user{round_}"))
         for i in range(25):
             ip = f"10.{round_}.0.{i}"
             for _ in range(5):  # locks the username
@@ -243,7 +243,7 @@ def test_throttle_dicts_stay_bounded(store, clock, monkeypatch):
         clock.advance(minutes=61)
     with pytest.raises(BadCredentials):
         store.login("again", "whatever1", ip="8.8.4.4")
-    store.signup("last", "password1", "9.9.9.9")
+    store.signup("last", "password1", "9.9.9.9", emoji_for("last"))
     assert len(store._locked_until) == 0 and len(store._failures) == 1
     assert len(store._login_ips) == 1 and len(store._signups) == 1
 
@@ -270,3 +270,102 @@ def test_scrypt_concurrency_is_bounded(monkeypatch):
     for t in threads:
         t.join()
     assert peak[0] == 4
+
+
+# --- emojis -------------------------------------------------------------
+
+def test_emoji_set_shape():
+    assert len(EMOJIS) == len(set(EMOJIS)) >= 100
+    assert EMOJIS[:4] == ("🤡", "🍆", "🍑", "💩")
+    assert "🌶️" in EMOJIS and "☠️" in EMOJIS  # variation selectors kept as written
+    for e in EMOJIS:  # no flags, skin tones, ZWJ sequences
+        assert "\u200d" not in e and not 0x1F3FB <= max(map(ord, e)) <= 0x1F3FF
+        assert not any(0x1F1E6 <= ord(c) <= 0x1F1FF for c in e)
+
+
+def test_signup_requires_an_emoji_from_the_set(store):
+    for bad in ("", "x", "🇬🇷", "🌶", "🤡🤡", "👍🏽", "🤡 "):  # 🌶 lacks the variation selector
+        with pytest.raises(ValueError, match="^Pick an emoji from the list$"):
+            store.signup("Nikos", "password1", "1.1.1.1", bad)
+    assert store.user_id("Nikos") is None
+    store.signup("Nikos", "password1", "1.1.1.1", "🌶️")
+    assert store.emoji_of("nikos") == "🌶️" and store.emoji_of("ghost") is None
+
+
+def test_emoji_unique_across_accounts(store):
+    store.signup("Nikos", "password1", "1.1.1.1", "🤡")
+    with pytest.raises(EmojiTaken):
+        store.signup("Maria", "password1", "1.1.1.1", "🤡")
+    assert store.user_id("Maria") is None
+    store.signup("Maria", "password1", "1.1.1.1", "🍆")
+    assert store.users() == [("Maria", "🍆"), ("Nikos", "🤡")]
+    assert store.taken_emojis() == ["🤡", "🍆"]  # in EMOJIS order
+
+
+def test_set_emoji(store):
+    store.signup("Nikos", "password1", "1.1.1.1", "🤡")
+    store.signup("Maria", "password1", "1.1.1.1", "🍆")
+    store.set_emoji("nikos", "🤡")  # own current one is fine
+    store.set_emoji("Nikos", "☠️")
+    assert store.emoji_of("Nikos") == "☠️" and store.taken_emojis() == ["🍆", "☠️"]
+    store.set_emoji("Maria", "🤡")  # freed by the change
+    with pytest.raises(EmojiTaken):
+        store.set_emoji("Maria", "☠️")
+    with pytest.raises(ValueError, match="Pick an emoji from the list"):
+        store.set_emoji("Maria", "nope")
+    with pytest.raises(KeyError):
+        store.set_emoji("ghost", "🍑")
+    assert store.emoji_of("Maria") == "🤡"
+
+
+def test_all_emojis_taken(tmp_path, clock, monkeypatch):
+    monkeypatch.setattr(accounts_mod, "_scrypt", lambda *a: b"x" * 32)
+    s = AccountStore(tmp_path / "t.db", now=clock, signups_per_ip_hour=1000)
+    for i, e in enumerate(EMOJIS):
+        s.signup(f"user{i}", "password1", "1.1.1.1", e)
+    with pytest.raises(NoEmojisLeft):
+        s.signup("extra", "password1", "1.1.1.1", EMOJIS[0])
+    assert s.user_id("extra") is None
+
+
+def test_concurrent_signups_same_emoji_one_wins(tmp_path):
+    s = AccountStore(tmp_path / "t.db", signups_per_ip_hour=100)
+    barrier = threading.Barrier(6)
+    results = []
+
+    def go(i):
+        barrier.wait()
+        try:
+            s.signup(f"racer{i}", "password1", "1.1.1.1", "🤡")
+            results.append("ok")
+        except EmojiTaken:
+            results.append("taken")
+
+    threads = [threading.Thread(target=go, args=(i,)) for i in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(results) == ["ok"] + ["taken"] * 5
+    assert len(s.users()) == 1
+
+
+def test_database_from_before_emojis_migrates(tmp_path, clock):
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL, "
+                 "username_key TEXT NOT NULL UNIQUE, pw_hash TEXT NOT NULL, created_at TEXT NOT NULL)")
+    conn.execute("INSERT INTO users (username, username_key, pw_hash, created_at) VALUES "
+                 "('Old', 'old', ?, 'x'), ('Older', 'older', ?, 'x')", (hash_password("pw"), hash_password("pw")))
+    conn.commit()
+    conn.close()
+    s = AccountStore(path, now=clock)
+    AccountStore(path, now=clock)  # opening again is harmless
+    assert s.users() == [("Old", None), ("Older", None)] and s.emoji_of("Old") is None
+    assert s.login("old", "pw") == "Old"
+    assert s.taken_emojis() == []
+    s.set_emoji("Old", "🌶️")
+    with pytest.raises(EmojiTaken):
+        s.set_emoji("Older", "🌶️")
+    s.signup("New", "password1", "1.1.1.1", "🍑")
+    assert s.users() == [("New", "🍑"), ("Old", "🌶️"), ("Older", None)]
